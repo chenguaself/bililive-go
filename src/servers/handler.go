@@ -665,6 +665,7 @@ func stopListening(ctx context.Context, liveId types.LiveID) error {
 ]
 */
 func addLives(writer http.ResponseWriter, r *http.Request) {
+	inst := instance.GetInstance(r.Context())
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeJSON(writer, map[string]any{
@@ -677,7 +678,7 @@ func addLives(writer http.ResponseWriter, r *http.Request) {
 	gjson.ParseBytes(b).ForEach(func(key, value gjson.Result) bool {
 		isListen := value.Get("listen").Bool()
 		urlStr := strings.Trim(value.Get("url").String(), " ")
-		if retInfo, err := addLiveImpl(instance.GetInstance(r.Context()).Ctx, urlStr, isListen); err != nil {
+		if retInfo, err := addLiveImpl(inst.Ctx, urlStr, isListen); err != nil {
 			msg := urlStr + ": " + err.Error()
 			applog.GetLogger().Error(msg)
 			errorMessages = append(errorMessages, msg)
@@ -818,6 +819,7 @@ func getRawConfig(writer http.ResponseWriter, r *http.Request) {
 }
 
 func putRawConfig(writer http.ResponseWriter, r *http.Request) {
+	inst := instance.GetInstance(r.Context())
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeJsonWithStatusCode(writer, http.StatusBadRequest, commonResp{
@@ -826,7 +828,7 @@ func putRawConfig(writer http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	ctx := instance.GetInstance(r.Context()).Ctx
+	ctx := inst.Ctx
 	var jsonBody map[string]any
 	json.Unmarshal(b, &jsonBody)
 	newConfig, err := configs.NewConfigWithBytes([]byte(jsonBody["config"].(string)))
