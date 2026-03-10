@@ -22,7 +22,12 @@ env:
   IS_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
 
 jobs:
+  # 预热 Go 依赖缓存
+  go-cache:
+    uses: ./.github/workflows/go-cache.yaml
+
   release-bins-sharded:
+    needs: go-cache
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -47,7 +52,7 @@ jobs:
           else
             echo "GIT_TAG=`echo $(git describe --tags --abbrev=0)`" >> $GITHUB_ENV
           fi
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.25'
           cache: true
