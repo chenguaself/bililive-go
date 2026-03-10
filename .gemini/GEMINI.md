@@ -2,7 +2,7 @@
 
 本文档为在此项目中工作的 AI 助手（如 GitHub Copilot、Gemini、Claude、Codex、Antigravity 等）提供指导。
 
-> **注意**：本文件是 AI 指示的唯一源文件。修改后请运行 `make sync-agents` 同步到其他位置：
+> **注意**：`AGENTS.md` 是 AI 指示的唯一源文件。任何 AI 指示变更都必须先修改 `AGENTS.md`，禁止直接修改下游同步文件。修改后请运行 `make sync-agents` 同步到其他位置：
 > - `.github/copilot-instructions.md` (GitHub Copilot)
 > - `.agent/rules/gemini-guide.md` (Gemini CLI)
 > - `.gemini/GEMINI.md` (Antigravity)
