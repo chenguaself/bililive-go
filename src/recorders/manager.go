@@ -145,6 +145,11 @@ func (m *manager) Close(ctx context.Context) {
 func (m *manager) AddRecorder(ctx context.Context, live live.Live) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
+	return m.addRecorderLocked(ctx, live)
+}
+
+// addRecorderLocked 是 AddRecorder 的内部实现，调用者必须已持有 m.lock
+func (m *manager) addRecorderLocked(ctx context.Context, live live.Live) error {
 	if _, ok := m.savers[live.GetLiveId()]; ok {
 		return ErrRecorderExist
 	}
@@ -184,33 +189,32 @@ func (m *manager) cronRestart(ctx context.Context, live live.Live) {
 }
 
 func (m *manager) RestartRecorder(ctx context.Context, live live.Live) error {
-	// 1. 取出旧 recorder
+	// 1. 在锁内完成 map 操作：取出旧 recorder，创建并放入新 recorder
+	// 这样外部观察者（如 LiveEnd 事件处理器）始终能看到录制器存在，不会出现中间状态
 	m.lock.Lock()
 	oldRecorder, ok := m.savers[live.GetLiveId()]
 	if !ok {
 		m.lock.Unlock()
 		return ErrRecorderNotExist
 	}
+	// 从 map 中移除旧 recorder 并立即添加新 recorder，保持锁贯穿整个替换操作
 	delete(m.savers, live.GetLiveId())
+	if err := m.addRecorderLocked(ctx, live); err != nil {
+		// 添加新 recorder 失败，恢复旧 recorder 避免僵尸状态
+		m.savers[live.GetLiveId()] = oldRecorder
+		m.lock.Unlock()
+		return err
+	}
+	newRec := m.savers[live.GetLiveId()]
 	m.lock.Unlock()
 
-	// 2. 关闭旧 recorder 并获取累积文件（不推送摘要）
+	// 2. 锁外执行耗时操作：关闭旧 recorder 并获取累积文件
 	oldFiles := oldRecorder.CloseForRestart()
 	live.GetLogger().Infof("分段重启录制，携带 %d 个历史文件", len(oldFiles))
 
-	// 3. 创建并启动新 recorder
-	if err := m.AddRecorder(ctx, live); err != nil {
-		live.GetLogger().Errorf("分段重启创建新 recorder 失败: %v，%d 个累积文件丢失", err, len(oldFiles))
-		return err
-	}
-
-	// 4. 将旧文件传递给新 recorder
+	// 3. 将旧文件传递给新 recorder
 	if len(oldFiles) > 0 {
-		m.lock.RLock()
-		if newRec, ok := m.savers[live.GetLiveId()]; ok {
-			newRec.SetInitialRecordedFiles(oldFiles)
-		}
-		m.lock.RUnlock()
+		newRec.SetInitialRecordedFiles(oldFiles)
 	}
 
 	return nil
@@ -219,6 +223,11 @@ func (m *manager) RestartRecorder(ctx context.Context, live live.Live) error {
 func (m *manager) RemoveRecorder(ctx context.Context, liveId types.LiveID) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
+	return m.removeRecorderLocked(ctx, liveId)
+}
+
+// removeRecorderLocked 是 RemoveRecorder 的内部实现，调用者必须已持有 m.lock
+func (m *manager) removeRecorderLocked(ctx context.Context, liveId types.LiveID) error {
 	recorder, ok := m.savers[liveId]
 	if !ok {
 		return ErrRecorderNotExist
