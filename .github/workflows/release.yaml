@@ -3,6 +3,24 @@ on:
   push:
     tags:
       - 'v*'
+  # 支持手动触发（用于 dry-run 测试整个编译流程）
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run 模式：执行完整编译流程但不发布（不推送到 GitHub Release 和 Docker Hub）'
+        required: false
+        default: true
+        type: boolean
+      tag:
+        description: '模拟的 tag 版本号（如 v0.8.0-rc.3），dry-run 时必填'
+        required: false
+        type: string
+
+# dry-run 判断：workflow_dispatch 触发 + dry_run=true
+# 注意：push tag 触发时 inputs 不存在，github.event.inputs.dry_run 为空字符串
+env:
+  IS_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
+
 jobs:
   release-bins-sharded:
     runs-on: ubuntu-latest
@@ -19,7 +37,16 @@ jobs:
       SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
     steps:
       - uses: actions/checkout@v4
-      - run: echo "GIT_TAG=`echo $(git describe --tags --abbrev=0)`" >> $GITHUB_ENV
+        with:
+          # workflow_dispatch 时可能不在 tag 上，需要 fetch tags
+          fetch-tags: true
+      - name: Set GIT_TAG
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "GIT_TAG=${{ inputs.tag }}" >> $GITHUB_ENV
+          else
+            echo "GIT_TAG=`echo $(git describe --tags --abbrev=0)`" >> $GITHUB_ENV
+          fi
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
@@ -67,12 +94,29 @@ jobs:
     needs: [release-bins-sharded]
     steps:
       - uses: actions/checkout@v4
-      - run: echo "GIT_TAG=`echo $(git describe --tags --abbrev=0)`" >> $GITHUB_ENV
+        with:
+          fetch-tags: true
+      - name: Set GIT_TAG
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "GIT_TAG=${{ inputs.tag }}" >> $GITHUB_ENV
+          else
+            echo "GIT_TAG=`echo $(git describe --tags --abbrev=0)`" >> $GITHUB_ENV
+          fi
       - name: Download all shard artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
+      - name: List artifacts (dry-run verification)
+        run: |
+          echo "=== 已下载的构建产物 ==="
+          find dist -type f | sort
+          echo "=== 产物统计 ==="
+          echo "tar.gz: $(find dist -name '*.tar.gz' | wc -l) 个"
+          echo "zip: $(find dist -name '*.zip' | wc -l) 个"
+          echo "7z: $(find dist -name '*.7z' | wc -l) 个"
       - name: Publish GitHub Release with all packaged files
+        if: ${{ env.IS_DRY_RUN != 'true' }}
         uses: softprops/action-gh-release@v1
         with:
           files: |
@@ -80,6 +124,9 @@ jobs:
             dist/**/*.zip
             dist/**/*.7z
           prerelease: ${{ contains(env.GIT_TAG, 'rc') }}
+      - name: "[Dry-Run] 跳过 GitHub Release 发布"
+        if: ${{ env.IS_DRY_RUN == 'true' }}
+        run: echo "::notice::Dry-run 模式：跳过 GitHub Release 发布（GIT_TAG=$GIT_TAG）"
 
   # Docker 镜像构建：按平台分矩阵，arm64 使用原生 ARM runner
   # 优化策略：
@@ -104,7 +151,13 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - run: echo "GIT_TAG=`echo $(git describe --tags --abbrev=0)`" >> $GITHUB_ENV
+      - name: Set GIT_TAG
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "GIT_TAG=${{ inputs.tag }}" >> $GITHUB_ENV
+          else
+            echo "GIT_TAG=`echo $(git describe --tags --abbrev=0)`" >> $GITHUB_ENV
+          fi
 
       # 下载编译好的二进制 artifact（从 release-bins-sharded 产物中提取）
       - name: Download build artifacts
@@ -129,24 +182,9 @@ jobs:
           ls -la docker-context/bin/
 
       # 在原生环境中预下载内置工具（避免在 QEMU 下解压 xz 的巨大开销）
+      # 版本号和下载 URL 自动从 src/tools/remote-tools-config.json 读取
       - name: Pre-download built-in tools
-        run: |
-          chmod +x scripts/docker-prepare-tools.sh
-          scripts/docker-prepare-tools.sh "${{ matrix.arch }}" docker-context/tools
-
-          # 验证关键工具目录存在且非空
-          echo "--- 验证下载结果 ---"
-          for tool_dir in docker-context/tools/*/; do
-            if [ -d "$tool_dir" ]; then
-              echo "✓ $tool_dir ($(du -sh "$tool_dir" | cut -f1))"
-            fi
-          done
-          TOOL_COUNT=$(find docker-context/tools -mindepth 1 -maxdepth 1 -type d | wc -l)
-          if [ "$TOOL_COUNT" -eq 0 ]; then
-            echo "::error::预下载工具失败：docker-context/tools 目录为空"
-            exit 1
-          fi
-          echo "共下载 $TOOL_COUNT 个工具目录"
+        run: node scripts/docker-prepare-tools.mjs "${{ matrix.arch }}" docker-context/tools
 
       # 仅 arm/v7 需要 QEMU（用于 apt-get 安装 ffmpeg 等）
       - name: Set up QEMU
@@ -157,12 +195,14 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
+        if: ${{ env.IS_DRY_RUN != 'true' }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
 
       # 构建并推送单平台镜像（by digest，不关联 tag）
+      # dry-run 模式下只构建不推送（push: false）
       - name: Build and push single-platform image
         id: build
         uses: docker/build-push-action@v5
@@ -170,20 +210,22 @@ jobs:
           context: .
           file: Dockerfile
           platforms: ${{ matrix.platform }}
-          push: true
+          push: ${{ env.IS_DRY_RUN != 'true' }}
           tags: ""
-          outputs: type=image,name=chigusa/bililive-go,push-by-digest=true,name-canonical=true
+          outputs: ${{ env.IS_DRY_RUN != 'true' && 'type=image,name=chigusa/bililive-go,push-by-digest=true,name-canonical=true' || '' }}
           cache-from: type=gha,scope=docker-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=docker-${{ matrix.arch }}
 
-      # 导出 digest 供后续合并
+      # 导出 digest 供后续合并（仅非 dry-run）
       - name: Export digest
+        if: ${{ env.IS_DRY_RUN != 'true' }}
         run: |
           mkdir -p /tmp/digests
           digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest
+        if: ${{ env.IS_DRY_RUN != 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: docker-digest-${{ matrix.arch }}
@@ -191,10 +233,16 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: "[Dry-Run] Docker 构建成功"
+        if: ${{ env.IS_DRY_RUN == 'true' }}
+        run: echo "::notice::Dry-run 模式：Docker 镜像 (${{ matrix.platform }}) 构建成功，跳过推送"
+
   # 合并各平台镜像为 multi-arch manifest
   merge-docker-manifest:
     runs-on: ubuntu-latest
     needs: [release-docker-images]
+    # dry-run 模式下跳过 manifest 合并（没有推送 digest）
+    if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true') }}
     steps:
       - uses: actions/checkout@v4
       - run: echo "GIT_TAG=`echo $(git describe --tags --abbrev=0)`" >> $GITHUB_ENV
@@ -246,3 +294,4 @@ jobs:
 
       - name: Inspect final image
         run: docker buildx imagetools inspect "chigusa/bililive-go:$GIT_TAG"
+
