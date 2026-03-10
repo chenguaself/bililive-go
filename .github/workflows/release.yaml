@@ -187,8 +187,20 @@ jobs:
 
       # 在原生环境中预下载内置工具（避免在 QEMU 下解压 xz 的巨大开销）
       # 版本号和下载 URL 自动从 src/tools/remote-tools-config.json 读取
+      # 缓存策略：以 config hash + 架构作为 key，避免重复下载
+      - name: Cache built-in tools
+        id: cache-tools
+        uses: actions/cache@v4
+        with:
+          path: docker-tools-cache/${{ matrix.arch }}
+          key: docker-tools-${{ matrix.arch }}-${{ hashFiles('src/tools/remote-tools-config.json', 'scripts/docker-prepare-tools.mjs') }}
       - name: Pre-download built-in tools
-        run: node scripts/docker-prepare-tools.mjs "${{ matrix.arch }}" docker-context/tools
+        if: steps.cache-tools.outputs.cache-hit != 'true'
+        run: node scripts/docker-prepare-tools.mjs "${{ matrix.arch }}" docker-tools-cache/${{ matrix.arch }}
+      - name: Copy tools to docker-context
+        run: |
+          mkdir -p docker-context/tools
+          cp -r docker-tools-cache/${{ matrix.arch }}/* docker-context/tools/ 2>/dev/null || true
 
       # 仅 arm/v7 需要 QEMU（用于 apt-get 安装 ffmpeg 等）
       - name: Set up QEMU
