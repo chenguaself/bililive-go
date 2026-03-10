@@ -226,8 +226,17 @@ func (m *manager) RestartRecorder(ctx context.Context, live live.Live) error {
 	// restartingCount 保证 CloseForRestart 期间旧 recorder 仍被计入活跃数量，
 	// 防止 GetActiveRecordingsCount() 误判为"无活跃录制"导致优雅更新被提前触发
 	m.restartingCount.Add(1)
+	defer func() {
+		m.restartingCount.Add(-1)
+		// 收尾完成后检查是否有等待中的优雅更新：
+		// 如果 LiveEnd 在 CloseForRestart 期间移除了新 recorder，
+		// 那次 CheckGracefulUpdate 会因 restartingCount>0 而跳过，
+		// 此处递减后需要再触发一次检查，避免优雅更新永久卡住。
+		if onRecordingEndFunc != nil {
+			bilisentry.GoWithContext(ctx, func(ctx context.Context) { onRecordingEndFunc(ctx) })
+		}
+	}()
 	oldFiles := oldRecorder.CloseForRestart()
-	m.restartingCount.Add(-1)
 	live.GetLogger().Infof("分段重启录制，携带 %d 个历史文件", len(oldFiles))
 
 	// 3. 将旧文件传递给新 recorder（在锁下确认 recorder 仍存在且为预期实例）
