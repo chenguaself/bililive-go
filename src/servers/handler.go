@@ -423,7 +423,7 @@ func parseLiveAction(writer http.ResponseWriter, r *http.Request) {
 	}
 	switch vars["action"] {
 	case "start":
-		if err := startListening(r.Context(), live); err != nil {
+		if err := startListening(inst.Ctx, live); err != nil {
 			resp.ErrNo = http.StatusBadRequest
 			resp.ErrMsg = err.Error()
 			writeJsonWithStatusCode(writer, http.StatusBadRequest, resp)
@@ -437,7 +437,7 @@ func parseLiveAction(writer http.ResponseWriter, r *http.Request) {
 			"live_id": string(live.GetLiveId()),
 		})
 	case "stop":
-		if err := stopListening(r.Context(), live.GetLiveId()); err != nil {
+		if err := stopListening(inst.Ctx, live.GetLiveId()); err != nil {
 			resp.ErrNo = http.StatusBadRequest
 			resp.ErrMsg = err.Error()
 			writeJsonWithStatusCode(writer, http.StatusBadRequest, resp)
@@ -604,9 +604,9 @@ func switchStreamHandler(writer http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if recorderMgr.HasRecorder(r.Context(), live.GetLiveId()) {
+	if recorderMgr.HasRecorder(inst.Ctx, live.GetLiveId()) {
 		// 重启录制器以应用新的流设置
-		if err := recorderMgr.RestartRecorder(r.Context(), live); err != nil {
+		if err := recorderMgr.RestartRecorder(inst.Ctx, live); err != nil {
 			resp.ErrNo = http.StatusInternalServerError
 			resp.ErrMsg = "重启录制器失败: " + err.Error()
 			writeJsonWithStatusCode(writer, http.StatusInternalServerError, resp)
@@ -665,6 +665,7 @@ func stopListening(ctx context.Context, liveId types.LiveID) error {
 ]
 */
 func addLives(writer http.ResponseWriter, r *http.Request) {
+	inst := instance.GetInstance(r.Context())
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeJSON(writer, map[string]any{
@@ -677,7 +678,7 @@ func addLives(writer http.ResponseWriter, r *http.Request) {
 	gjson.ParseBytes(b).ForEach(func(key, value gjson.Result) bool {
 		isListen := value.Get("listen").Bool()
 		urlStr := strings.Trim(value.Get("url").String(), " ")
-		if retInfo, err := addLiveImpl(r.Context(), urlStr, isListen); err != nil {
+		if retInfo, err := addLiveImpl(inst.Ctx, urlStr, isListen); err != nil {
 			msg := urlStr + ": " + err.Error()
 			applog.GetLogger().Error(msg)
 			errorMessages = append(errorMessages, msg)
@@ -752,7 +753,7 @@ func removeLive(writer http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if err := removeLiveImpl(r.Context(), live); err != nil {
+	if err := removeLiveImpl(inst.Ctx, live); err != nil {
 		writeJsonWithStatusCode(writer, http.StatusBadRequest, commonResp{
 			ErrNo:  http.StatusBadRequest,
 			ErrMsg: err.Error(),
@@ -818,6 +819,7 @@ func getRawConfig(writer http.ResponseWriter, r *http.Request) {
 }
 
 func putRawConfig(writer http.ResponseWriter, r *http.Request) {
+	inst := instance.GetInstance(r.Context())
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeJsonWithStatusCode(writer, http.StatusBadRequest, commonResp{
@@ -826,7 +828,7 @@ func putRawConfig(writer http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	ctx := r.Context()
+	ctx := inst.Ctx
 	var jsonBody map[string]any
 	json.Unmarshal(b, &jsonBody)
 	newConfig, err := configs.NewConfigWithBytes([]byte(jsonBody["config"].(string)))
@@ -1436,7 +1438,11 @@ func applyConfigUpdates(c *configs.Config, updates map[string]interface{}) error
 			c.VideoSplitStrategies.MaxDuration = time.Duration(maxDuration)
 		}
 		if maxFileSize, ok := vss["max_file_size"].(float64); ok {
-			c.VideoSplitStrategies.MaxFileSize = int(maxFileSize)
+			c.VideoSplitStrategies.MaxFileSize = configs.ByteSize(int64(maxFileSize))
+		} else if maxFileSizeStr, ok := vss["max_file_size"].(string); ok {
+			if parsed, err := configs.ParseByteSize(maxFileSizeStr); err == nil {
+				c.VideoSplitStrategies.MaxFileSize = parsed
+			}
 		}
 	}
 
@@ -1458,6 +1464,9 @@ func applyConfigUpdates(c *configs.Config, updates map[string]interface{}) error
 
 	// 处理通知配置
 	if notify, ok := updates["notify"].(map[string]interface{}); ok {
+		if sendRecordingSummary, ok := notify["send_recording_summary"].(bool); ok {
+			c.Notify.SendRecordingSummary = sendRecordingSummary
+		}
 		if telegram, ok := notify["telegram"].(map[string]interface{}); ok {
 			if enable, ok := telegram["enable"].(bool); ok {
 				c.Notify.Telegram.Enable = enable
@@ -1490,6 +1499,29 @@ func applyConfigUpdates(c *configs.Config, updates map[string]interface{}) error
 			}
 			if recipientEmail, ok := email["recipientEmail"].(string); ok {
 				c.Notify.Email.RecipientEmail = recipientEmail
+			}
+		}
+		if barkCfg, ok := notify["bark"].(map[string]interface{}); ok {
+			if enable, ok := barkCfg["enable"].(bool); ok {
+				c.Notify.Bark.Enable = enable
+			}
+			if serverURL, ok := barkCfg["serverURL"].(string); ok {
+				c.Notify.Bark.ServerURL = serverURL
+			}
+			if deviceKey, ok := barkCfg["deviceKey"].(string); ok {
+				c.Notify.Bark.DeviceKey = deviceKey
+			}
+			if sound, ok := barkCfg["sound"].(string); ok {
+				c.Notify.Bark.Sound = sound
+			}
+			if group, ok := barkCfg["group"].(string); ok {
+				c.Notify.Bark.Group = group
+			}
+			if icon, ok := barkCfg["icon"].(string); ok {
+				c.Notify.Bark.Icon = icon
+			}
+			if level, ok := barkCfg["level"].(string); ok {
+				c.Notify.Bark.Level = level
 			}
 		}
 	}
