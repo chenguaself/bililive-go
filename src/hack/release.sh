@@ -53,11 +53,6 @@ linux/amd64
 linux/arm64
 linux/arm
 linux/386
-linux/mips
-linux/mips64
-linux/mips64le
-linux/mipsle
-linux/ppc64
 linux/ppc64le
 linux/riscv64
 linux/s390x
@@ -68,10 +63,6 @@ windows/arm64
 windows/386
 freebsd/amd64
 freebsd/arm64
-openbsd/amd64
-openbsd/arm64
-netbsd/amd64
-netbsd/arm64
 "
 # 去除空行
 TARGETS=$(echo "$TARGETS" | sed '/^$/d')
