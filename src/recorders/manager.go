@@ -174,9 +174,11 @@ func (m *manager) addRecorderLocked(ctx context.Context, live live.Live) error {
 		}
 	}
 	if err := recorder.Start(ctx); err != nil {
-		// Start 失败时从 map 删除并 Close 新 recorder，防止泄漏/僵尸实例
+		// Start 失败时从 map 删除并异步 Close 新 recorder，防止泄漏/僵尸实例
+		// 使用异步 Close 避免在持锁时执行耗时操作（如等待 ffmpeg 进程退出），
+		// 防止长时间阻塞其他 manager 操作
 		delete(m.savers, live.GetLiveId())
-		recorder.Close()
+		bilisentry.Go(recorder.Close)
 		return err
 	}
 	return nil
@@ -220,12 +222,14 @@ func (m *manager) RestartRecorder(ctx context.Context, live live.Live) error {
 		return err
 	}
 	newRec := m.savers[live.GetLiveId()]
+	// restartingCount 必须在释放锁之前递增，否则 Unlock 到 Add(1) 之间
+	// LiveEnd 可能移除新 recorder 并看到 restartingCount==0，
+	// 导致 GetActiveRecordingsCount() 误判为"无活跃录制"触发优雅更新
+	m.restartingCount.Add(1)
 	m.lock.Unlock()
 
 	// 2. 锁外执行耗时操作：关闭旧 recorder 并获取累积文件
-	// restartingCount 保证 CloseForRestart 期间旧 recorder 仍被计入活跃数量，
-	// 防止 GetActiveRecordingsCount() 误判为"无活跃录制"导致优雅更新被提前触发
-	m.restartingCount.Add(1)
+	// restartingCount 保证 CloseForRestart 期间旧 recorder 仍被计入活跃数量
 	defer func() {
 		m.restartingCount.Add(-1)
 		// 收尾完成后检查是否有等待中的优雅更新：
