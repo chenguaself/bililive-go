@@ -52,7 +52,6 @@ jobs:
           go-version: '1.25'
           cache: true
           cache-dependency-path: '**/go.sum'
-      - run: go install github.com/golang/mock/mockgen@v1.6.0
       - name: Restore cache of built web (src/webapp/build)
         id: cache_web_build_restore
         uses: actions/cache/restore@v4
