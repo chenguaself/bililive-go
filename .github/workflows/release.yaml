@@ -43,8 +43,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # workflow_dispatch 时可能不在 tag 上，需要 fetch tags
-          fetch-tags: true
+          # fetch-depth: 0 获取完整历史和所有 tags
+          # 注意：不要使用 fetch-tags: true，会导致 tag 触发时 fetch 冲突
+          # 参考: https://github.com/actions/checkout/issues/1467
+          fetch-depth: 0
       - name: Set GIT_TAG
         run: |
           if [ -n "${{ inputs.tag }}" ]; then
@@ -99,7 +101,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-tags: true
+          fetch-depth: 0
       - name: Set GIT_TAG
         run: |
           if [ -n "${{ inputs.tag }}" ]; then
