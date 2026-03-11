@@ -112,8 +112,8 @@ func shouldRunAsLauncher() bool {
 	var appDataPath string
 	if *flag.Conf != "" {
 		// 尝试从配置文件读取 appdata 路径
-		if cfg, err := configs.NewConfigWithFile(*flag.Conf); err == nil {
-			appDataPath = cfg.AppDataPath
+		if parsedPath, err := configs.ReadAppDataPathFromFile(*flag.Conf); err == nil {
+			appDataPath = parsedPath
 		} else {
 			fmt.Fprintf(os.Stderr, "[Launcher] 从配置文件 %s 读取 appdata 路径失败: %v\n", *flag.Conf, err)
 		}
