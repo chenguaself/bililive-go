@@ -793,8 +793,13 @@ func (r *recorder) CloseForRestart() []notify.RecordingFileDetail {
 
 func (r *recorder) SetInitialRecordedFiles(files []notify.RecordingFileDetail) {
 	r.recordedFilesMu.Lock()
-	defer r.recordedFilesMu.Unlock()
-	r.recordedFiles = append(files, r.recordedFiles...)
+	// 分配新 slice 避免修改入参 files 的底层数组，防止调用方持有的切片被意外改变
+	merged := make([]notify.RecordingFileDetail, 0, len(files)+len(r.recordedFiles))
+	merged = append(merged, files...)
+	merged = append(merged, r.recordedFiles...)
+	r.recordedFiles = merged
+	r.recordedFilesMu.Unlock()
+	// 日志不依赖 r.recordedFiles，移到锁外减少持有时间
 	r.getLogger().Infof("继承上一个 recorder 的 %d 个录制文件", len(files))
 }
 
