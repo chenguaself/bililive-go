@@ -2094,27 +2094,60 @@ func getFileInfo(writer http.ResponseWriter, r *http.Request) {
 		Name         string `json:"name"`
 		LastModified int64  `json:"last_modified"`
 		Size         int64  `json:"size"`
+		SubtitleFile string `json:"subtitle_file,omitempty"`
 	}
-	jsonFiles := make([]jsonFile, len(files))
-	json := struct {
-		Files []jsonFile `json:"files"`
-		Path  string     `json:"path"`
-	}{
-		Path: path,
+
+	// First pass: separate ASS files and build base-name -> ASS file map
+	assFiles := make(map[string]string) // baseName (no ext) -> ass filename
+	type fileEntry struct {
+		dir  os.DirEntry
+		info os.FileInfo
 	}
-	for i, file := range files {
+	var validFiles []fileEntry
+	for _, file := range files {
 		info, err := file.Info()
 		if err != nil {
 			continue
 		}
-		jsonFiles[i].IsFolder = file.IsDir()
-		jsonFiles[i].Name = file.Name()
-		jsonFiles[i].LastModified = info.ModTime().Unix()
-		if !file.IsDir() {
-			jsonFiles[i].Size = info.Size()
+		name := file.Name()
+		if !file.IsDir() && strings.HasSuffix(strings.ToLower(name), ".ass") {
+			// Register ASS file by base name (without extension)
+			baseName := name[:len(name)-4]
+			assFiles[baseName] = name
+		} else {
+			validFiles = append(validFiles, fileEntry{dir: file, info: info})
 		}
 	}
-	json.Files = jsonFiles
+
+	// Second pass: build response, attaching subtitle info to video files
+	jsonFiles := make([]jsonFile, 0, len(validFiles))
+	for _, fe := range validFiles {
+		jf := jsonFile{
+			IsFolder:     fe.dir.IsDir(),
+			Name:         fe.dir.Name(),
+			LastModified: fe.info.ModTime().Unix(),
+		}
+		if !fe.dir.IsDir() {
+			jf.Size = fe.info.Size()
+			// Check if this file has an associated ASS subtitle
+			baseName := fe.dir.Name()
+			if idx := strings.LastIndex(baseName, "."); idx > 0 {
+				baseName = baseName[:idx]
+			}
+			if assName, ok := assFiles[baseName]; ok {
+				jf.SubtitleFile = assName
+			}
+		}
+		jsonFiles = append(jsonFiles, jf)
+	}
+
+	json := struct {
+		Files []jsonFile `json:"files"`
+		Path  string     `json:"path"`
+	}{
+		Files: jsonFiles,
+		Path:  path,
+	}
 
 	writeJSON(writer, json)
 }
@@ -2212,6 +2245,17 @@ func renameFile(writer http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 同步重命名关联的 ASS 弹幕文件
+	if !info.IsDir() {
+		oldBase := strings.TrimSuffix(oldAbsPath, filepath.Ext(oldAbsPath))
+		newBase := strings.TrimSuffix(newAbsPath, filepath.Ext(newAbsPath))
+		oldAss := oldBase + ".ass"
+		newAss := newBase + ".ass"
+		if _, err := os.Stat(oldAss); err == nil {
+			os.Rename(oldAss, newAss)
+		}
+	}
+
 	writeJSON(writer, commonResp{Data: "OK"})
 }
 
@@ -2229,6 +2273,14 @@ func deleteFile(writer http.ResponseWriter, r *http.Request) {
 	if err != nil || absPath == base {
 		writeJSON(writer, commonResp{ErrNo: 400, ErrMsg: "禁止删除根目录或无效/越权路径"})
 		return
+	}
+
+	// 删除关联的 ASS 弹幕文件
+	if info, err := os.Stat(absPath); err == nil && !info.IsDir() {
+		assPath := strings.TrimSuffix(absPath, filepath.Ext(absPath)) + ".ass"
+		if _, err := os.Stat(assPath); err == nil {
+			os.Remove(assPath)
+		}
 	}
 
 	if err := os.RemoveAll(absPath); err != nil {
@@ -2312,6 +2364,16 @@ func batchRenameFiles(writer http.ResponseWriter, r *http.Request) {
 			results = append(results, Result{Path: path, Success: false, Message: translateOSError(err)})
 		} else {
 			results = append(results, Result{Path: path, Success: true, Message: "成功"})
+			// 同步重命名关联的 ASS 弹幕文件
+			if !info.IsDir() {
+				oldBase := strings.TrimSuffix(oldAbsPath, filepath.Ext(oldAbsPath))
+				newBase := strings.TrimSuffix(newAbsPath, filepath.Ext(newAbsPath))
+				oldAss := oldBase + ".ass"
+				newAss := newBase + ".ass"
+				if _, err := os.Stat(oldAss); err == nil {
+					os.Rename(oldAss, newAss)
+				}
+			}
 		}
 	}
 
@@ -2346,6 +2408,14 @@ func batchDeleteFiles(writer http.ResponseWriter, r *http.Request) {
 		if err != nil || absPath == base {
 			results = append(results, Result{Path: path, Success: false, Message: "禁止操作根目录或越权路径"})
 			continue
+		}
+
+		// 删除关联的 ASS 弹幕文件
+		if info, err := os.Stat(absPath); err == nil && !info.IsDir() {
+			assPath := strings.TrimSuffix(absPath, filepath.Ext(absPath)) + ".ass"
+			if _, err := os.Stat(assPath); err == nil {
+				os.Remove(assPath)
+			}
 		}
 
 		if err := os.RemoveAll(absPath); err != nil {

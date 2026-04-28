@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import API from "../../utils/api";
-import { Breadcrumb, Table, Button, Modal, Input, Popconfirm, message, Space } from "antd";
+import { Breadcrumb, Table, Button, Modal, Input, Popconfirm, message, Space, Tooltip } from "antd";
 import {
     // @ts-ignore
     FolderOutlined,
@@ -26,6 +26,7 @@ type CurrentFolderFile = {
     name: string;
     last_modified: number;
     size: number;
+    subtitle_file?: string;
 }
 
 const FileList: React.FC = () => {
@@ -386,6 +387,13 @@ const FileList: React.FC = () => {
                     <div className="file-name-cell">
                         {record.is_folder ? <FolderOutlined style={{ color: '#1890ff', fontSize: '16px' }} /> : <FileOutlined style={{ fontSize: '16px' }} />}
                         <span className="name-text">{record.name}</span>
+                        {record.subtitle_file && (
+                            <Tooltip title={`弹幕字幕: ${record.subtitle_file}`}>
+                                <span style={{ marginLeft: 6, fontSize: 11, color: '#1890ff', background: '#e6f4ff', padding: '1px 6px', borderRadius: 4, cursor: 'default' }}>
+                                    弹幕
+                                </span>
+                            </Tooltip>
+                        )}
                     </div>
                 );
             }
