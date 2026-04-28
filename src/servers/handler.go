@@ -1047,13 +1047,21 @@ func getPlatformStats(writer http.ResponseWriter, r *http.Request) {
 			platformKey = "unknown"
 		}
 
+		// 计算 LiveId（从 URL 生成，与 live/internal/genLiveId 逻辑一致）
+		var liveId string
+		if room.LiveId != "" {
+			liveId = string(room.LiveId)
+		} else if parsedUrl, err := url.Parse(room.Url); err == nil {
+			liveId = string(types.LiveID(utils.GetMd5String([]byte(parsedUrl.Host + parsedUrl.Path))))
+		}
+
 		roomInfo := map[string]interface{}{
 			"url":          room.Url,
 			"is_listening": room.IsListening,
 			"quality":      room.Quality,
 			"audio_only":   room.AudioOnly,
 			"nick_name":    room.NickName,
-			"live_id":      string(room.LiveId),
+			"live_id":      liveId,
 			"room_config": map[string]interface{}{
 				"danmaku_enable": room.DanmakuEnable,
 				"danmaku":        room.Danmaku,
@@ -1738,12 +1746,24 @@ func updateRoomConfigById(writer http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err = configs.UpdateWithRetry(func(c *configs.Config) error {
-		// 查找直播间
+		// 查找直播间（先按 LiveId，回退按 URL 计算的 hash）
 		roomIdx := -1
 		for i, room := range c.LiveRooms {
 			if string(room.LiveId) == liveId {
 				roomIdx = i
 				break
+			}
+		}
+		// LiveId 可能未初始化（yaml:"-"），回退按 URL 计算 hash 匹配
+		if roomIdx == -1 {
+			for i, room := range c.LiveRooms {
+				if parsedUrl, err := url.Parse(room.Url); err == nil {
+					computedId := string(types.LiveID(utils.GetMd5String([]byte(parsedUrl.Host + parsedUrl.Path))))
+					if computedId == liveId {
+						roomIdx = i
+						break
+					}
+				}
 			}
 		}
 

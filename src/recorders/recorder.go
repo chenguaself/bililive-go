@@ -209,6 +209,7 @@ type recorder struct {
 	startTime  time.Time
 	parser     parser.Parser
 	parserLock *sync.RWMutex
+	danmakuRec *danmaku.DanmakuRecorder
 
 	stop  chan struct{}
 	state uint32
@@ -490,17 +491,17 @@ func (r *recorder) tryRecord(ctx context.Context) {
 	r.startTime = time.Now()
 
 	// 弹幕录制（仅哔哩哔哩平台）
-	var danmakuRec *danmaku.DanmakuRecorder
+	r.danmakuRec = nil
 	if resolvedConfig.DanmakuEnable && r.Live.GetPlatformCNName() == "哔哩哔哩" {
 		assFile := fileName[:strings.LastIndex(fileName, ".")] + ".ass"
 		roomID := extractRoomIDFromUrl(r.Live.GetRawUrl())
 		cookies := extractCookiesString(r.Live)
 		if roomID > 0 {
 			r.getLogger().Infof("弹幕录制已启用，房间ID: %d, 输出: %s", roomID, assFile)
-			danmakuRec = danmaku.NewDanmakuRecorder(roomID, cookies, assFile, resolvedConfig.Danmaku, r.getLogger().Entry)
-			if dmErr := danmakuRec.Start(ctx); dmErr != nil {
+			r.danmakuRec = danmaku.NewDanmakuRecorder(roomID, cookies, assFile, resolvedConfig.Danmaku, r.getLogger().Entry)
+			if dmErr := r.danmakuRec.Start(ctx); dmErr != nil {
 				r.getLogger().WithError(dmErr).Warn("弹幕录制启动失败，继续录制视频")
-				danmakuRec = nil
+				r.danmakuRec = nil
 			}
 		} else {
 			r.getLogger().Warn("弹幕录制已启用但无法解析房间ID: " + r.Live.GetRawUrl())
@@ -517,10 +518,10 @@ func (r *recorder) tryRecord(ctx context.Context) {
 	r.setCurrentFilePath("")
 
 	// 停止弹幕录制并累积文件
-	if danmakuRec != nil {
-		danmakuRec.Stop()
-		if fi, dmErr := os.Stat(danmakuRec.OutputFile()); dmErr == nil && fi.Size() > 0 {
-			r.accumulateRecordedFiles(danmakuRec.OutputFile())
+	if r.danmakuRec != nil {
+		r.danmakuRec.Stop()
+		if fi, dmErr := os.Stat(r.danmakuRec.OutputFile()); dmErr == nil && fi.Size() > 0 {
+			r.accumulateRecordedFiles(r.danmakuRec.OutputFile())
 		}
 	}
 
@@ -1062,6 +1063,13 @@ func (r *recorder) GetStatus() (map[string]interface{}, error) {
 		status["stream_headers"] = sanitizeHeaders(r.currentStreamHeaders)
 	}
 	r.currentFileLock.RUnlock()
+
+	// 弹幕录制状态
+	if r.danmakuRec != nil {
+		for k, v := range r.danmakuRec.GetStatus() {
+			status[k] = v
+		}
+	}
 
 	return status, nil
 }
