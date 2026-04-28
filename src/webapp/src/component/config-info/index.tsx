@@ -81,6 +81,15 @@ interface EffectiveConfig {
   };
   timeout_in_us: number;
   timeout_in_seconds: number;
+  danmaku_enable: boolean;
+  danmaku: {
+    font_size: number;
+    font_name: string;
+    scroll_time: number;
+    resolution: string;
+    outline: number;
+    opacity: number;
+  };
   notify: {
     send_recording_summary: boolean;
     telegram: {

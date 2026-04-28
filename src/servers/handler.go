@@ -1054,6 +1054,10 @@ func getPlatformStats(writer http.ResponseWriter, r *http.Request) {
 			"audio_only":   room.AudioOnly,
 			"nick_name":    room.NickName,
 			"live_id":      string(room.LiveId),
+			"room_config": map[string]interface{}{
+				"danmaku_enable": room.DanmakuEnable,
+				"danmaku":        room.Danmaku,
+			},
 		}
 
 		// 从缓存获取直播间信息（不触发网络请求）
@@ -1400,6 +1404,32 @@ func applyConfigUpdates(c *configs.Config, updates map[string]interface{}) error
 	if toolRootFolder, ok := updates["tool_root_folder"].(string); ok {
 		c.ToolRootFolder = toolRootFolder
 	}
+	if danmakuEnable, ok := updates["danmaku_enable"].(bool); ok {
+		c.DanmakuEnable = danmakuEnable
+	}
+	if danmaku, ok := updates["danmaku"].(map[string]interface{}); ok {
+		if fontSize, ok := danmaku["font_size"].(float64); ok {
+			c.Danmaku.FontSize = int(fontSize)
+		}
+		if fontName, ok := danmaku["font_name"].(string); ok {
+			c.Danmaku.FontName = fontName
+		}
+		if scrollTime, ok := danmaku["scroll_time"].(float64); ok {
+			c.Danmaku.ScrollTime = int(scrollTime)
+		}
+		if resolution, ok := danmaku["resolution"].(string); ok {
+			c.Danmaku.Resolution = resolution
+		}
+		if outline, ok := danmaku["outline"].(float64); ok {
+			c.Danmaku.Outline = int(outline)
+		}
+		if opacity, ok := danmaku["opacity"].(float64); ok {
+			c.Danmaku.Opacity = int(opacity)
+		}
+		if err := c.Danmaku.Validate(); err != nil {
+			return fmt.Errorf("弹幕参数无效: %w", err)
+		}
+	}
 	if soopAuth, ok := updates["sooplive_auth"].(map[string]interface{}); ok {
 		if username, ok := soopAuth["username"].(string); ok {
 			c.SoopLiveAuth.Username = username
@@ -1635,6 +1665,13 @@ func updatePlatformConfig(writer http.ResponseWriter, r *http.Request) {
 		// 使用助手函数更新可覆盖配置
 		applyOverridableConfigUpdates(&pc.OverridableConfig, updates)
 
+		// 验证弹幕配置有效性
+		if pc.Danmaku != nil {
+			if err := pc.Danmaku.Validate(); err != nil {
+				return fmt.Errorf("弹幕参数无效: %w", err)
+			}
+		}
+
 		c.PlatformConfigs[platformKey] = pc
 		return nil
 	}, 3, 10*time.Millisecond)
@@ -1735,6 +1772,13 @@ func updateRoomConfigById(writer http.ResponseWriter, r *http.Request) {
 
 		// 更新可覆盖配置
 		applyOverridableConfigUpdates(&room.OverridableConfig, updates)
+
+		// 验证弹幕配置有效性
+		if room.Danmaku != nil {
+			if err := room.Danmaku.Validate(); err != nil {
+				return fmt.Errorf("弹幕参数无效: %w", err)
+			}
+		}
 
 		return nil
 	}, 3, 10*time.Millisecond)
@@ -1846,6 +1890,44 @@ func applyOverridableConfigUpdates(oc *configs.OverridableConfig, updates map[st
 		if oc.StreamPreference.Quality == nil && oc.StreamPreference.Attributes == nil {
 			oc.StreamPreference = nil
 		}
+	}
+
+	// 处理 danmaku_enable 配置
+	if danmakuEnable, ok := updates["danmaku_enable"].(bool); ok {
+		oc.DanmakuEnable = &danmakuEnable
+	} else if _, exists := updates["danmaku_enable"]; exists && updates["danmaku_enable"] == nil {
+		// 显式 null → 清除覆盖，恢复继承
+		oc.DanmakuEnable = nil
+	}
+
+	// 处理 danmaku 弹幕参数配置
+	if danmaku, ok := updates["danmaku"].(map[string]interface{}); ok {
+		if oc.Danmaku == nil {
+			// 从全局默认值初始化，避免未设置的字段被覆盖为零值
+			defaultCfg := configs.GetDefaultDanmakuConfig()
+			oc.Danmaku = &defaultCfg
+		}
+		if fontSize, ok := danmaku["font_size"].(float64); ok {
+			oc.Danmaku.FontSize = int(fontSize)
+		}
+		if fontName, ok := danmaku["font_name"].(string); ok {
+			oc.Danmaku.FontName = fontName
+		}
+		if scrollTime, ok := danmaku["scroll_time"].(float64); ok {
+			oc.Danmaku.ScrollTime = int(scrollTime)
+		}
+		if resolution, ok := danmaku["resolution"].(string); ok {
+			oc.Danmaku.Resolution = resolution
+		}
+		if outline, ok := danmaku["outline"].(float64); ok {
+			oc.Danmaku.Outline = int(outline)
+		}
+		if opacity, ok := danmaku["opacity"].(float64); ok {
+			oc.Danmaku.Opacity = int(opacity)
+		}
+	} else if _, exists := updates["danmaku"]; exists && updates["danmaku"] == nil {
+		// 显式 null → 清除覆盖，恢复继承
+		oc.Danmaku = nil
 	}
 }
 

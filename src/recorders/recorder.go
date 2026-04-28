@@ -37,6 +37,7 @@ import (
 	bilisentry "github.com/bililive-go/bililive-go/src/pkg/sentry"
 	"github.com/bililive-go/bililive-go/src/pkg/streamprobe"
 	"github.com/bililive-go/bililive-go/src/pkg/utils"
+	"github.com/bililive-go/bililive-go/src/recorders/danmaku"
 )
 
 const (
@@ -488,6 +489,24 @@ func (r *recorder) tryRecord(ctx context.Context) {
 	r.setAndCloseParser(p)
 	r.startTime = time.Now()
 
+	// 弹幕录制（仅哔哩哔哩平台）
+	var danmakuRec *danmaku.DanmakuRecorder
+	if resolvedConfig.DanmakuEnable && r.Live.GetPlatformCNName() == "哔哩哔哩" {
+		assFile := fileName[:strings.LastIndex(fileName, ".")] + ".ass"
+		roomID := extractRoomIDFromUrl(r.Live.GetRawUrl())
+		cookies := extractCookiesString(r.Live)
+		if roomID > 0 {
+			r.getLogger().Infof("弹幕录制已启用，房间ID: %d, 输出: %s", roomID, assFile)
+			danmakuRec = danmaku.NewDanmakuRecorder(roomID, cookies, assFile, resolvedConfig.Danmaku, r.getLogger().Entry)
+			if dmErr := danmakuRec.Start(ctx); dmErr != nil {
+				r.getLogger().WithError(dmErr).Warn("弹幕录制启动失败，继续录制视频")
+				danmakuRec = nil
+			}
+		} else {
+			r.getLogger().Warn("弹幕录制已启用但无法解析房间ID: " + r.Live.GetRawUrl())
+		}
+	}
+
 	// 设置当前录制文件路径
 	r.setCurrentFilePath(fileName)
 
@@ -496,6 +515,14 @@ func (r *recorder) tryRecord(ctx context.Context) {
 
 	// 清除当前录制文件路径
 	r.setCurrentFilePath("")
+
+	// 停止弹幕录制并累积文件
+	if danmakuRec != nil {
+		danmakuRec.Stop()
+		if fi, dmErr := os.Stat(danmakuRec.OutputFile()); dmErr == nil && fi.Size() > 0 {
+			r.accumulateRecordedFiles(danmakuRec.OutputFile())
+		}
+	}
 
 	if err != nil {
 		r.getLogger().WithError(err).Error("failed to parse live stream")
@@ -1284,4 +1311,43 @@ func maskValue(v string) string {
 		return v[:4] + "***"
 	}
 	return v[:4] + "***" + v[len(v)-4:]
+}
+
+// extractRoomIDFromUrl extracts the numeric room ID from a Bilibili live URL path.
+// Returns 0 if the URL doesn't contain a valid room ID.
+func extractRoomIDFromUrl(rawUrl string) int {
+	u, err := url.Parse(rawUrl)
+	if err != nil {
+		return 0
+	}
+	paths := strings.Split(u.Path, "/")
+	if len(paths) < 2 {
+		return 0
+	}
+	id, err := strconv.Atoi(paths[1])
+	if err != nil {
+		return 0
+	}
+	return id
+}
+
+// extractCookiesString extracts cookies from the Live's cookie jar as a semicolon-separated string.
+func extractCookiesString(l live.Live) string {
+	opts := l.GetOptions()
+	if opts == nil || opts.Cookies == nil {
+		return ""
+	}
+	u, err := url.Parse(l.GetRawUrl())
+	if err != nil {
+		return ""
+	}
+	cookies := opts.Cookies.Cookies(u)
+	if len(cookies) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(cookies))
+	for _, c := range cookies {
+		parts = append(parts, c.Name+"="+c.Value)
+	}
+	return strings.Join(parts, "; ")
 }

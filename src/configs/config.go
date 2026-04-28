@@ -75,6 +75,69 @@ func (f *Feature) GetEffectiveDownloaderType() DownloaderType {
 	return DownloaderFFmpeg
 }
 
+// DanmakuConfig 弹幕录制配置
+type DanmakuConfig struct {
+	FontSize   int    `yaml:"font_size" json:"font_size"`     // 字体大小 (12~120)
+	FontName   string `yaml:"font_name" json:"font_name"`     // 字体名称
+	ScrollTime int    `yaml:"scroll_time" json:"scroll_time"` // 弹幕滚过屏幕的秒数 (5~20)
+	Resolution string `yaml:"resolution" json:"resolution"`   // 播放分辨率
+	Outline    int    `yaml:"outline" json:"outline"`         // 描边粗细 (0~4)
+	Opacity    int    `yaml:"opacity" json:"opacity"`         // 背景透明度 (0~255)
+}
+
+var defaultDanmakuConfig = DanmakuConfig{
+	FontSize:   36,
+	FontName:   "Microsoft YaHei",
+	ScrollTime: 10,
+	Resolution: "1920x1080",
+	Outline:    1,
+	Opacity:    128,
+}
+
+// validResolutions 支持的分辨率列表
+var validResolutions = map[string]bool{
+	"1920x1080": true,
+	"1280x720":  true,
+	"2560x1440": true,
+	"3840x2160": true,
+}
+
+// Validate 验证弹幕配置参数的有效性
+func (d *DanmakuConfig) Validate() error {
+	if d.FontSize < 12 || d.FontSize > 120 {
+		return fmt.Errorf("字体大小必须在 12~120 之间，当前值: %d", d.FontSize)
+	}
+	if d.FontName == "" {
+		return fmt.Errorf("字体名称不能为空")
+	}
+	if d.ScrollTime < 5 || d.ScrollTime > 20 {
+		return fmt.Errorf("滚动时间必须在 5~20 秒之间，当前值: %d", d.ScrollTime)
+	}
+	if !validResolutions[d.Resolution] {
+		return fmt.Errorf("不支持的分辨率: %s，可选值: 1920x1080, 1280x720, 2560x1440, 3840x2160", d.Resolution)
+	}
+	if d.Outline < 0 || d.Outline > 4 {
+		return fmt.Errorf("描边粗细必须在 0~4 之间，当前值: %d", d.Outline)
+	}
+	if d.Opacity < 0 || d.Opacity > 255 {
+		return fmt.Errorf("背景透明度必须在 0~255 之间，当前值: %d", d.Opacity)
+	}
+	return nil
+}
+
+// mergeDanmakuConfig 合并弹幕配置，override 非 nil 时直接覆盖 base
+func mergeDanmakuConfig(base, override *DanmakuConfig) DanmakuConfig {
+	if override == nil {
+		return *base
+	}
+	return *override
+}
+
+// GetDefaultDanmakuConfig 返回弹幕配置的默认值
+func GetDefaultDanmakuConfig() DanmakuConfig {
+	return defaultDanmakuConfig
+}
+
 // VideoSplitStrategies info.
 type VideoSplitStrategies struct {
 	OnRoomNameChanged bool          `yaml:"on_room_name_changed" json:"on_room_name_changed"`
@@ -239,6 +302,8 @@ type OverridableConfig struct {
 	OnRecordFinished     *OnRecordFinished     `yaml:"on_record_finished,omitempty" json:"on_record_finished,omitempty"`         // 录制完成后的动作
 	TimeoutInUs          *int                  `yaml:"timeout_in_us,omitempty" json:"timeout_in_us,omitempty"`                   // 超时设置(微秒)
 	StreamPreference     *StreamPreference     `yaml:"stream_preference,omitempty" json:"stream_preference,omitempty"`           // 流偏好配置
+	DanmakuEnable        *bool                 `yaml:"danmaku_enable,omitempty" json:"danmaku_enable,omitempty"`                 // 是否录制弹幕（仅哔哩哔哩）
+	Danmaku              *DanmakuConfig        `yaml:"danmaku,omitempty" json:"danmaku,omitempty"`                               // 弹幕录制参数
 }
 
 // PlatformConfig 包含平台特定的设置
@@ -288,6 +353,8 @@ type Config struct {
 	VideoSplitStrategies VideoSplitStrategies `yaml:"video_split_strategies" json:"video_split_strategies"`
 	OnRecordFinished     OnRecordFinished     `yaml:"on_record_finished" json:"on_record_finished"`
 	TimeoutInUs          int                  `yaml:"timeout_in_us" json:"timeout_in_us"`
+	DanmakuEnable        bool                 `yaml:"danmaku_enable" json:"danmaku_enable"`
+	Danmaku              DanmakuConfig        `yaml:"danmaku" json:"danmaku"`
 
 	// 流偏好配置 - 两套系统并存
 	StreamPreference StreamPreference `yaml:"stream_preference,omitempty" json:"stream_preference,omitempty"` // 新版（渐进迁移中）
@@ -660,6 +727,7 @@ var defaultConfig = Config{
 		UploadTiming: UploadTimingAfterProcess,
 	},
 	TimeoutInUs: 60000000,
+	Danmaku:     defaultDanmakuConfig,
 	Notify: Notify{
 		SendRecordingSummary: false,
 		Telegram: Telegram{
@@ -772,6 +840,11 @@ func (c *Config) Verify() error {
 	// 验证平台配置
 	if err := c.ValidatePlatformConfigs(); err != nil {
 		return err
+	}
+
+	// 验证弹幕配置
+	if err := c.Danmaku.Validate(); err != nil {
+		return fmt.Errorf("弹幕配置无效: %w", err)
 	}
 
 	return nil
@@ -949,6 +1022,8 @@ func (c *Config) ResolveConfigForRoom(room *LiveRoom, platformName string) Resol
 		VideoSplitStrategies: c.VideoSplitStrategies,
 		OnRecordFinished:     c.OnRecordFinished,
 		TimeoutInUs:          c.TimeoutInUs,
+		DanmakuEnable:        c.DanmakuEnable,
+		Danmaku:              c.Danmaku,
 	}
 
 	// 应用平台级覆盖
@@ -1008,6 +1083,8 @@ type ResolvedConfig struct {
 	OnRecordFinished     OnRecordFinished     `json:"on_record_finished"`
 	TimeoutInUs          int                  `json:"timeout_in_us"`
 	StreamPreference     StreamPreference     `json:"stream_preference"`
+	DanmakuEnable        bool                 `json:"danmaku_enable"`
+	Danmaku              DanmakuConfig        `json:"danmaku"`
 }
 
 // applyOverrides 将可覆盖配置中的非空值应用到解析配置中
@@ -1041,6 +1118,12 @@ func (r *ResolvedConfig) applyOverrides(override *OverridableConfig) {
 	}
 	if override.StreamPreference != nil {
 		r.StreamPreference = *MergeStreamPreference(&r.StreamPreference, override.StreamPreference)
+	}
+	if override.DanmakuEnable != nil {
+		r.DanmakuEnable = *override.DanmakuEnable
+	}
+	if override.Danmaku != nil {
+		r.Danmaku = mergeDanmakuConfig(&r.Danmaku, override.Danmaku)
 	}
 }
 
@@ -1115,6 +1198,13 @@ func (c *Config) ValidatePlatformConfigs() error {
 		if platformConfig.OutPutPath != nil {
 			if _, err := os.Stat(*platformConfig.OutPutPath); os.IsNotExist(err) {
 				return fmt.Errorf("平台 '%s': 输出路径 '%s' 不存在", platformKey, *platformConfig.OutPutPath)
+			}
+		}
+
+		// 验证弹幕配置（如果指定）
+		if platformConfig.Danmaku != nil {
+			if err := platformConfig.Danmaku.Validate(); err != nil {
+				return fmt.Errorf("平台 '%s': 弹幕配置无效: %w", platformKey, err)
 			}
 		}
 	}
