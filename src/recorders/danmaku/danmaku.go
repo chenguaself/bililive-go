@@ -99,3 +99,22 @@ func (d *DanmakuRecorder) Stop() {
 func (d *DanmakuRecorder) OutputFile() string {
 	return d.outputFile
 }
+
+// GetCount returns the number of danmaku received so far.
+func (d *DanmakuRecorder) GetCount() int {
+	return d.count
+}
+
+// IsRunning returns whether the danmaku WebSocket client is active.
+func (d *DanmakuRecorder) IsRunning() bool {
+	return d.client != nil
+}
+
+// GetStatus returns the current danmaku recording status.
+func (d *DanmakuRecorder) GetStatus() map[string]interface{} {
+	return map[string]interface{}{
+		"danmaku_running":    d.IsRunning(),
+		"danmaku_count":      d.count,
+		"danmaku_output":     d.outputFile,
+	}
+}
