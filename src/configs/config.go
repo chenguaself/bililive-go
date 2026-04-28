@@ -77,21 +77,30 @@ func (f *Feature) GetEffectiveDownloaderType() DownloaderType {
 
 // DanmakuConfig 弹幕录制配置
 type DanmakuConfig struct {
-	FontSize   int    `yaml:"font_size" json:"font_size"`     // 字体大小 (12~120)
-	FontName   string `yaml:"font_name" json:"font_name"`     // 字体名称
-	ScrollTime int    `yaml:"scroll_time" json:"scroll_time"` // 弹幕滚过屏幕的秒数 (5~20)
-	Resolution string `yaml:"resolution" json:"resolution"`   // 播放分辨率
-	Outline    int    `yaml:"outline" json:"outline"`         // 描边粗细 (0~4)
-	Opacity    int    `yaml:"opacity" json:"opacity"`         // 背景透明度 (0~255)
+	FontSize    int    `yaml:"font_size" json:"font_size"`       // 字体大小 (12~120)
+	FontName    string `yaml:"font_name" json:"font_name"`       // 字体名称
+	ScrollArea  string `yaml:"scroll_area" json:"scroll_area"`   // 滚动区域: full(全屏), top(顶部), bottom(底部)
+	ScrollTime  int    `yaml:"scroll_time" json:"scroll_time"`   // 弹幕滚过屏幕的秒数 (5~20)
+	Resolution  string `yaml:"resolution" json:"resolution"`     // 播放分辨率
+	Outline     int    `yaml:"outline" json:"outline"`           // 描边粗细 (0~4)
+	Opacity     int    `yaml:"opacity" json:"opacity"`           // 背景透明度 (0~255)
 }
 
 var defaultDanmakuConfig = DanmakuConfig{
 	FontSize:   36,
 	FontName:   "Microsoft YaHei",
+	ScrollArea: "full",
 	ScrollTime: 10,
 	Resolution: "1920x1080",
 	Outline:    1,
 	Opacity:    128,
+}
+
+// validScrollAreas 支持的滚动区域
+var validScrollAreas = map[string]bool{
+	"full":   true, // 全屏滚动
+	"top":    true, // 仅在屏幕上半部分滚动
+	"bottom": true, // 仅在屏幕下半部分滚动
 }
 
 // validResolutions 支持的分辨率列表
@@ -109,6 +118,12 @@ func (d *DanmakuConfig) Validate() error {
 	}
 	if d.FontName == "" {
 		return fmt.Errorf("字体名称不能为空")
+	}
+	if d.ScrollArea == "" {
+		d.ScrollArea = "full"
+	}
+	if !validScrollAreas[d.ScrollArea] {
+		return fmt.Errorf("不支持的滚动区域: %s，可选值: full, top, bottom", d.ScrollArea)
 	}
 	if d.ScrollTime < 5 || d.ScrollTime > 20 {
 		return fmt.Errorf("滚动时间必须在 5~20 秒之间，当前值: %d", d.ScrollTime)

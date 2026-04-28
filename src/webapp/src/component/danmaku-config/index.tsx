@@ -10,6 +10,7 @@ const api = new API();
 const DEFAULT_DANMAKU: DanmakuConfig = {
   font_size: 36,
   font_name: 'Microsoft YaHei',
+  scroll_area: 'full',
   scroll_time: 10,
   resolution: '1920x1080',
   outline: 1,
@@ -19,6 +20,7 @@ const DEFAULT_DANMAKU: DanmakuConfig = {
 interface DanmakuConfig {
   font_size: number;
   font_name: string;
+  scroll_area: string;
   scroll_time: number;
   resolution: string;
   outline: number;
@@ -140,7 +142,16 @@ const DanmakuParamForm: React.FC<{
           ]} />
         </Form.Item>
         <Form.Item
-          label={<span>滚动时间 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>弹幕从右侧出现到左侧消失经过整屏的秒数，越短越快</span></span>}
+          label={<span>滚动区域 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>弹幕在屏幕上的滚动范围</span></span>}
+          name={['danmaku', 'scroll_area']}>
+          <Select options={[
+            { label: '全屏', value: 'full' },
+            { label: '顶部半屏', value: 'top' },
+            { label: '底部半屏', value: 'bottom' },
+          ]} />
+        </Form.Item>
+        <Form.Item
+          label={<span>滚动时间 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>弹幕滚过整屏的秒数，越短越快</span></span>}
           name={['danmaku', 'scroll_time']}
           rules={[{ required: true, message: '必填' }, { type: 'number', min: 5, max: 20, message: '5~20' }]}>
           <InputNumber min={5} max={20} style={{ width: '100%' }} addonAfter="秒" />

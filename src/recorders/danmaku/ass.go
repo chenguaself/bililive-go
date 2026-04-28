@@ -11,7 +11,7 @@ import (
 	"github.com/bililive-go/bililive-go/src/configs"
 )
 
-// AssWriter writes danmaku entries to an ASS (Advanced SubStation Alpha) subtitle file.
+// AssWriter writes danmaku entries to an ASS subtitle file.
 type AssWriter struct {
 	mu          sync.Mutex
 	file        *os.File
@@ -19,13 +19,14 @@ type AssWriter struct {
 	cfg         configs.DanmakuConfig
 	resX        int
 	resY        int
-	bannerSpeed int // ASS Banner speed (ms per pixel shift)
-	laneNum     int
+	bannerSpeed int // ASS Banner speed (ms per pixel)
+	laneStart   int // first usable lane index
+	laneEnd     int // last usable lane index (exclusive)
+	laneNum     int // total lanes in the usable range
 	nextLane    int
 	laneLast    []int64 // last end time (centiseconds) per lane
 }
 
-// parseResolution parses "1920x1080" into (1920, 1080).
 func parseResolution(res string) (int, int) {
 	parts := strings.SplitN(res, "x", 2)
 	if len(parts) != 2 {
@@ -39,7 +40,6 @@ func parseResolution(res string) (int, int) {
 	return x, y
 }
 
-// NewAssWriter creates a new ASS writer.
 func NewAssWriter(filePath string, startAt time.Time, cfg configs.DanmakuConfig) (*AssWriter, error) {
 	f, err := os.Create(filePath)
 	if err != nil {
@@ -47,13 +47,31 @@ func NewAssWriter(filePath string, startAt time.Time, cfg configs.DanmakuConfig)
 	}
 
 	resX, resY := parseResolution(cfg.Resolution)
-	// Banner speed: ms per pixel = scroll_time * 1000 / screen_width
 	bannerSpeed := cfg.ScrollTime * 1000 / resX
 	if bannerSpeed < 1 {
 		bannerSpeed = 1
 	}
+
 	laneHeight := cfg.FontSize + 4
-	laneNum := resY / laneHeight
+	totalLanes := resY / laneHeight
+
+	// Determine usable lane range based on scroll_area
+	laneStart := 0
+	laneEnd := totalLanes
+	area := cfg.ScrollArea
+	if area == "" {
+		area = "full"
+	}
+	switch area {
+	case "top":
+		laneEnd = totalLanes / 2
+	case "bottom":
+		laneStart = totalLanes / 2
+	}
+	laneNum := laneEnd - laneStart
+	if laneNum < 1 {
+		laneNum = 1
+	}
 
 	w := &AssWriter{
 		file:        f,
@@ -62,6 +80,8 @@ func NewAssWriter(filePath string, startAt time.Time, cfg configs.DanmakuConfig)
 		resX:        resX,
 		resY:        resY,
 		bannerSpeed: bannerSpeed,
+		laneStart:   laneStart,
+		laneEnd:     laneEnd,
 		laneNum:     laneNum,
 		nextLane:    0,
 		laneLast:    make([]int64, laneNum),
@@ -97,23 +117,19 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 	return err
 }
 
-// estimateTextWidth estimates the pixel width of danmaku text.
-// CJK characters are ~fontSize wide, ASCII characters are ~fontSize*0.5 wide.
 func (w *AssWriter) estimateTextWidth(text string) int {
 	width := 0
 	for _, r := range text {
 		if r > 0x7F {
-			width += w.cfg.FontSize // CJK character
+			width += w.cfg.FontSize
 		} else {
-			width += w.cfg.FontSize / 2 // ASCII character
+			width += w.cfg.FontSize / 2
 		}
 	}
 	return width
 }
 
-// AddDanmaku appends a single danmaku line to the ASS file.
-// The dialogue duration is dynamically calculated so the text scrolls completely
-// from the right edge to the left edge of the screen.
+// AddDanmaku appends a single scrolling danmaku line.
 func (w *AssWriter) AddDanmaku(recvAt time.Time, username, text string, color int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -124,22 +140,18 @@ func (w *AssWriter) AddDanmaku(recvAt time.Time, username, text string, color in
 		startCS = 0
 	}
 
-	// Calculate dialogue duration: enough for text to fully scroll across screen
-	// Total distance = screen width + text width (pixels)
-	// Duration (ms) = distance * bannerSpeed
-	// Duration (centiseconds) = duration_ms / 10
 	fullText := username + ": " + text
 	textWidth := w.estimateTextWidth(fullText)
 	totalDistance := w.resX + textWidth
 	durationCS := int64(totalDistance * w.bannerSpeed / 10)
-	if durationCS < 200 { // minimum 2 seconds
+	if durationCS < 200 {
 		durationCS = 200
 	}
 	endCS := startCS + durationCS
 
 	lane := w.assignLane(startCS, endCS)
 	laneHeight := w.cfg.FontSize + 4
-	marginV := lane * laneHeight
+	marginV := (lane + w.laneStart) * laneHeight
 
 	if color <= 0 {
 		color = 16777215
@@ -148,12 +160,10 @@ func (w *AssWriter) AddDanmaku(recvAt time.Time, username, text string, color in
 
 	line := fmt.Sprintf("Dialogue: 0,%s,%s,Danmaku,,0,0,%d,Banner;%d;0;30,{\\c%s}%s\n",
 		formatTime(startCS), formatTime(endCS), marginV, w.bannerSpeed, assColor, escapeText(fullText))
-
 	w.file.WriteString(line)
 	w.file.Sync()
 }
 
-// assignLane finds the next available vertical lane.
 func (w *AssWriter) assignLane(startCS, endCS int64) int {
 	for i := 0; i < w.laneNum; i++ {
 		idx := (w.nextLane + i) % w.laneNum

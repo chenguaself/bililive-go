@@ -1422,6 +1422,9 @@ func applyConfigUpdates(c *configs.Config, updates map[string]interface{}) error
 		if fontName, ok := danmaku["font_name"].(string); ok {
 			c.Danmaku.FontName = fontName
 		}
+		if displayMode, ok := danmaku["scroll_area"].(string); ok {
+			c.Danmaku.ScrollArea = displayMode
+		}
 		if scrollTime, ok := danmaku["scroll_time"].(float64); ok {
 			c.Danmaku.ScrollTime = int(scrollTime)
 		}
@@ -1932,6 +1935,9 @@ func applyOverridableConfigUpdates(oc *configs.OverridableConfig, updates map[st
 		}
 		if fontName, ok := danmaku["font_name"].(string); ok {
 			oc.Danmaku.FontName = fontName
+		}
+		if scrollArea, ok := danmaku["scroll_area"].(string); ok {
+			oc.Danmaku.ScrollArea = scrollArea
 		}
 		if scrollTime, ok := danmaku["scroll_time"].(float64); ok {
 			oc.Danmaku.ScrollTime = int(scrollTime)

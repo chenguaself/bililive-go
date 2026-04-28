@@ -68,8 +68,6 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to start danmaku client: %w", err)
 	}
 
-	d.logger.Infof("弹幕录制已启动 (房间: %d, 输出: %s)", d.roomID, d.outputFile)
-
 	go func() {
 		<-ctx.Done()
 		d.Stop()
