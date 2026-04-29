@@ -41,41 +41,63 @@ function parseAssColor(c: string): string {
     return `rgba(${r},${g},${b},${a.toFixed(2)})`;
 }
 
-type DanmakuEntry = { start: number; end: number; color: string; text: string };
+type DanmakuEntry = { start: number; end: number; color: string; text: string; style: string };
 
-/** 解析 ASS 文件，提取 Banner 滚动弹幕 */
+/** 解析 ASS 文件，提取所有弹幕条目 */
 function parseAss(content: string): { items: DanmakuEntry[]; scrollTime: number } {
     const lines = content.split('\n');
     const items: DanmakuEntry[] = [];
+    let inStyles = false;
     let inEvents = false;
     let resX = 1920;
     let bannerSpeed = 80; // ms per pixel
+    // 样式名 → PrimaryColour CSS 颜色
+    const styleColors: Record<string, string> = {};
 
     for (const line of lines) {
         const mr = line.match(/^PlayResX:\s*(\d+)/);
         if (mr) resX = parseInt(mr[1]);
-        if (line.trim() === '[Events]') { inEvents = true; continue; }
+
+        // 解析样式定义中的 PrimaryColour
+        if (line.trim() === '[V4+ Styles]') { inStyles = true; inEvents = false; continue; }
+        if (line.trim() === '[Events]') { inEvents = true; inStyles = false; continue; }
+        if (line.startsWith('[')) { inStyles = false; inEvents = false; continue; }
+
+        if (inStyles && line.startsWith('Style:')) {
+            // Style: Name, Fontname, Fontsize, PrimaryColour, ...
+            const sp = line.substring('Style:'.length).split(',');
+            if (sp.length >= 4) {
+                const name = sp[0].trim();
+                const pc = sp[3].trim();
+                styleColors[name] = parseAssColor(pc);
+            }
+            continue;
+        }
+
         if (!inEvents) continue;
-        if (line.startsWith('[')) break;
         if (!line.startsWith('Dialogue:')) continue;
 
         const parts = line.substring('Dialogue:'.length).split(',');
         if (parts.length < 10) continue;
 
+        const style = parts[3].trim();
         const effect = parts[8].trim();
-        if (!effect.startsWith('Banner;')) continue;
 
-        const ep = effect.split(';');
-        if (ep.length >= 2) bannerSpeed = parseInt(ep[1]) || 80;
+        // 提取 Banner 速度（仅滚动弹幕用）
+        if (effect.startsWith('Banner;')) {
+            const ep = effect.split(';');
+            if (ep.length >= 2) bannerSpeed = parseInt(ep[1]) || 80;
+        }
 
         const start = parseAssTime(parts[1]);
         const end = parseAssTime(parts[2]);
         const raw = parts.slice(9).join(',');
-        let color = 'rgba(255,255,255,1)';
+        // 优先使用 Dialogue 行中的 {\c} 覆盖色，否则回退到样式定义的 PrimaryColour
+        let color = styleColors[style] || 'rgba(255,255,255,1)';
         const cm = raw.match(/\\c([^}]+)/);
         if (cm) color = parseAssColor(cm[1]);
         const text = raw.replace(/\{[^}]*\}/g, '');
-        if (end > start && text) items.push({ start, end, color, text });
+        if (end > start && text) items.push({ start, end, color, text, style });
     }
 
     return { items, scrollTime: (bannerSpeed * resX) / 1000 };
@@ -90,6 +112,7 @@ const DANMAKU_GAP = 50;      // 同轨道弹幕间隔（px）
  * 弹幕渲染器 — 核心：同轨道可同时显示多条弹幕
  * 使用 requestAnimationFrame 手动控制 left 位置，而非 CSS animation，
  * 这样可以精确跟踪每条弹幕的右边缘，实现真正的多弹幕同轨。
+ * 同时支持固定位置的消息（Guard/SC/Toast）。
  */
 class DanmakuRenderer {
     private overlay: HTMLDivElement;
@@ -99,9 +122,13 @@ class DanmakuRenderer {
     private rafId = 0;
     private running = false;
     private nextIdx = 0;
-    // 每条轨道：已发射但尚未完全滚出的弹幕，按发射时间升序
+    // 滚动弹幕轨道
     private lanes: Array<{ el: HTMLDivElement; spawnTime: number; rightEdgeOutTime: number; tailEnterTime: number }[]> = [];
     private laneCount = 0;
+    // 固定位置消息
+    private fixedEls: { el: HTMLDivElement; endTime: number }[] = [];
+    // 滚动样式白名单
+    private static SCROLL_STYLES = new Set(['Danmaku', 'Gift']);
 
     constructor(overlay: HTMLDivElement, video: HTMLVideoElement, items: DanmakuEntry[], scrollTime: number) {
         this.overlay = overlay;
@@ -125,6 +152,7 @@ class DanmakuRenderer {
         this.rafId = 0;
         this.overlay.innerHTML = '';
         this.lanes = [];
+        this.fixedEls = [];
     }
 
     /** 跳转到指定时间：清理已有弹幕，用二分查找跳过已过去的弹幕 */
@@ -134,9 +162,10 @@ class DanmakuRenderer {
             for (const d of lane) d.el.remove();
         }
         this.lanes = Array.from({ length: this.laneCount }, () => []);
+        for (const f of this.fixedEls) f.el.remove();
+        this.fixedEls = [];
 
         // 二分查找：找到第一个 start > time 的索引
-        // 这样只显示跳转之后的弹幕，不会堆积历史弹幕
         let lo = 0, hi = this.items.length;
         while (lo < hi) {
             const mid = (lo + hi) >>> 1;
@@ -162,21 +191,31 @@ class DanmakuRenderer {
             }
         }
 
-        // 2. 发射新弹幕
+        // 2. 清理过期的固定位置消息
+        for (let i = this.fixedEls.length - 1; i >= 0; i--) {
+            if (this.fixedEls[i].endTime <= t) {
+                this.fixedEls[i].el.remove();
+                this.fixedEls.splice(i, 1);
+            }
+        }
+
+        // 3. 发射新弹幕
         while (this.nextIdx < this.items.length && this.items[this.nextIdx].start <= t) {
-            this.spawn(this.items[this.nextIdx], t, cw);
+            const item = this.items[this.nextIdx];
+            if (DanmakuRenderer.SCROLL_STYLES.has(item.style)) {
+                this.spawnScroll(item, t, cw);
+            } else {
+                this.spawnFixed(item, t);
+            }
             this.nextIdx++;
         }
 
-        // 3. 更新所有弹幕位置
+        // 4. 更新所有滚动弹幕位置
         for (const lane of this.lanes) {
             for (const d of lane) {
                 const elapsed = t - d.spawnTime;
-                const progress = elapsed / this.scrollTime; // 0→1
-                // left = 100% - progress * (100% + textWidth%)
-                // 简化：left% = 100 - progress * (100 + twPct)
+                const progress = elapsed / this.scrollTime;
                 const el = d.el;
-                // 用自定义属性缓存文本宽度百分比
                 const twPct = parseFloat(el.dataset.tw || '20');
                 const leftPct = 100 - progress * (100 + twPct);
                 el.style.left = leftPct + '%';
@@ -184,7 +223,7 @@ class DanmakuRenderer {
         }
     };
 
-    private spawn(item: DanmakuEntry, t: number, cw: number) {
+    private spawnScroll(item: DanmakuEntry, t: number, cw: number) {
         // 估算弹幕宽度（px）→ 转为容器百分比
         let textPx = 0;
         for (const ch of item.text) textPx += ch.charCodeAt(0) > 0x7F ? DANMAKU_FONT_SIZE : DANMAKU_FONT_SIZE * 0.6;
@@ -228,6 +267,64 @@ class DanmakuRenderer {
 
         this.overlay.appendChild(el);
         this.lanes[laneIdx].push({ el, spawnTime: t, rightEdgeOutTime, tailEnterTime: textEnterTime });
+    }
+
+    /** 生成固定位置消息（Guard/SC/Toast） */
+    private spawnFixed(item: DanmakuEntry, t: number) {
+        const el = document.createElement('div');
+        el.style.position = 'absolute';
+        el.style.whiteSpace = 'nowrap';
+        el.style.fontWeight = 'bold';
+        el.style.padding = '4px 12px';
+        el.style.borderRadius = '4px';
+        el.style.fontSize = (DANMAKU_FONT_SIZE - 2) + 'px';
+        el.style.lineHeight = (DANMAKU_FONT_SIZE + 2) + 'px';
+        el.style.textShadow = '1px 1px 2px rgba(0,0,0,0.6)';
+        el.style.pointerEvents = 'none';
+        el.style.transition = 'opacity 0.3s';
+        el.style.opacity = '1';
+        el.textContent = item.text;
+
+        // 淡入淡出：最后 0.5 秒开始淡出
+        const fadeOutAt = item.end - 0.5;
+
+        // 颜色与 ASS 文件保持一致
+        // ASS 格式 &HAABBGGRR& → CSS rgba
+        switch (item.style) {
+            case 'SuperChat':
+                // BackColour &HA000A514 → rgba(20,165,0,0.37)
+                el.style.bottom = '40px';
+                el.style.left = '10px';
+                el.style.background = 'rgba(20,165,0,0.37)';
+                el.style.color = item.color;
+                el.style.maxWidth = '60%';
+                el.style.overflow = 'hidden';
+                el.style.textOverflow = 'ellipsis';
+                break;
+            case 'Guard':
+            default:
+                // BackColour &H800080FF → rgba(255,128,0,0.50)
+                el.style.bottom = '10px';
+                el.style.left = '10px';
+                el.style.background = 'rgba(255,128,0,0.50)';
+                el.style.color = item.color;
+                break;
+        }
+
+        this.overlay.appendChild(el);
+        this.fixedEls.push({ el, endTime: item.end });
+
+        // 淡出动画
+        const fadeTimer = setTimeout(() => {
+            el.style.opacity = '0';
+        }, Math.max(0, (fadeOutAt - t) * 1000));
+
+        // 清理计时器（在 stop/seek 时）
+        const origRemove = el.remove.bind(el);
+        el.remove = () => {
+            clearTimeout(fadeTimer);
+            origRemove();
+        };
     }
 }
 

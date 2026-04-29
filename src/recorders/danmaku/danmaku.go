@@ -63,6 +63,26 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 		)
 	})
 
+	if d.cfg.RecordGift {
+		c.OnGift(func(msg *message.Gift) {
+			if msg.Num > 0 {
+				d.assWriter.AddGift(time.Now(), msg.Uname, msg.GiftName, msg.Num)
+			}
+		})
+	}
+
+	if d.cfg.RecordGuard {
+		c.OnGuardBuy(func(msg *message.GuardBuy) {
+			d.assWriter.AddGuard(time.Now(), msg.Username, msg.GiftName)
+		})
+	}
+
+	if d.cfg.RecordSuperChat {
+		c.OnSuperChat(func(msg *message.SuperChat) {
+			d.assWriter.AddSuperChat(time.Now(), msg.UserInfo.Uname, msg.Message, msg.Price)
+		})
+	}
+
 	if err := c.Start(); err != nil {
 		assWriter.Close()
 		return fmt.Errorf("failed to start danmaku client: %w", err)

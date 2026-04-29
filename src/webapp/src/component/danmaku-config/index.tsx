@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  Card, Form, Switch, InputNumber, Select, Button, message, Spin, Collapse, Tag, Popconfirm, Space
+  Card, Form, Switch, InputNumber, Select, Button, message, Spin, Collapse, Tag, Popconfirm, Space, Divider
 } from 'antd';
 import { UndoOutlined } from '@ant-design/icons';
 import API from '../../utils/api';
@@ -15,6 +15,9 @@ const DEFAULT_DANMAKU: DanmakuConfig = {
   resolution: '1920x1080',
   outline: 1,
   opacity: 128,
+  record_gift: true,
+  record_guard: true,
+  record_super_chat: true,
 };
 
 interface DanmakuConfig {
@@ -25,6 +28,9 @@ interface DanmakuConfig {
   resolution: string;
   outline: number;
   opacity: number;
+  record_gift: boolean;
+  record_guard: boolean;
+  record_super_chat: boolean;
 }
 
 interface EffectiveConfig {
@@ -177,6 +183,26 @@ const DanmakuParamForm: React.FC<{
           name={['danmaku', 'opacity']}
           rules={[{ type: 'number', min: 0, max: 255, message: '0~255' }]}>
           <InputNumber min={0} max={255} style={{ width: '100%' }} />
+        </Form.Item>
+      </div>
+
+      <Divider plain style={{ margin: '16px 0', fontSize: 13 }}>录制内容</Divider>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+        <Form.Item
+          label={<span>礼物消息 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>用户赠送礼物的通知</span></span>}
+          name={['danmaku', 'record_gift']} valuePropName="checked">
+          <Switch />
+        </Form.Item>
+        <Form.Item
+          label={<span>上舰消息 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>开通舰长/提督/总督的通知</span></span>}
+          name={['danmaku', 'record_guard']} valuePropName="checked">
+          <Switch />
+        </Form.Item>
+        <Form.Item
+          label={<span>醒目留言 (SC) <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>Super Chat 付费留言</span></span>}
+          name={['danmaku', 'record_super_chat']} valuePropName="checked">
+          <Switch />
         </Form.Item>
       </div>
       <Form.Item style={{ marginBottom: 0 }}>

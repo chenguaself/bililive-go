@@ -1437,6 +1437,15 @@ func applyConfigUpdates(c *configs.Config, updates map[string]interface{}) error
 		if opacity, ok := danmaku["opacity"].(float64); ok {
 			c.Danmaku.Opacity = int(opacity)
 		}
+		if recordGift, ok := danmaku["record_gift"].(bool); ok {
+			c.Danmaku.RecordGift = recordGift
+		}
+		if recordGuard, ok := danmaku["record_guard"].(bool); ok {
+			c.Danmaku.RecordGuard = recordGuard
+		}
+		if recordSuperChat, ok := danmaku["record_super_chat"].(bool); ok {
+			c.Danmaku.RecordSuperChat = recordSuperChat
+		}
 		if err := c.Danmaku.Validate(); err != nil {
 			return fmt.Errorf("弹幕参数无效: %w", err)
 		}
@@ -1950,6 +1959,15 @@ func applyOverridableConfigUpdates(oc *configs.OverridableConfig, updates map[st
 		}
 		if opacity, ok := danmaku["opacity"].(float64); ok {
 			oc.Danmaku.Opacity = int(opacity)
+		}
+		if recordGift, ok := danmaku["record_gift"].(bool); ok {
+			oc.Danmaku.RecordGift = recordGift
+		}
+		if recordGuard, ok := danmaku["record_guard"].(bool); ok {
+			oc.Danmaku.RecordGuard = recordGuard
+		}
+		if recordSuperChat, ok := danmaku["record_super_chat"].(bool); ok {
+			oc.Danmaku.RecordSuperChat = recordSuperChat
 		}
 	} else if _, exists := updates["danmaku"]; exists && updates["danmaku"] == nil {
 		// 显式 null → 清除覆盖，恢复继承

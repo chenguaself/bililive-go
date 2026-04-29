@@ -109,10 +109,18 @@ PlayResY: %d
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Danmaku,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,0,0,0,0,100,100,0,0,1,%d,0,8,0,0,0,1
+Style: Gift,%s,%d,&H0000D4FF,&H000000FF,&H00000000,%s,0,0,0,0,100,100,0,0,1,%d,0,8,0,0,0,1
+Style: Guard,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,&H800080FF,1,0,0,0,100,100,0,0,3,1,0,1,0,0,60,1
+Style: SuperChat,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,&HA000A514,1,0,0,0,100,100,0,0,3,1,0,1,0,0,100,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-`, w.resX, w.resY, w.cfg.FontName, w.cfg.FontSize, backColor, w.cfg.Outline)
+`, w.resX, w.resY,
+		w.cfg.FontName, w.cfg.FontSize, backColor, w.cfg.Outline,
+		w.cfg.FontName, w.cfg.FontSize-6, backColor, w.cfg.Outline,
+		w.cfg.FontName, w.cfg.FontSize, backColor,
+		w.cfg.FontName, w.cfg.FontSize, backColor,
+		w.cfg.FontName, w.cfg.FontSize, backColor)
 	_, err := w.file.WriteString(header)
 	return err
 }
@@ -160,6 +168,74 @@ func (w *AssWriter) AddDanmaku(recvAt time.Time, username, text string, color in
 
 	line := fmt.Sprintf("Dialogue: 0,%s,%s,Danmaku,,0,0,%d,Banner;%d;0;30,{\\c%s}%s\n",
 		formatTime(startCS), formatTime(endCS), marginV, w.bannerSpeed, assColor, escapeText(fullText))
+	w.file.WriteString(line)
+	w.file.Sync()
+}
+
+// AddGift appends a gift message as a smaller scrolling line.
+func (w *AssWriter) AddGift(recvAt time.Time, username, giftName string, num int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	elapsed := recvAt.Sub(w.startAt)
+	startCS := int64(elapsed / (10 * time.Millisecond))
+	if startCS < 0 {
+		startCS = 0
+	}
+
+	fullText := fmt.Sprintf("%s 赠送 %s x%d", username, giftName, num)
+	textWidth := w.estimateTextWidth(fullText)
+	totalDistance := w.resX + textWidth
+	durationCS := int64(totalDistance * w.bannerSpeed / 10)
+	if durationCS < 200 {
+		durationCS = 200
+	}
+	endCS := startCS + durationCS
+
+	lane := w.assignLane(startCS, endCS)
+	laneHeight := w.cfg.FontSize + 4
+	marginV := (lane + w.laneStart) * laneHeight
+
+	line := fmt.Sprintf("Dialogue: 0,%s,%s,Gift,,0,0,%d,Banner;%d;0;30,%s\n",
+		formatTime(startCS), formatTime(endCS), marginV, w.bannerSpeed, escapeText(fullText))
+	w.file.WriteString(line)
+	w.file.Sync()
+}
+
+// AddGuard appends a guard purchase message (fixed position, bottom).
+func (w *AssWriter) AddGuard(recvAt time.Time, username, giftName string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	elapsed := recvAt.Sub(w.startAt)
+	startCS := int64(elapsed / (10 * time.Millisecond))
+	if startCS < 0 {
+		startCS = 0
+	}
+	endCS := startCS + 500 // 5 seconds
+
+	fullText := fmt.Sprintf("%s %s", username, giftName)
+	line := fmt.Sprintf("Dialogue: 1,%s,%s,Guard,,0,0,0,,%s\n",
+		formatTime(startCS), formatTime(endCS), escapeText(fullText))
+	w.file.WriteString(line)
+	w.file.Sync()
+}
+
+// AddSuperChat appends a Super Chat message (fixed position, bottom).
+func (w *AssWriter) AddSuperChat(recvAt time.Time, username, text string, price int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	elapsed := recvAt.Sub(w.startAt)
+	startCS := int64(elapsed / (10 * time.Millisecond))
+	if startCS < 0 {
+		startCS = 0
+	}
+	endCS := startCS + 500 // 5 seconds
+
+	fullText := fmt.Sprintf("[SC ¥%d] %s: %s", price, username, text)
+	line := fmt.Sprintf("Dialogue: 1,%s,%s,SuperChat,,0,0,0,,%s\n",
+		formatTime(startCS), formatTime(endCS), escapeText(fullText))
 	w.file.WriteString(line)
 	w.file.Sync()
 }
