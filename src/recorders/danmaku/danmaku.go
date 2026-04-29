@@ -3,6 +3,7 @@ package danmaku
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/Akegarasu/blivedm-go/client"
@@ -24,6 +25,7 @@ type DanmakuRecorder struct {
 	client     *client.Client
 	logger     *logrus.Entry
 	count      int
+	mu         sync.Mutex
 }
 
 // NewDanmakuRecorder creates a new danmaku recorder.
@@ -54,32 +56,52 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 	d.client = c
 
 	c.OnDanmaku(func(msg *message.Danmaku) {
+		d.mu.Lock()
+		w := d.assWriter
 		d.count++
-		d.assWriter.AddDanmaku(
-			time.Now(),
-			msg.Sender.Uname,
-			msg.Content,
-			msg.Extra.Color,
-		)
+		d.mu.Unlock()
+		if w != nil {
+			w.AddDanmaku(
+				time.Now(),
+				msg.Sender.Uname,
+				msg.Content,
+				msg.Extra.Color,
+			)
+		}
 	})
 
 	if d.cfg.RecordGift {
 		c.OnGift(func(msg *message.Gift) {
 			if msg.Num > 0 {
-				d.assWriter.AddGift(time.Now(), msg.Uname, msg.GiftName, msg.Num)
+				d.mu.Lock()
+				w := d.assWriter
+				d.mu.Unlock()
+				if w != nil {
+					w.AddGift(time.Now(), msg.Uname, msg.GiftName, msg.Num)
+				}
 			}
 		})
 	}
 
 	if d.cfg.RecordGuard {
 		c.OnGuardBuy(func(msg *message.GuardBuy) {
-			d.assWriter.AddGuard(time.Now(), msg.Username, msg.GiftName)
+			d.mu.Lock()
+			w := d.assWriter
+			d.mu.Unlock()
+			if w != nil {
+				w.AddGuard(time.Now(), msg.Username, msg.GiftName)
+			}
 		})
 	}
 
 	if d.cfg.RecordSuperChat {
 		c.OnSuperChat(func(msg *message.SuperChat) {
-			d.assWriter.AddSuperChat(time.Now(), msg.UserInfo.Uname, msg.Message, msg.Price)
+			d.mu.Lock()
+			w := d.assWriter
+			d.mu.Unlock()
+			if w != nil {
+				w.AddSuperChat(time.Now(), msg.UserInfo.Uname, msg.Message, msg.Price)
+			}
 		})
 	}
 
@@ -98,6 +120,8 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 
 // Stop stops the danmaku recorder.
 func (d *DanmakuRecorder) Stop() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.client != nil {
 		d.client.Stop()
 		d.client = nil
@@ -125,14 +149,18 @@ func (d *DanmakuRecorder) GetCount() int {
 
 // IsRunning returns whether the danmaku WebSocket client is active.
 func (d *DanmakuRecorder) IsRunning() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return d.client != nil
 }
 
 // GetStatus returns the current danmaku recording status.
 func (d *DanmakuRecorder) GetStatus() map[string]interface{} {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return map[string]interface{}{
-		"danmaku_running":    d.IsRunning(),
-		"danmaku_count":      d.count,
-		"danmaku_output":     d.outputFile,
+		"danmaku_running": d.client != nil,
+		"danmaku_count":   d.count,
+		"danmaku_output":  d.outputFile,
 	}
 }
