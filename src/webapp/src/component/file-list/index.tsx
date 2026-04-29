@@ -396,6 +396,7 @@ const FileList: React.FC = () => {
     const [currentPlayingName, setCurrentPlayingName] = useState("");
     const artRef = useRef<Artplayer | null>(null);
     const danmakuRef = useRef<DanmakuRenderer | null>(null);
+    const [danmakuStats, setDanmakuStats] = useState<{ danmaku: number; gift: number; guard: number; sc: number; scAmount: number } | null>(null);
 
     // 重命名相关状态
     const [isRenameModalVisible, setIsRenameModalVisible] = useState(false);
@@ -456,6 +457,7 @@ const FileList: React.FC = () => {
         }
         setIsPlayerVisible(false);
         setCurrentPlayingName("");
+        setDanmakuStats(null);
     }, []);
 
     // 监听 ESC 键退出播放
@@ -711,6 +713,21 @@ const FileList: React.FC = () => {
                                 const { items, scrollTime } = parseAss(text);
                                 if (items.length === 0) return;
 
+                                // 统计弹幕类型
+                                let danmakuCount = 0, giftCount = 0, guardCount = 0, scCount = 0, scAmount = 0;
+                                for (const item of items) {
+                                    if (item.style === 'Danmaku') danmakuCount++;
+                                    else if (item.style === 'Gift') giftCount++;
+                                    else if (item.style === 'Guard') guardCount++;
+                                    else if (item.style.startsWith('SC')) {
+                                        scCount++;
+                                        // 从文本中提取金额: [SC ¥100] ...
+                                        const m = item.text.match(/\[SC ¥(\d+)\]/);
+                                        if (m) scAmount += parseInt(m[1]);
+                                    }
+                                }
+                                setDanmakuStats({ danmaku: danmakuCount, gift: giftCount, guard: guardCount, sc: scCount, scAmount });
+
                                 // 找到 Artplayer 内部容器，将覆盖层插入其中（和 video 同级）
                                 const artContainer = document.getElementById('art-container');
                                 if (!artContainer) return;
@@ -894,6 +911,27 @@ const FileList: React.FC = () => {
                     </div>
                 </div>
                 <div id="art-container"></div>
+                {danmakuStats && (
+                    <div className="danmaku-stats">
+                        <span className="stat-item">
+                            <span className="stat-icon" style={{ color: '#1890ff' }}>💬</span>
+                            弹幕 <b>{danmakuStats.danmaku}</b>
+                        </span>
+                        <span className="stat-item">
+                            <span className="stat-icon" style={{ color: '#faad14' }}>🎁</span>
+                            礼物 <b>{danmakuStats.gift}</b>
+                        </span>
+                        <span className="stat-item">
+                            <span className="stat-icon" style={{ color: '#ff6a39' }}>💰</span>
+                            SC <b>{danmakuStats.sc}</b>
+                            {danmakuStats.scAmount > 0 && <span className="stat-amount"> ¥{danmakuStats.scAmount}</span>}
+                        </span>
+                        <span className="stat-item">
+                            <span className="stat-icon" style={{ color: '#ff8c00' }}>⚓</span>
+                            上舰 <b>{danmakuStats.guard}</b>
+                        </span>
+                    </div>
+                )}
             </div>
         );
     };
