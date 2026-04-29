@@ -41,7 +41,7 @@ function parseAssColor(c: string): string {
     return `rgba(${r},${g},${b},${a.toFixed(2)})`;
 }
 
-type DanmakuEntry = { start: number; end: number; color: string; text: string; style: string };
+type DanmakuEntry = { start: number; end: number; color: string; text: string; style: string; align: number };
 
 /** 解析 ASS 文件，提取所有弹幕条目 */
 function parseAss(content: string): { items: DanmakuEntry[]; scrollTime: number } {
@@ -96,8 +96,12 @@ function parseAss(content: string): { items: DanmakuEntry[]; scrollTime: number 
         let color = styleColors[style] || 'rgba(255,255,255,1)';
         const cm = raw.match(/\\c([^}]+)/);
         if (cm) color = parseAssColor(cm[1]);
+        // 提取 {\an} 对齐覆盖（用于定位 SC/上舰消息）
+        let align = 0;
+        const am = raw.match(/\\an(\d+)/);
+        if (am) align = parseInt(am[1]);
         const text = raw.replace(/\{[^}]*\}/g, '');
-        if (end > start && text) items.push({ start, end, color, text, style });
+        if (end > start && text) items.push({ start, end, color, text, style, align });
     }
 
     return { items, scrollTime: (bannerSpeed * resX) / 1000 };
@@ -125,8 +129,8 @@ class DanmakuRenderer {
     // 滚动弹幕轨道
     private lanes: Array<{ el: HTMLDivElement; spawnTime: number; rightEdgeOutTime: number; tailEnterTime: number }[]> = [];
     private laneCount = 0;
-    // 固定位置消息
-    private fixedEls: { el: HTMLDivElement; endTime: number }[] = [];
+    // 固定位置消息（按位置分组堆叠）
+    private fixedEls: { el: HTMLDivElement; endTime: number; posKey: string }[] = [];
     // 滚动样式白名单
     private static SCROLL_STYLES = new Set(['Danmaku', 'Gift']);
 
@@ -192,12 +196,16 @@ class DanmakuRenderer {
         }
 
         // 2. 清理过期的固定位置消息
+        let fixedChanged = false;
         for (let i = this.fixedEls.length - 1; i >= 0; i--) {
             if (this.fixedEls[i].endTime <= t) {
                 this.fixedEls[i].el.remove();
                 this.fixedEls.splice(i, 1);
+                fixedChanged = true;
             }
         }
+        // 有消息过期后重新布局，消除空隙
+        if (fixedChanged) this.relayoutFixed();
 
         // 3. 发射新弹幕
         while (this.nextIdx < this.items.length && this.items[this.nextIdx].start <= t) {
@@ -269,11 +277,36 @@ class DanmakuRenderer {
         this.lanes[laneIdx].push({ el, spawnTime: t, rightEdgeOutTime, tailEnterTime: textEnterTime });
     }
 
-    /** 生成固定位置消息（Guard/SC/Toast） */
+    /** 重新布局固定位置消息，消除过期后留下的空隙 */
+    private relayoutFixed() {
+        // 按位置分组，每组内重新计算堆叠偏移
+        const groups: Record<string, { el: HTMLDivElement }[]> = {};
+        for (const f of this.fixedEls) {
+            if (!groups[f.posKey]) groups[f.posKey] = [];
+            groups[f.posKey].push(f);
+        }
+        for (const posKey in groups) {
+            const isTop = posKey.startsWith('top');
+            let offset = 0;
+            for (const item of groups[posKey]) {
+                if (isTop) {
+                    item.el.style.top = (10 + offset) + 'px';
+                    item.el.style.bottom = '';
+                } else {
+                    item.el.style.bottom = (10 + offset) + 'px';
+                    item.el.style.top = '';
+                }
+                offset += item.el.offsetHeight + 4;
+            }
+        }
+    }
+
+    /** 生成固定位置消息（Guard/SC），支持同位置堆叠 */
     private spawnFixed(item: DanmakuEntry, t: number) {
         const el = document.createElement('div');
         el.style.position = 'absolute';
-        el.style.whiteSpace = 'nowrap';
+        el.style.whiteSpace = 'normal';
+        el.style.wordBreak = 'break-all';
         el.style.fontWeight = 'bold';
         el.style.padding = '4px 12px';
         el.style.borderRadius = '4px';
@@ -285,41 +318,49 @@ class DanmakuRenderer {
         el.style.opacity = '1';
         el.textContent = item.text;
 
-        // 淡入淡出：最后 0.5 秒开始淡出
         const fadeOutAt = item.end - 0.5;
 
-        // 颜色与 ASS 文件保持一致
-        // ASS 格式 &HAABBGGRR& → CSS rgba
-        switch (item.style) {
-            case 'SuperChat':
-                // BackColour &HA000A514 → rgba(20,165,0,0.37)
-                el.style.bottom = '40px';
-                el.style.left = '10px';
-                el.style.background = 'rgba(20,165,0,0.37)';
-                el.style.color = item.color;
-                el.style.maxWidth = '60%';
-                el.style.overflow = 'hidden';
-                el.style.textOverflow = 'ellipsis';
-                break;
-            case 'Guard':
-            default:
-                // BackColour &H800080FF → rgba(255,128,0,0.50)
-                el.style.bottom = '10px';
-                el.style.left = '10px';
-                el.style.background = 'rgba(255,128,0,0.50)';
-                el.style.color = item.color;
-                break;
+        // 根据 {\an} 值确定位置
+        const isTop = item.align === 5 || item.align === 7;
+        const isRight = item.align === 3 || item.align === 7;
+        const posKey = (isTop ? 'top' : 'bottom') + '-' + (isRight ? 'right' : 'left');
+
+        // 计算同位置已有消息的总高度（用于堆叠偏移）
+        let stackOffset = 0;
+        for (const f of this.fixedEls) {
+            if (f.posKey === posKey) {
+                stackOffset += f.el.offsetHeight + 4; // 4px 间距
+            }
         }
 
-        this.overlay.appendChild(el);
-        this.fixedEls.push({ el, endTime: item.end });
+        // 设置位置
+        if (isTop) {
+            el.style.top = (10 + stackOffset) + 'px';
+        } else {
+            el.style.bottom = (10 + stackOffset) + 'px';
+        }
+        if (isRight) {
+            el.style.right = '10px';
+        } else {
+            el.style.left = '10px';
+        }
 
-        // 淡出动画
+        // 背景色与 ASS 保持一致
+        if (item.style === 'SuperChat') {
+            el.style.background = 'rgba(20,165,0,0.37)';
+        } else {
+            el.style.background = 'rgba(255,128,0,0.50)';
+        }
+        el.style.color = item.color;
+        el.style.maxWidth = '60%';
+
+        this.overlay.appendChild(el);
+        this.fixedEls.push({ el, endTime: item.end, posKey });
+
         const fadeTimer = setTimeout(() => {
             el.style.opacity = '0';
         }, Math.max(0, (fadeOutAt - t) * 1000));
 
-        // 清理计时器（在 stop/seek 时）
         const origRemove = el.remove.bind(el);
         el.remove = () => {
             clearTimeout(fadeTimer);

@@ -1446,6 +1446,12 @@ func applyConfigUpdates(c *configs.Config, updates map[string]interface{}) error
 		if recordSuperChat, ok := danmaku["record_super_chat"].(bool); ok {
 			c.Danmaku.RecordSuperChat = recordSuperChat
 		}
+		if guardPosition, ok := danmaku["guard_position"].(string); ok {
+			c.Danmaku.GuardPosition = guardPosition
+		}
+		if scPosition, ok := danmaku["sc_position"].(string); ok {
+			c.Danmaku.ScPosition = scPosition
+		}
 		if err := c.Danmaku.Validate(); err != nil {
 			return fmt.Errorf("弹幕参数无效: %w", err)
 		}
@@ -1968,6 +1974,12 @@ func applyOverridableConfigUpdates(oc *configs.OverridableConfig, updates map[st
 		}
 		if recordSuperChat, ok := danmaku["record_super_chat"].(bool); ok {
 			oc.Danmaku.RecordSuperChat = recordSuperChat
+		}
+		if guardPosition, ok := danmaku["guard_position"].(string); ok {
+			oc.Danmaku.GuardPosition = guardPosition
+		}
+		if scPosition, ok := danmaku["sc_position"].(string); ok {
+			oc.Danmaku.ScPosition = scPosition
 		}
 	} else if _, exists := updates["danmaku"]; exists && updates["danmaku"] == nil {
 		// 显式 null → 清除覆盖，恢复继承

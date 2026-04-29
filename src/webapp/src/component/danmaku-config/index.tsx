@@ -18,6 +18,8 @@ const DEFAULT_DANMAKU: DanmakuConfig = {
   record_gift: true,
   record_guard: true,
   record_super_chat: true,
+  guard_position: 'bottom-left',
+  sc_position: 'bottom-left',
 };
 
 interface DanmakuConfig {
@@ -31,6 +33,8 @@ interface DanmakuConfig {
   record_gift: boolean;
   record_guard: boolean;
   record_super_chat: boolean;
+  guard_position: string;
+  sc_position: string;
 }
 
 interface EffectiveConfig {
@@ -203,6 +207,29 @@ const DanmakuParamForm: React.FC<{
           label={<span>醒目留言 (SC) <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>Super Chat 付费留言</span></span>}
           name={['danmaku', 'record_super_chat']} valuePropName="checked">
           <Switch />
+        </Form.Item>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+        <Form.Item
+          label="上舰消息位置"
+          name={['danmaku', 'guard_position']}>
+          <Select options={[
+            { label: '左下角', value: 'bottom-left' },
+            { label: '右下角', value: 'bottom-right' },
+            { label: '左上角', value: 'top-left' },
+            { label: '右上角', value: 'top-right' },
+          ]} />
+        </Form.Item>
+        <Form.Item
+          label="SC 消息位置"
+          name={['danmaku', 'sc_position']}>
+          <Select options={[
+            { label: '左下角', value: 'bottom-left' },
+            { label: '右下角', value: 'bottom-right' },
+            { label: '左上角', value: 'top-left' },
+            { label: '右上角', value: 'top-right' },
+          ]} />
         </Form.Item>
       </div>
       <Form.Item style={{ marginBottom: 0 }}>

@@ -97,6 +97,10 @@ func NewAssWriter(filePath string, startAt time.Time, cfg configs.DanmakuConfig)
 func (w *AssWriter) writeHeader() error {
 	assAlpha := 255 - w.cfg.Opacity
 	backColor := fmt.Sprintf("&H%02X000000&", assAlpha)
+	// Guard: 橙色半透明背景 &H800080FF → alpha=0x80, R=0xFF, G=0x80, B=0x00
+	guardBackColor := "&H800080FF"
+	// SuperChat: 绿色半透明背景 &HA000A514 → alpha=0xA0, R=0x14, G=0xA5, B=0x00
+	scBackColor := "&HA000A514"
 
 	header := fmt.Sprintf(`[Script Info]
 Title: Bilibili Danmaku
@@ -110,17 +114,16 @@ PlayResY: %d
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Danmaku,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,0,0,0,0,100,100,0,0,1,%d,0,8,0,0,0,1
 Style: Gift,%s,%d,&H0000D4FF,&H000000FF,&H00000000,%s,0,0,0,0,100,100,0,0,1,%d,0,8,0,0,0,1
-Style: Guard,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,&H800080FF,1,0,0,0,100,100,0,0,3,1,0,1,0,0,60,1
-Style: SuperChat,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,&HA000A514,1,0,0,0,100,100,0,0,3,1,0,1,0,0,100,1
+Style: Guard,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3,1,0,1,0,0,60,1
+Style: SuperChat,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3,1,0,1,0,0,100,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 `, w.resX, w.resY,
 		w.cfg.FontName, w.cfg.FontSize, backColor, w.cfg.Outline,
 		w.cfg.FontName, w.cfg.FontSize-6, backColor, w.cfg.Outline,
-		w.cfg.FontName, w.cfg.FontSize, backColor,
-		w.cfg.FontName, w.cfg.FontSize, backColor,
-		w.cfg.FontName, w.cfg.FontSize, backColor)
+		w.cfg.FontName, w.cfg.FontSize, guardBackColor,
+		w.cfg.FontName, w.cfg.FontSize, scBackColor)
 	_, err := w.file.WriteString(header)
 	return err
 }
@@ -202,7 +205,21 @@ func (w *AssWriter) AddGift(recvAt time.Time, username, giftName string, num int
 	w.file.Sync()
 }
 
-// AddGuard appends a guard purchase message (fixed position, bottom).
+// positionToAlignment maps position string to ASS \an alignment value and margin.
+func positionToAlignment(pos string, bottomMargin int) (alignment int, marginV int) {
+	switch pos {
+	case "top-left":
+		return 5, 20
+	case "top-right":
+		return 7, 20
+	case "bottom-right":
+		return 3, bottomMargin
+	default: // "bottom-left"
+		return 1, bottomMargin
+	}
+}
+
+// AddGuard appends a guard purchase message.
 func (w *AssWriter) AddGuard(recvAt time.Time, username, giftName string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -215,13 +232,14 @@ func (w *AssWriter) AddGuard(recvAt time.Time, username, giftName string) {
 	endCS := startCS + 500 // 5 seconds
 
 	fullText := fmt.Sprintf("%s %s", username, giftName)
-	line := fmt.Sprintf("Dialogue: 1,%s,%s,Guard,,0,0,0,,%s\n",
-		formatTime(startCS), formatTime(endCS), escapeText(fullText))
+	alignment, marginV := positionToAlignment(w.cfg.GuardPosition, 60)
+	line := fmt.Sprintf("Dialogue: 1,%s,%s,Guard,,0,0,%d,,{\\an%d}{\\q0}%s\n",
+		formatTime(startCS), formatTime(endCS), marginV, alignment, escapeText(fullText))
 	w.file.WriteString(line)
 	w.file.Sync()
 }
 
-// AddSuperChat appends a Super Chat message (fixed position, bottom).
+// AddSuperChat appends a Super Chat message.
 func (w *AssWriter) AddSuperChat(recvAt time.Time, username, text string, price int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -234,8 +252,9 @@ func (w *AssWriter) AddSuperChat(recvAt time.Time, username, text string, price 
 	endCS := startCS + 500 // 5 seconds
 
 	fullText := fmt.Sprintf("[SC ¥%d] %s: %s", price, username, text)
-	line := fmt.Sprintf("Dialogue: 1,%s,%s,SuperChat,,0,0,0,,%s\n",
-		formatTime(startCS), formatTime(endCS), escapeText(fullText))
+	alignment, marginV := positionToAlignment(w.cfg.ScPosition, 100)
+	line := fmt.Sprintf("Dialogue: 1,%s,%s,SuperChat,,0,0,%d,,{\\an%d}{\\q0}%s\n",
+		formatTime(startCS), formatTime(endCS), marginV, alignment, escapeText(fullText))
 	w.file.WriteString(line)
 	w.file.Sync()
 }

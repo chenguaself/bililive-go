@@ -87,6 +87,8 @@ type DanmakuConfig struct {
 	RecordGift     bool   `yaml:"record_gift" json:"record_gift"`         // 是否录制礼物
 	RecordGuard    bool   `yaml:"record_guard" json:"record_guard"`       // 是否录制上舰
 	RecordSuperChat bool  `yaml:"record_super_chat" json:"record_super_chat"` // 是否录制SC
+	GuardPosition  string `yaml:"guard_position" json:"guard_position"`   // 上舰位置: bottom-left, bottom-right, top-left, top-right
+	ScPosition     string `yaml:"sc_position" json:"sc_position"`         // SC位置: bottom-left, bottom-right, top-left, top-right
 }
 
 var defaultDanmakuConfig = DanmakuConfig{
@@ -100,6 +102,8 @@ var defaultDanmakuConfig = DanmakuConfig{
 	RecordGift:      true,
 	RecordGuard:     true,
 	RecordSuperChat: true,
+	GuardPosition:   "bottom-left",
+	ScPosition:      "bottom-left",
 }
 
 // validScrollAreas 支持的滚动区域
@@ -115,6 +119,14 @@ var validResolutions = map[string]bool{
 	"1280x720":  true,
 	"2560x1440": true,
 	"3840x2160": true,
+}
+
+// validMessagePositions 支持的消息位置
+var validMessagePositions = map[string]bool{
+	"bottom-left":  true,
+	"bottom-right": true,
+	"top-left":     true,
+	"top-right":    true,
 }
 
 // Validate 验证弹幕配置参数的有效性
@@ -142,6 +154,18 @@ func (d *DanmakuConfig) Validate() error {
 	}
 	if d.Opacity < 0 || d.Opacity > 255 {
 		return fmt.Errorf("背景透明度必须在 0~255 之间，当前值: %d", d.Opacity)
+	}
+	if d.GuardPosition == "" {
+		d.GuardPosition = "bottom-left"
+	}
+	if !validMessagePositions[d.GuardPosition] {
+		return fmt.Errorf("不支持的上舰消息位置: %s，可选值: bottom-left, bottom-right, top-left, top-right", d.GuardPosition)
+	}
+	if d.ScPosition == "" {
+		d.ScPosition = "bottom-left"
+	}
+	if !validMessagePositions[d.ScPosition] {
+		return fmt.Errorf("不支持的SC消息位置: %s，可选值: bottom-left, bottom-right, top-left, top-right", d.ScPosition)
 	}
 	return nil
 }
