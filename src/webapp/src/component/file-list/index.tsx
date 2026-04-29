@@ -59,9 +59,10 @@ function parseAss(content: string): { items: DanmakuEntry[]; scrollTime: number 
         const mr = line.match(/^PlayResX:\s*(\d+)/);
         if (mr) resX = parseInt(mr[1]);
 
-        // 解析样式定义中的颜色
-        if (line.trim() === '[V4+ Styles]') { inStyles = true; inEvents = false; continue; }
-        if (line.trim() === '[Events]') { inEvents = true; inStyles = false; continue; }
+        // 解析样式定义中的颜色（忽略大小写）
+        const trimmed = line.trim().toLowerCase();
+        if (trimmed === '[v4+ styles]' || trimmed === '[v4 styles]') { inStyles = true; inEvents = false; continue; }
+        if (trimmed === '[events]') { inEvents = true; inStyles = false; continue; }
         if (line.startsWith('[')) { inStyles = false; inEvents = false; continue; }
 
         if (inStyles && line.startsWith('Style:')) {
@@ -95,7 +96,7 @@ function parseAss(content: string): { items: DanmakuEntry[]; scrollTime: number 
         const raw = parts.slice(9).join(',');
         // 优先使用 Dialogue 行中的 {\c} 覆盖色，否则回退到样式定义的 PrimaryColour
         let color = styleColors[style] || 'rgba(255,255,255,1)';
-        const cm = raw.match(/\\c([^}]+)/);
+        const cm = raw.match(/\\c(&H[0-9A-Fa-f]+&)/);
         if (cm) color = parseAssColor(cm[1]);
         // 提取 {\an} 对齐覆盖（用于定位 SC/上舰消息）
         let align = 0;
@@ -132,7 +133,7 @@ class DanmakuRenderer {
     private lanes: Array<{ el: HTMLDivElement; spawnTime: number; rightEdgeOutTime: number; tailEnterTime: number }[]> = [];
     private laneCount = 0;
     // 固定位置消息（按位置分组堆叠）
-    private fixedEls: { el: HTMLDivElement; endTime: number; posKey: string }[] = [];
+    private fixedEls: { el: HTMLDivElement; endTime: number; fadeOutTime: number; posKey: string; fadingOut: boolean }[] = [];
     // 滚动样式白名单
     private static SCROLL_STYLES = new Set(['Danmaku', 'Gift']);
 
@@ -156,12 +157,21 @@ class DanmakuRenderer {
         this.running = false;
         if (this.rafId) cancelAnimationFrame(this.rafId);
         this.rafId = 0;
-        this.overlay.innerHTML = '';
-        this.lanes = [];
+        // 逐个移除固定消息（触发猴子补丁的定时器清理）
+        for (const f of this.fixedEls) f.el.remove();
         this.fixedEls = [];
+        // 逐个移除滚动弹幕
+        for (const lane of this.lanes) {
+            for (const d of lane) d.el.remove();
+        }
+        this.lanes = [];
+        // 移除 overlay 元素本身
+        if (this.overlay.parentNode) {
+            this.overlay.parentNode.removeChild(this.overlay);
+        }
     }
 
-    /** 跳转到指定时间：清理已有弹幕，用二分查找跳过已过去的弹幕 */
+    /** 跳转到指定时间：清理已有弹幕，找到正确起始索引 */
     seek(time: number) {
         // 清理 DOM 和轨道
         for (const lane of this.lanes) {
@@ -178,7 +188,13 @@ class DanmakuRenderer {
             if (this.items[mid].start <= time) lo = mid + 1;
             else hi = mid;
         }
-        this.nextIdx = lo;
+        // 向前扫描：仅包含仍在显示期的固定消息（SC/上舰）
+        // 滚动弹幕不重新发射（它们无法从中间位置开始）
+        let idx = lo;
+        while (idx > 0 && this.items[idx - 1].end > time && !DanmakuRenderer.SCROLL_STYLES.has(this.items[idx - 1].style)) {
+            idx--;
+        }
+        this.nextIdx = idx;
     }
 
     private tick = () => {
@@ -197,13 +213,17 @@ class DanmakuRenderer {
             }
         }
 
-        // 2. 清理过期的固定位置消息
+        // 2. 清理过期的固定位置消息 + 淡出动画
         let fixedChanged = false;
         for (let i = this.fixedEls.length - 1; i >= 0; i--) {
-            if (this.fixedEls[i].endTime <= t) {
-                this.fixedEls[i].el.remove();
+            const f = this.fixedEls[i];
+            if (f.endTime <= t) {
+                f.el.remove();
                 this.fixedEls.splice(i, 1);
                 fixedChanged = true;
+            } else if (!f.fadingOut && t >= f.fadeOutTime) {
+                f.el.style.opacity = '0';
+                f.fadingOut = true;
             }
         }
         // 有消息过期后重新布局，消除空隙
@@ -233,16 +253,33 @@ class DanmakuRenderer {
         }
     };
 
+    /** 估算文本宽度（px），处理 surrogate pair 和粗体 */
+    private estimateTextWidth(text: string): number {
+        let px = 0;
+        for (const ch of text) {
+            const code = ch.codePointAt(0)!;
+            if (code > 0xFFFF) {
+                // emoji / 扩展 CJK，算 2 个字符宽
+                px += DANMAKU_FONT_SIZE * 2;
+            } else if (code > 0x7F) {
+                // CJK / 全角
+                px += DANMAKU_FONT_SIZE;
+            } else {
+                // ASCII（粗体下约 0.65x）
+                px += DANMAKU_FONT_SIZE * 0.65;
+            }
+        }
+        return px;
+    }
+
     private spawnScroll(item: DanmakuEntry, t: number, cw: number) {
-        // 估算弹幕宽度（px）→ 转为容器百分比
-        let textPx = 0;
-        for (const ch of item.text) textPx += ch.charCodeAt(0) > 0x7F ? DANMAKU_FONT_SIZE : DANMAKU_FONT_SIZE * 0.6;
+        const textPx = this.estimateTextWidth(item.text);
         const twPct = (textPx / cw) * 100;
 
-        // 尾部进入屏幕的时间 = 发射时间 + textWidth/containerWidth * scrollTime
+        // 尾部进入屏幕的时间
         const textEnterTime = t + (textPx / cw) * this.scrollTime;
-        // 完全滚出时间
-        const rightEdgeOutTime = t + this.scrollTime;
+        // 完全滚出时间 = 滚动时间 + 文字滚入时间
+        const rightEdgeOutTime = t + this.scrollTime + (textPx / cw) * this.scrollTime;
         // 安全间隔时间
         const safeGapTime = (DANMAKU_GAP / cw) * this.scrollTime;
 
@@ -320,12 +357,12 @@ class DanmakuRenderer {
         el.style.opacity = '1';
         el.textContent = item.text;
 
-        const fadeOutAt = item.end - 0.5;
-
         // 根据 {\an} 值确定位置
-        const isTop = item.align === 5 || item.align === 7;
-        const isRight = item.align === 3 || item.align === 7;
-        const posKey = (isTop ? 'top' : 'bottom') + '-' + (isRight ? 'right' : 'left');
+        // ASS numpad: 7=左上 8=上中 9=右上 / 4=左中 5=居中 6=右中 / 1=左下 2=下中 3=右下
+        const isTop = item.align >= 7;
+        const isRight = item.align === 3 || item.align === 6 || item.align === 9;
+        const isCenter = item.align === 2 || item.align === 5 || item.align === 8;
+        const posKey = (isTop ? 'top' : 'bottom') + '-' + (isCenter ? 'center' : isRight ? 'right' : 'left');
 
         // 计算同位置已有消息的总高度（用于堆叠偏移）
         let stackOffset = 0;
@@ -341,7 +378,10 @@ class DanmakuRenderer {
         } else {
             el.style.bottom = (10 + stackOffset) + 'px';
         }
-        if (isRight) {
+        if (isCenter) {
+            el.style.left = '50%';
+            el.style.transform = 'translateX(-50%)';
+        } else if (isRight) {
             el.style.right = '10px';
         } else {
             el.style.left = '10px';
@@ -359,17 +399,7 @@ class DanmakuRenderer {
         el.style.maxWidth = '60%';
 
         this.overlay.appendChild(el);
-        this.fixedEls.push({ el, endTime: item.end, posKey });
-
-        const fadeTimer = setTimeout(() => {
-            el.style.opacity = '0';
-        }, Math.max(0, (fadeOutAt - t) * 1000));
-
-        const origRemove = el.remove.bind(el);
-        el.remove = () => {
-            clearTimeout(fadeTimer);
-            origRemove();
-        };
+        this.fixedEls.push({ el, endTime: item.end, fadeOutTime: Math.max(item.start, item.end - 0.5), posKey, fadingOut: false });
     }
 }
 
@@ -397,6 +427,7 @@ const FileList: React.FC = () => {
     const artRef = useRef<Artplayer | null>(null);
     const danmakuRef = useRef<DanmakuRenderer | null>(null);
     const [danmakuStats, setDanmakuStats] = useState<{ danmaku: number; gift: number; guard: number; sc: number; scAmount: number } | null>(null);
+    const playerInitRef = useRef(false); // 跟踪播放器是否应该激活
 
     // 重命名相关状态
     const [isRenameModalVisible, setIsRenameModalVisible] = useState(false);
@@ -447,6 +478,7 @@ const FileList: React.FC = () => {
     }, [pathParam, requestFileList]);
 
     const hidePlayer = useCallback(() => {
+        playerInitRef.current = false;
         if (danmakuRef.current) {
             danmakuRef.current.stop();
             danmakuRef.current = null;
@@ -474,6 +506,20 @@ const FileList: React.FC = () => {
             window.removeEventListener("keydown", handleEsc);
         };
     }, [isPlayerVisible, hidePlayer]);
+
+    // 组件卸载时清理播放器和弹幕渲染器
+    useEffect(() => {
+        return () => {
+            if (danmakuRef.current) {
+                danmakuRef.current.stop();
+                danmakuRef.current = null;
+            }
+            if (artRef.current) {
+                artRef.current.destroy(true);
+                artRef.current = null;
+            }
+        };
+    }, []);
 
     const handleChange = (pagination: any, filters: any, sorter: any) => {
         setSortedInfo(sorter);
@@ -639,8 +685,15 @@ const FileList: React.FC = () => {
         } else {
             setCurrentPlayingName(record.name);
             setIsPlayerVisible(true);
+            playerInitRef.current = true;
             // 使用 setTimeout 确保 DOM 已更新
             setTimeout(() => {
+                // 检查是否已被 hidePlayer 取消
+                if (!playerInitRef.current) return;
+                if (danmakuRef.current) {
+                    danmakuRef.current.stop();
+                    danmakuRef.current = null;
+                }
                 if (artRef.current) {
                     artRef.current.destroy(true);
                 }
@@ -705,7 +758,9 @@ const FileList: React.FC = () => {
 
                 // 弹幕渲染集成
                 if (record.subtitle_file) {
-                    const assUrl = `files/${encodePath(fullPath).replace(/\.[^.]+$/, '.ass')}`;
+                    // 使用 API 返回的 subtitle_file 字段构造 URL，而非推导
+                    const dirPath = fullPath.includes('/') ? fullPath.substring(0, fullPath.lastIndexOf('/') + 1) : '';
+                    const assUrl = `files/${encodePath(dirPath + record.subtitle_file)}`;
                     art.on('ready', () => {
                         fetch(assUrl)
                             .then(r => r.ok ? r.text() : Promise.reject())
@@ -741,13 +796,19 @@ const FileList: React.FC = () => {
                                 const renderer = new DanmakuRenderer(overlay, art.video, items, scrollTime);
                                 danmakuRef.current = renderer;
                                 renderer.start();
-
-                                // 拖拽进度条时跳转弹幕
-                                art.on('video:seeked', () => {
+                                // 如果浏览器恢复了播放位置，跳转到当前时间
+                                if (art.video.currentTime > 0) {
                                     renderer.seek(art.video.currentTime);
-                                });
+                                }
                             })
                             .catch(() => { /* 没有 ASS 文件或加载失败，静默忽略 */ });
+                    });
+
+                    // 拖拽进度条时跳转弹幕（注册在 fetch 外，避免 seek 期间未注册）
+                    art.on('video:seeked', () => {
+                        if (danmakuRef.current) {
+                            danmakuRef.current.seek(art.video.currentTime);
+                        }
                     });
                 }
 

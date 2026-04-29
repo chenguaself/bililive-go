@@ -70,7 +70,7 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 		}
 	})
 
-	if d.cfg.RecordGift {
+	if d.cfg.RecordGift != nil && *d.cfg.RecordGift {
 		c.OnGift(func(msg *message.Gift) {
 			if msg.Num > 0 {
 				d.mu.Lock()
@@ -83,7 +83,7 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 		})
 	}
 
-	if d.cfg.RecordGuard {
+	if d.cfg.RecordGuard != nil && *d.cfg.RecordGuard {
 		c.OnGuardBuy(func(msg *message.GuardBuy) {
 			d.mu.Lock()
 			w := d.assWriter
@@ -94,7 +94,7 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 		})
 	}
 
-	if d.cfg.RecordSuperChat {
+	if d.cfg.RecordSuperChat != nil && *d.cfg.RecordSuperChat {
 		c.OnSuperChat(func(msg *message.SuperChat) {
 			d.mu.Lock()
 			w := d.assWriter
@@ -121,17 +121,23 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 // Stop stops the danmaku recorder.
 func (d *DanmakuRecorder) Stop() {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.client != nil {
-		d.client.Stop()
-		d.client = nil
+	c := d.client
+	w := d.assWriter
+	d.client = nil
+	d.assWriter = nil
+	d.mu.Unlock()
+	// 在锁外关闭，避免与回调死锁
+	if c != nil {
+		c.Stop()
 	}
-	if d.assWriter != nil {
-		d.assWriter.Close()
-		d.assWriter = nil
+	if w != nil {
+		w.Close()
 	}
-	if d.count > 0 {
-		d.logger.Infof("弹幕录制已停止，共录制 %d 条弹幕 -> %s", d.count, d.outputFile)
+	d.mu.Lock()
+	count := d.count
+	d.mu.Unlock()
+	if count > 0 {
+		d.logger.Infof("弹幕录制已停止，共录制 %d 条弹幕 -> %s", count, d.outputFile)
 	} else {
 		d.logger.Info("弹幕录制已停止，未收到弹幕")
 	}
@@ -144,6 +150,8 @@ func (d *DanmakuRecorder) OutputFile() string {
 
 // GetCount returns the number of danmaku received so far.
 func (d *DanmakuRecorder) GetCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return d.count
 }
 

@@ -1438,13 +1438,19 @@ func applyConfigUpdates(c *configs.Config, updates map[string]interface{}) error
 			c.Danmaku.Opacity = int(opacity)
 		}
 		if recordGift, ok := danmaku["record_gift"].(bool); ok {
-			c.Danmaku.RecordGift = recordGift
+			c.Danmaku.RecordGift = configs.BoolPtr(recordGift)
+		} else if _, exists := danmaku["record_gift"]; exists && danmaku["record_gift"] == nil {
+			c.Danmaku.RecordGift = nil
 		}
 		if recordGuard, ok := danmaku["record_guard"].(bool); ok {
-			c.Danmaku.RecordGuard = recordGuard
+			c.Danmaku.RecordGuard = configs.BoolPtr(recordGuard)
+		} else if _, exists := danmaku["record_guard"]; exists && danmaku["record_guard"] == nil {
+			c.Danmaku.RecordGuard = nil
 		}
 		if recordSuperChat, ok := danmaku["record_super_chat"].(bool); ok {
-			c.Danmaku.RecordSuperChat = recordSuperChat
+			c.Danmaku.RecordSuperChat = configs.BoolPtr(recordSuperChat)
+		} else if _, exists := danmaku["record_super_chat"]; exists && danmaku["record_super_chat"] == nil {
+			c.Danmaku.RecordSuperChat = nil
 		}
 		if guardPosition, ok := danmaku["guard_position"].(string); ok {
 			c.Danmaku.GuardPosition = guardPosition
@@ -1967,13 +1973,19 @@ func applyOverridableConfigUpdates(oc *configs.OverridableConfig, updates map[st
 			oc.Danmaku.Opacity = int(opacity)
 		}
 		if recordGift, ok := danmaku["record_gift"].(bool); ok {
-			oc.Danmaku.RecordGift = recordGift
+			oc.Danmaku.RecordGift = configs.BoolPtr(recordGift)
+		} else if _, exists := danmaku["record_gift"]; exists && danmaku["record_gift"] == nil {
+			oc.Danmaku.RecordGift = nil
 		}
 		if recordGuard, ok := danmaku["record_guard"].(bool); ok {
-			oc.Danmaku.RecordGuard = recordGuard
+			oc.Danmaku.RecordGuard = configs.BoolPtr(recordGuard)
+		} else if _, exists := danmaku["record_guard"]; exists && danmaku["record_guard"] == nil {
+			oc.Danmaku.RecordGuard = nil
 		}
 		if recordSuperChat, ok := danmaku["record_super_chat"].(bool); ok {
-			oc.Danmaku.RecordSuperChat = recordSuperChat
+			oc.Danmaku.RecordSuperChat = configs.BoolPtr(recordSuperChat)
+		} else if _, exists := danmaku["record_super_chat"]; exists && danmaku["record_super_chat"] == nil {
+			oc.Danmaku.RecordSuperChat = nil
 		}
 		if guardPosition, ok := danmaku["guard_position"].(string); ok {
 			oc.Danmaku.GuardPosition = guardPosition
@@ -2036,22 +2048,14 @@ func updateRoomConfig(writer http.ResponseWriter, r *http.Request) {
 		if nickName, ok := updates["nick_name"].(string); ok {
 			room.NickName = nickName
 		}
-		if interval, ok := updates["interval"].(float64); ok {
-			val := int(interval)
-			room.Interval = &val
-		}
-		if outPutPath, ok := updates["out_put_path"].(string); ok {
-			if outPutPath == "" {
-				room.OutPutPath = nil
-			} else {
-				room.OutPutPath = &outPutPath
-			}
-		}
-		if ffmpegPath, ok := updates["ffmpeg_path"].(string); ok {
-			if ffmpegPath == "" {
-				room.FfmpegPath = nil
-			} else {
-				room.FfmpegPath = &ffmpegPath
+
+		// 处理可覆盖配置（弹幕、interval、outPutPath、ffmpegPath 等）
+		applyOverridableConfigUpdates(&room.OverridableConfig, updates)
+
+		// 验证弹幕配置
+		if room.Danmaku != nil {
+			if err := room.Danmaku.Validate(); err != nil {
+				return fmt.Errorf("弹幕配置无效: %w", err)
 			}
 		}
 

@@ -15,11 +15,13 @@ import (
 type AssWriter struct {
 	mu          sync.Mutex
 	file        *os.File
+	closed      bool
 	startAt     time.Time
 	cfg         configs.DanmakuConfig
 	resX        int
 	resY        int
-	bannerSpeed int // ASS Banner speed (ms per pixel)
+	scrollTimeMs int    // 滚动总毫秒数
+	bannerSpeed int    // ASS Banner speed (ms per pixel)
 	laneStart   int // first usable lane index
 	laneEnd     int // last usable lane index (exclusive)
 	laneNum     int // total lanes in the usable range
@@ -47,7 +49,8 @@ func NewAssWriter(filePath string, startAt time.Time, cfg configs.DanmakuConfig)
 	}
 
 	resX, resY := parseResolution(cfg.Resolution)
-	bannerSpeed := cfg.ScrollTime * 1000 / resX
+	scrollTimeMs := cfg.ScrollTime * 1000
+	bannerSpeed := scrollTimeMs / resX
 	if bannerSpeed < 1 {
 		bannerSpeed = 1
 	}
@@ -79,6 +82,7 @@ func NewAssWriter(filePath string, startAt time.Time, cfg configs.DanmakuConfig)
 		cfg:         cfg,
 		resX:        resX,
 		resY:        resY,
+		scrollTimeMs: scrollTimeMs,
 		bannerSpeed: bannerSpeed,
 		laneStart:   laneStart,
 		laneEnd:     laneEnd,
@@ -216,6 +220,9 @@ func (w *AssWriter) estimateTextWidth(text string) int {
 func (w *AssWriter) AddDanmaku(recvAt time.Time, username, text string, color int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.closed {
+		return
+	}
 
 	elapsed := recvAt.Sub(w.startAt)
 	startCS := int64(elapsed / (10 * time.Millisecond))
@@ -226,7 +233,8 @@ func (w *AssWriter) AddDanmaku(recvAt time.Time, username, text string, color in
 	fullText := username + ": " + text
 	textWidth := w.estimateTextWidth(fullText)
 	totalDistance := w.resX + textWidth
-	durationCS := int64(totalDistance * w.bannerSpeed / 10)
+	// 使用 scrollTimeMs 精确计算，避免 bannerSpeed 整数截断
+	durationCS := int64(w.scrollTimeMs) * int64(totalDistance) / int64(w.resX) / 10
 	if durationCS < 200 {
 		durationCS = 200
 	}
@@ -251,6 +259,9 @@ func (w *AssWriter) AddDanmaku(recvAt time.Time, username, text string, color in
 func (w *AssWriter) AddGift(recvAt time.Time, username, giftName string, num int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.closed {
+		return
+	}
 
 	elapsed := recvAt.Sub(w.startAt)
 	startCS := int64(elapsed / (10 * time.Millisecond))
@@ -261,7 +272,7 @@ func (w *AssWriter) AddGift(recvAt time.Time, username, giftName string, num int
 	fullText := fmt.Sprintf("%s 赠送 %s x%d", username, giftName, num)
 	textWidth := w.estimateTextWidth(fullText)
 	totalDistance := w.resX + textWidth
-	durationCS := int64(totalDistance * w.bannerSpeed / 10)
+	durationCS := int64(w.scrollTimeMs) * int64(totalDistance) / int64(w.resX) / 10
 	if durationCS < 200 {
 		durationCS = 200
 	}
@@ -278,12 +289,13 @@ func (w *AssWriter) AddGift(recvAt time.Time, username, giftName string, num int
 }
 
 // positionToAlignment maps position string to ASS \an alignment value and margin.
+// ASS numpad layout: 7=top-left, 8=top-center, 9=top-right, 4/5/6=middle, 1/2/3=bottom
 func positionToAlignment(pos string, bottomMargin int) (alignment int, marginV int) {
 	switch pos {
 	case "top-left":
-		return 5, 20
-	case "top-right":
 		return 7, 20
+	case "top-right":
+		return 9, 20
 	case "bottom-right":
 		return 3, bottomMargin
 	default: // "bottom-left"
@@ -295,6 +307,9 @@ func positionToAlignment(pos string, bottomMargin int) (alignment int, marginV i
 func (w *AssWriter) AddGuard(recvAt time.Time, username, giftName string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.closed {
+		return
+	}
 
 	elapsed := recvAt.Sub(w.startAt)
 	startCS := int64(elapsed / (10 * time.Millisecond))
@@ -315,6 +330,9 @@ func (w *AssWriter) AddGuard(recvAt time.Time, username, giftName string) {
 func (w *AssWriter) AddSuperChat(recvAt time.Time, username, text string, price int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.closed {
+		return
+	}
 
 	elapsed := recvAt.Sub(w.startAt)
 	startCS := int64(elapsed / (10 * time.Millisecond))
@@ -359,6 +377,7 @@ func (w *AssWriter) OutputPath() string {
 func (w *AssWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.closed = true
 	if w.file != nil {
 		return w.file.Close()
 	}

@@ -77,19 +77,21 @@ func (f *Feature) GetEffectiveDownloaderType() DownloaderType {
 
 // DanmakuConfig 弹幕录制配置
 type DanmakuConfig struct {
-	FontSize       int    `yaml:"font_size" json:"font_size"`             // 字体大小 (12~120)
-	FontName       string `yaml:"font_name" json:"font_name"`             // 字体名称
-	ScrollArea     string `yaml:"scroll_area" json:"scroll_area"`         // 滚动区域: full(全屏), top(顶部), bottom(底部)
-	ScrollTime     int    `yaml:"scroll_time" json:"scroll_time"`         // 弹幕滚过屏幕的秒数 (5~20)
-	Resolution     string `yaml:"resolution" json:"resolution"`           // 播放分辨率
-	Outline        int    `yaml:"outline" json:"outline"`                 // 描边粗细 (0~4)
-	Opacity        int    `yaml:"opacity" json:"opacity"`                 // 背景透明度 (0~255)
-	RecordGift     bool   `yaml:"record_gift" json:"record_gift"`         // 是否录制礼物
-	RecordGuard    bool   `yaml:"record_guard" json:"record_guard"`       // 是否录制上舰
-	RecordSuperChat bool  `yaml:"record_super_chat" json:"record_super_chat"` // 是否录制SC
-	GuardPosition  string `yaml:"guard_position" json:"guard_position"`   // 上舰位置: bottom-left, bottom-right, top-left, top-right
-	ScPosition     string `yaml:"sc_position" json:"sc_position"`         // SC位置: bottom-left, bottom-right, top-left, top-right
+	FontSize        int    `yaml:"font_size" json:"font_size"`               // 字体大小 (12~120)
+	FontName        string `yaml:"font_name" json:"font_name"`               // 字体名称
+	ScrollArea      string `yaml:"scroll_area" json:"scroll_area"`           // 滚动区域: full(全屏), top(顶部), bottom(底部)
+	ScrollTime      int    `yaml:"scroll_time" json:"scroll_time"`           // 弹幕滚过屏幕的秒数 (5~20)
+	Resolution      string `yaml:"resolution" json:"resolution"`             // 播放分辨率
+	Outline         int    `yaml:"outline" json:"outline"`                   // 描边粗细 (0~4)
+	Opacity         int    `yaml:"opacity" json:"opacity"`                   // 背景透明度 (0~255)
+	RecordGift      *bool  `yaml:"record_gift,omitempty" json:"record_gift,omitempty"`         // 是否录制礼物
+	RecordGuard     *bool  `yaml:"record_guard,omitempty" json:"record_guard,omitempty"`       // 是否录制上舰
+	RecordSuperChat *bool  `yaml:"record_super_chat,omitempty" json:"record_super_chat,omitempty"` // 是否录制SC
+	GuardPosition   string `yaml:"guard_position" json:"guard_position"`     // 上舰位置: bottom-left, bottom-right, top-left, top-right
+	ScPosition      string `yaml:"sc_position" json:"sc_position"`           // SC位置: bottom-left, bottom-right, top-left, top-right
 }
+
+func BoolPtr(b bool) *bool { return &b }
 
 var defaultDanmakuConfig = DanmakuConfig{
 	FontSize:        36,
@@ -99,9 +101,9 @@ var defaultDanmakuConfig = DanmakuConfig{
 	Resolution:      "1920x1080",
 	Outline:         1,
 	Opacity:         128,
-	RecordGift:      true,
-	RecordGuard:     true,
-	RecordSuperChat: true,
+	RecordGift:      BoolPtr(true),
+	RecordGuard:     BoolPtr(true),
+	RecordSuperChat: BoolPtr(true),
 	GuardPosition:   "bottom-left",
 	ScPosition:      "bottom-left",
 }
@@ -129,16 +131,54 @@ var validMessagePositions = map[string]bool{
 	"top-right":    true,
 }
 
+// SetDefaults 将空字段设为默认值（应在 Validate 之前调用）
+func (d *DanmakuConfig) SetDefaults() {
+	if d.FontSize == 0 {
+		d.FontSize = defaultDanmakuConfig.FontSize
+	}
+	if d.FontName == "" {
+		d.FontName = defaultDanmakuConfig.FontName
+	}
+	if d.ScrollArea == "" {
+		d.ScrollArea = "full"
+	}
+	if d.ScrollTime == 0 {
+		d.ScrollTime = defaultDanmakuConfig.ScrollTime
+	}
+	if d.Resolution == "" {
+		d.Resolution = "1920x1080"
+	}
+	if d.Outline == 0 {
+		d.Outline = defaultDanmakuConfig.Outline
+	}
+	if d.Opacity == 0 {
+		d.Opacity = defaultDanmakuConfig.Opacity
+	}
+	if d.RecordGift == nil {
+		d.RecordGift = BoolPtr(true)
+	}
+	if d.RecordGuard == nil {
+		d.RecordGuard = BoolPtr(true)
+	}
+	if d.RecordSuperChat == nil {
+		d.RecordSuperChat = BoolPtr(true)
+	}
+	if d.GuardPosition == "" {
+		d.GuardPosition = "bottom-left"
+	}
+	if d.ScPosition == "" {
+		d.ScPosition = "bottom-left"
+	}
+}
+
 // Validate 验证弹幕配置参数的有效性
 func (d *DanmakuConfig) Validate() error {
+	d.SetDefaults()
 	if d.FontSize < 12 || d.FontSize > 120 {
 		return fmt.Errorf("字体大小必须在 12~120 之间，当前值: %d", d.FontSize)
 	}
 	if d.FontName == "" {
 		return fmt.Errorf("字体名称不能为空")
-	}
-	if d.ScrollArea == "" {
-		d.ScrollArea = "full"
 	}
 	if !validScrollAreas[d.ScrollArea] {
 		return fmt.Errorf("不支持的滚动区域: %s，可选值: full, top, bottom", d.ScrollArea)
@@ -155,14 +195,8 @@ func (d *DanmakuConfig) Validate() error {
 	if d.Opacity < 0 || d.Opacity > 255 {
 		return fmt.Errorf("背景透明度必须在 0~255 之间，当前值: %d", d.Opacity)
 	}
-	if d.GuardPosition == "" {
-		d.GuardPosition = "bottom-left"
-	}
 	if !validMessagePositions[d.GuardPosition] {
 		return fmt.Errorf("不支持的上舰消息位置: %s，可选值: bottom-left, bottom-right, top-left, top-right", d.GuardPosition)
-	}
-	if d.ScPosition == "" {
-		d.ScPosition = "bottom-left"
 	}
 	if !validMessagePositions[d.ScPosition] {
 		return fmt.Errorf("不支持的SC消息位置: %s，可选值: bottom-left, bottom-right, top-left, top-right", d.ScPosition)
@@ -170,12 +204,51 @@ func (d *DanmakuConfig) Validate() error {
 	return nil
 }
 
-// mergeDanmakuConfig 合并弹幕配置，override 非 nil 时直接覆盖 base
+// mergeDanmakuConfig 合并弹幕配置，override 中的非零值覆盖 base
+// *bool 字段：nil 表示继承，非 nil 表示覆盖
 func mergeDanmakuConfig(base, override *DanmakuConfig) DanmakuConfig {
 	if override == nil {
 		return *base
 	}
-	return *override
+	result := *base
+	if override.FontSize != 0 {
+		result.FontSize = override.FontSize
+	}
+	if override.FontName != "" {
+		result.FontName = override.FontName
+	}
+	if override.ScrollArea != "" {
+		result.ScrollArea = override.ScrollArea
+	}
+	if override.ScrollTime != 0 {
+		result.ScrollTime = override.ScrollTime
+	}
+	if override.Resolution != "" {
+		result.Resolution = override.Resolution
+	}
+	if override.Outline != 0 {
+		result.Outline = override.Outline
+	}
+	if override.Opacity != 0 {
+		result.Opacity = override.Opacity
+	}
+	if override.RecordGift != nil {
+		result.RecordGift = override.RecordGift
+	}
+	if override.RecordGuard != nil {
+		result.RecordGuard = override.RecordGuard
+	}
+	if override.RecordSuperChat != nil {
+		result.RecordSuperChat = override.RecordSuperChat
+	}
+	if override.GuardPosition != "" {
+		result.GuardPosition = override.GuardPosition
+	}
+	if override.ScPosition != "" {
+		result.ScPosition = override.ScPosition
+	}
+	result.SetDefaults()
+	return result
 }
 
 // GetDefaultDanmakuConfig 返回弹幕配置的默认值

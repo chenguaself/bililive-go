@@ -491,20 +491,36 @@ func (r *recorder) tryRecord(ctx context.Context) {
 	r.startTime = time.Now()
 
 	// 弹幕录制（仅哔哩哔哩平台）
-	r.danmakuRec = nil
 	if resolvedConfig.DanmakuEnable && r.Live.GetPlatformCNName() == "哔哩哔哩" {
 		assFile := fileName[:strings.LastIndex(fileName, ".")] + ".ass"
 		roomID := extractRoomIDFromUrl(r.Live.GetRawUrl())
 		cookies := extractCookiesString(r.Live)
 		if roomID > 0 {
 			r.getLogger().Infof("弹幕录制已启用，房间ID: %d, 输出: %s", roomID, assFile)
-			r.danmakuRec = danmaku.NewDanmakuRecorder(roomID, cookies, assFile, resolvedConfig.Danmaku, r.getLogger().Entry)
-			if dmErr := r.danmakuRec.Start(ctx); dmErr != nil {
+			rec := danmaku.NewDanmakuRecorder(roomID, cookies, assFile, resolvedConfig.Danmaku, r.getLogger().Entry)
+			if dmErr := rec.Start(ctx); dmErr != nil {
 				r.getLogger().WithError(dmErr).Warn("弹幕录制启动失败，继续录制视频")
-				r.danmakuRec = nil
+			} else {
+				// 停止旧的录制器（如果有）
+				r.currentFileLock.Lock()
+				old := r.danmakuRec
+				r.danmakuRec = rec
+				r.currentFileLock.Unlock()
+				if old != nil {
+					old.Stop()
+				}
 			}
 		} else {
 			r.getLogger().Warn("弹幕录制已启用但无法解析房间ID: " + r.Live.GetRawUrl())
+		}
+	} else {
+		// 弹幕未启用，清理旧的录制器
+		r.currentFileLock.Lock()
+		old := r.danmakuRec
+		r.danmakuRec = nil
+		r.currentFileLock.Unlock()
+		if old != nil {
+			old.Stop()
 		}
 	}
 
@@ -518,10 +534,13 @@ func (r *recorder) tryRecord(ctx context.Context) {
 	r.setCurrentFilePath("")
 
 	// 停止弹幕录制并累积文件
-	if r.danmakuRec != nil {
-		r.danmakuRec.Stop()
-		if fi, dmErr := os.Stat(r.danmakuRec.OutputFile()); dmErr == nil && fi.Size() > 0 {
-			r.accumulateRecordedFiles(r.danmakuRec.OutputFile())
+	r.currentFileLock.RLock()
+	dmRec := r.danmakuRec
+	r.currentFileLock.RUnlock()
+	if dmRec != nil {
+		dmRec.Stop()
+		if fi, dmErr := os.Stat(dmRec.OutputFile()); dmErr == nil && fi.Size() > 0 {
+			r.accumulateRecordedFiles(dmRec.OutputFile())
 		}
 	}
 
@@ -922,12 +941,21 @@ func (r *recorder) Close() {
 			r.getLogger().WithError(err).Warn("failed to end recorder")
 		}
 	}
+	// 停止弹幕录制器
+	r.currentFileLock.RLock()
+	dmRec := r.danmakuRec
+	r.currentFileLock.RUnlock()
+	if dmRec != nil {
+		dmRec.Stop()
+	}
 	r.getLogger().Info("Record End")
 	r.ed.DispatchEvent(events.NewEvent(RecorderStop, r.Live))
 }
 
 func (r *recorder) CloseForRestart() []notify.RecordingFileDetail {
+	r.recordedFilesMu.Lock()
 	r.suppressSummary = true
+	r.recordedFilesMu.Unlock()
 	r.Close()
 	<-r.done // 等待 run() 完全退出，确保最后一个文件已累积
 	r.recordedFilesMu.Lock()
@@ -1062,14 +1090,13 @@ func (r *recorder) GetStatus() (map[string]interface{}, error) {
 	if len(r.currentStreamHeaders) > 0 {
 		status["stream_headers"] = sanitizeHeaders(r.currentStreamHeaders)
 	}
-	r.currentFileLock.RUnlock()
-
-	// 弹幕录制状态
+	// 弹幕录制状态（与 currentFileLock 同步保护 danmakuRec 的并发访问）
 	if r.danmakuRec != nil {
 		for k, v := range r.danmakuRec.GetStatus() {
 			status[k] = v
 		}
 	}
+	r.currentFileLock.RUnlock()
 
 	return status, nil
 }
