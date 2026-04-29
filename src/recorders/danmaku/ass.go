@@ -94,13 +94,69 @@ func NewAssWriter(filePath string, startAt time.Time, cfg configs.DanmakuConfig)
 	return w, nil
 }
 
+// scTierColor 返回 SC 价位对应的 ASS 背景色 (B站原始配色)
+func scTierColor(price int) string {
+	switch {
+	case price >= 2000:
+		return "&H80E73CC6" // 紫色 #C678F5
+	case price >= 1000:
+		return "&H80396AFF" // 深红 #FF6A39
+	case price >= 500:
+		return "&H80396AFF" // 红色 #FF6A39
+	case price >= 200:
+		return "&H8032A0FF" // 橙色 #FFA032
+	case price >= 100:
+		return "&H804BB6E3" // 金色 #E3B64B
+	case price >= 50:
+		return "&H80C7C34F" // 青色 #4FC3C7
+	case price >= 30:
+		return "&H80B2602A" // 蓝色 #2A60B2
+	case price >= 2:
+		return "&H80BFBFBF" // 浅灰 #BFBFBF
+	default:
+		return "&H8014A500" // 默认绿色 #00A514
+	}
+}
+
+// scTierStyle 返回 SC 价位对应的 ASS 样式名
+func scTierStyle(price int) string {
+	switch {
+	case price >= 2000:
+		return "SC2000"
+	case price >= 1000:
+		return "SC1000"
+	case price >= 500:
+		return "SC500"
+	case price >= 200:
+		return "SC200"
+	case price >= 100:
+		return "SC100"
+	case price >= 50:
+		return "SC50"
+	case price >= 30:
+		return "SC30"
+	case price >= 2:
+		return "SC2"
+	default:
+		return "SCDefault"
+	}
+}
+
 func (w *AssWriter) writeHeader() error {
 	assAlpha := 255 - w.cfg.Opacity
 	backColor := fmt.Sprintf("&H%02X000000&", assAlpha)
-	// Guard: 橙色半透明背景 &H800080FF → alpha=0x80, R=0xFF, G=0x80, B=0x00
 	guardBackColor := "&H800080FF"
-	// SuperChat: 绿色半透明背景 &HA000A514 → alpha=0xA0, R=0x14, G=0xA5, B=0x00
-	scBackColor := "&HA000A514"
+
+	// SC 各价位背景色 (B站原始配色)
+	sc2 := scTierColor(2)
+	sc30 := scTierColor(30)
+	sc50 := scTierColor(50)
+	sc100 := scTierColor(100)
+	sc200 := scTierColor(200)
+	sc500 := scTierColor(500)
+	sc1000 := scTierColor(1000)
+	sc2000 := scTierColor(2000)
+	scDefault := scTierColor(0)
 
 	header := fmt.Sprintf(`[Script Info]
 Title: Bilibili Danmaku
@@ -115,7 +171,15 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
 Style: Danmaku,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,0,0,0,0,100,100,0,0,1,%d,0,8,0,0,0,1
 Style: Gift,%s,%d,&H0000D4FF,&H000000FF,&H00000000,%s,0,0,0,0,100,100,0,0,1,%d,0,8,0,0,0,1
 Style: Guard,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3,1,0,1,0,0,60,1
-Style: SuperChat,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3,1,0,1,0,0,100,1
+Style: SC2,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3,1,0,1,0,0,100,1
+Style: SC30,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3,1,0,1,0,0,100,1
+Style: SC50,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3,1,0,1,0,0,100,1
+Style: SC100,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3,1,0,1,0,0,100,1
+Style: SC200,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3,1,0,1,0,0,100,1
+Style: SC500,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3,1,0,1,0,0,100,1
+Style: SC1000,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3,1,0,1,0,0,100,1
+Style: SC2000,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3,1,0,1,0,0,100,1
+Style: SCDefault,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3,1,0,1,0,0,100,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -123,7 +187,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 		w.cfg.FontName, w.cfg.FontSize, backColor, w.cfg.Outline,
 		w.cfg.FontName, w.cfg.FontSize-6, backColor, w.cfg.Outline,
 		w.cfg.FontName, w.cfg.FontSize, guardBackColor,
-		w.cfg.FontName, w.cfg.FontSize, scBackColor)
+		w.cfg.FontName, w.cfg.FontSize, sc2,
+		w.cfg.FontName, w.cfg.FontSize, sc30,
+		w.cfg.FontName, w.cfg.FontSize, sc50,
+		w.cfg.FontName, w.cfg.FontSize, sc100,
+		w.cfg.FontName, w.cfg.FontSize, sc200,
+		w.cfg.FontName, w.cfg.FontSize, sc500,
+		w.cfg.FontName, w.cfg.FontSize, sc1000,
+		w.cfg.FontName, w.cfg.FontSize, sc2000,
+		w.cfg.FontName, w.cfg.FontSize, scDefault)
 	_, err := w.file.WriteString(header)
 	return err
 }
@@ -253,8 +325,9 @@ func (w *AssWriter) AddSuperChat(recvAt time.Time, username, text string, price 
 
 	fullText := fmt.Sprintf("[SC ¥%d] %s: %s", price, username, text)
 	alignment, marginV := positionToAlignment(w.cfg.ScPosition, 100)
-	line := fmt.Sprintf("Dialogue: 1,%s,%s,SuperChat,,0,0,%d,,{\\an%d}{\\q0}%s\n",
-		formatTime(startCS), formatTime(endCS), marginV, alignment, escapeText(fullText))
+	styleName := scTierStyle(price)
+	line := fmt.Sprintf("Dialogue: 1,%s,%s,%s,,0,0,%d,,{\\an%d}{\\q0}%s\n",
+		formatTime(startCS), formatTime(endCS), styleName, marginV, alignment, escapeText(fullText))
 	w.file.WriteString(line)
 	w.file.Sync()
 }

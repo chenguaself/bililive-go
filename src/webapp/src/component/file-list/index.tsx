@@ -41,7 +41,7 @@ function parseAssColor(c: string): string {
     return `rgba(${r},${g},${b},${a.toFixed(2)})`;
 }
 
-type DanmakuEntry = { start: number; end: number; color: string; text: string; style: string; align: number };
+type DanmakuEntry = { start: number; end: number; color: string; text: string; style: string; align: number; bgColor: string };
 
 /** 解析 ASS 文件，提取所有弹幕条目 */
 function parseAss(content: string): { items: DanmakuEntry[]; scrollTime: number } {
@@ -51,25 +51,26 @@ function parseAss(content: string): { items: DanmakuEntry[]; scrollTime: number 
     let inEvents = false;
     let resX = 1920;
     let bannerSpeed = 80; // ms per pixel
-    // 样式名 → PrimaryColour CSS 颜色
+    // 样式名 → PrimaryColour / BackColour CSS 颜色
     const styleColors: Record<string, string> = {};
+    const styleBackColors: Record<string, string> = {};
 
     for (const line of lines) {
         const mr = line.match(/^PlayResX:\s*(\d+)/);
         if (mr) resX = parseInt(mr[1]);
 
-        // 解析样式定义中的 PrimaryColour
+        // 解析样式定义中的颜色
         if (line.trim() === '[V4+ Styles]') { inStyles = true; inEvents = false; continue; }
         if (line.trim() === '[Events]') { inEvents = true; inStyles = false; continue; }
         if (line.startsWith('[')) { inStyles = false; inEvents = false; continue; }
 
         if (inStyles && line.startsWith('Style:')) {
-            // Style: Name, Fontname, Fontsize, PrimaryColour, ...
+            // Style: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, ...
             const sp = line.substring('Style:'.length).split(',');
-            if (sp.length >= 4) {
+            if (sp.length >= 7) {
                 const name = sp[0].trim();
-                const pc = sp[3].trim();
-                styleColors[name] = parseAssColor(pc);
+                styleColors[name] = parseAssColor(sp[3].trim());
+                styleBackColors[name] = parseAssColor(sp[6].trim());
             }
             continue;
         }
@@ -101,7 +102,8 @@ function parseAss(content: string): { items: DanmakuEntry[]; scrollTime: number 
         const am = raw.match(/\\an(\d+)/);
         if (am) align = parseInt(am[1]);
         const text = raw.replace(/\{[^}]*\}/g, '');
-        if (end > start && text) items.push({ start, end, color, text, style, align });
+        const bgColor = styleBackColors[style] || '';
+        if (end > start && text) items.push({ start, end, color, text, style, align, bgColor });
     }
 
     return { items, scrollTime: (bannerSpeed * resX) / 1000 };
@@ -345,11 +347,13 @@ class DanmakuRenderer {
             el.style.left = '10px';
         }
 
-        // 背景色与 ASS 保持一致
-        if (item.style === 'SuperChat') {
-            el.style.background = 'rgba(20,165,0,0.37)';
-        } else {
+        // 背景色：优先使用 ASS 文件中样式定义的颜色
+        if (item.bgColor) {
+            el.style.background = item.bgColor;
+        } else if (item.style === 'Guard') {
             el.style.background = 'rgba(255,128,0,0.50)';
+        } else {
+            el.style.background = 'rgba(20,165,0,0.37)';
         }
         el.style.color = item.color;
         el.style.maxWidth = '60%';
