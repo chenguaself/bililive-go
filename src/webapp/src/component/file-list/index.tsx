@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import API from "../../utils/api";
-import { Breadcrumb, Table, Button, Modal, Input, Popconfirm, message, Space, Tooltip } from "antd";
+import { Breadcrumb, Table, Button, Modal, Input, Popconfirm, message, Space, Tooltip, Switch } from "antd";
 import {
     // @ts-ignore
     FolderOutlined,
@@ -428,6 +428,8 @@ const FileList: React.FC = () => {
     const danmakuRef = useRef<DanmakuRenderer | null>(null);
     const [danmakuStats, setDanmakuStats] = useState<{ danmaku: number; gift: number; guard: number; sc: number; scAmount: number } | null>(null);
     const playerInitRef = useRef(false); // 跟踪播放器是否应该激活
+    const [loadDanmaku, setLoadDanmaku] = useState(true); // 是否加载 ASS 弹幕
+    const currentPlayingRef = useRef<{ record: CurrentFolderFile; fullPath: string } | null>(null);
 
     // 重命名相关状态
     const [isRenameModalVisible, setIsRenameModalVisible] = useState(false);
@@ -440,6 +442,7 @@ const FileList: React.FC = () => {
     const [isBatchRenameModalVisible, setIsBatchRenameModalVisible] = useState(false);
     const [batchFind, setBatchFind] = useState("");
     const [batchReplace, setBatchReplace] = useState("");
+    const [batchBurning, setBatchBurning] = useState(false);
 
     // 当弹窗打开时，自动聚焦到输入框
     useEffect(() => {
@@ -542,6 +545,65 @@ const FileList: React.FC = () => {
         if (!path) return "";
         return path.split("/").map(p => encodeURIComponent(encodeURIComponent(p))).join("/");
     };
+
+    // 切换 ASS 弹幕加载状态
+    const toggleDanmaku = useCallback((checked: boolean) => {
+        setLoadDanmaku(checked);
+
+        if (!checked) {
+            // 关闭弹幕：停止渲染器并移除覆盖层
+            if (danmakuRef.current) {
+                danmakuRef.current.stop();
+                danmakuRef.current = null;
+            }
+            setDanmakuStats(null);
+            return;
+        }
+
+        // 开启弹幕：加载 ASS 并渲染
+        const playing = currentPlayingRef.current;
+        if (!playing || !playing.record.subtitle_file || !artRef.current) return;
+
+        const { record, fullPath } = playing;
+        const dirPath = fullPath.includes('/') ? fullPath.substring(0, fullPath.lastIndexOf('/') + 1) : '';
+        const assUrl = `files/${encodePath(dirPath + record.subtitle_file)}`;
+
+        fetch(assUrl)
+            .then(r => r.ok ? r.text() : Promise.reject())
+            .then(text => {
+                const { items, scrollTime } = parseAss(text);
+                if (items.length === 0) return;
+
+                // 统计弹幕类型
+                let danmakuCount = 0, giftCount = 0, guardCount = 0, scCount = 0, scAmount = 0;
+                for (const item of items) {
+                    if (item.style === 'Danmaku') danmakuCount++;
+                    else if (item.style === 'Gift') giftCount++;
+                    else if (item.style === 'Guard') guardCount++;
+                    else if (item.style.startsWith('SC')) {
+                        scCount++;
+                        const m = item.text.match(/\[SC ¥(\d+)\]/);
+                        if (m) scAmount += parseInt(m[1]);
+                    }
+                }
+                setDanmakuStats({ danmaku: danmakuCount, gift: giftCount, guard: guardCount, sc: scCount, scAmount });
+
+                const artContainer = document.getElementById('art-container');
+                if (!artContainer) return;
+                const artInner = artContainer.querySelector('.art-video-player') as HTMLElement || artContainer;
+                const overlay = document.createElement('div');
+                overlay.className = 'danmaku-overlay';
+                artInner.appendChild(overlay);
+
+                const renderer = new DanmakuRenderer(overlay, artRef.current!.video, items, scrollTime);
+                danmakuRef.current = renderer;
+                renderer.start();
+                if (artRef.current!.video.currentTime > 0) {
+                    renderer.seek(artRef.current!.video.currentTime);
+                }
+            })
+            .catch(() => { /* 没有 ASS 文件或加载失败，静默忽略 */ });
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     const showBatchRenameModal = () => {
         setBatchFind("");
@@ -672,6 +734,92 @@ const FileList: React.FC = () => {
             .catch(err => message.error("批量重命名请求失败: " + err));
     };
 
+    // 批量烧录相关
+    const videoExtensions = ['.mp4', '.flv', '.ts', '.mkv', '.avi', '.mov', '.wmv', '.webm'];
+
+    const isVideoFileName = (name: string): boolean => {
+        const lower = name.toLowerCase();
+        return videoExtensions.some(ext => lower.endsWith(ext));
+    };
+
+    const handleBatchBurn = () => {
+        if (selectedRowKeys.length === 0 || batchBurning) return;
+
+        // 从 selectedRowKeys 中筛选视频文件
+        const selectedFiles = currentFolderFiles.filter(f =>
+            selectedRowKeys.includes(f.name) && !f.is_folder && isVideoFileName(f.name)
+        );
+
+        // 分类：有 ASS 的和无 ASS 的
+        const withAss = selectedFiles.filter(f => f.subtitle_file);
+        const withoutAss = selectedFiles.filter(f => !f.subtitle_file);
+
+        if (withAss.length === 0) {
+            message.info("选中的文件中没有可烧录的视频文件（需要有同名 ASS 字幕文件）");
+            return;
+        }
+
+        // 构建确认信息
+        const confirmContent = withoutAss.length > 0
+            ? `可烧录 ${withAss.length} 个文件，${withoutAss.length} 个文件无 ASS 字幕将跳过。是否继续？`
+            : `将对 ${withAss.length} 个文件进行弹幕字幕烧录，是否继续？`;
+
+        Modal.confirm({
+            title: '批量烧录弹幕字幕',
+            content: (
+                <div>
+                    <div>{confirmContent}</div>
+                    {withAss.length > 0 && (
+                        <div style={{ marginTop: 8, fontSize: '12px', color: '#8c8c8c' }}>
+                            可烧录: {withAss.map(f => f.name).join('、')}
+                        </div>
+                    )}
+                </div>
+            ),
+            okText: '开始烧录',
+            cancelText: '取消',
+            onOk: async () => {
+                setBatchBurning(true);
+                try {
+                    const paths = withAss.map(f => pathParam ? `${pathParam}/${f.name}` : f.name);
+                    const rsp: any = await api.batchBurnFiles(paths);
+
+                    if (rsp.enqueued > 0) {
+                        message.success(`已成功入队 ${rsp.enqueued} 个烧录任务`);
+                    }
+                    if (rsp.skipped && rsp.skipped.length > 0) {
+                        Modal.info({
+                            title: '部分文件已跳过',
+                            content: (
+                                <div style={{ maxHeight: 300, overflow: 'auto' }}>
+                                    {rsp.skipped.map((s: string, i: number) => (
+                                        <div key={i} style={{ fontSize: '12px', color: '#8c8c8c' }}>{s}</div>
+                                    ))}
+                                </div>
+                            ),
+                        });
+                    }
+                    setSelectedRowKeys([]);
+                } catch (err: any) {
+                    message.error("批量烧录请求失败: " + (err?.message || err));
+                } finally {
+                    setBatchBurning(false);
+                }
+            },
+        });
+    };
+
+    // 计算选中文件中可烧录的数量
+    const getBurnableCount = (): { total: number; withAss: number } => {
+        const selectedFiles = currentFolderFiles.filter(f =>
+            selectedRowKeys.includes(f.name) && !f.is_folder && isVideoFileName(f.name)
+        );
+        return {
+            total: selectedFiles.length,
+            withAss: selectedFiles.filter(f => f.subtitle_file).length,
+        };
+    };
+
     const onRowClick = (record: CurrentFolderFile) => {
         // 保持使用原始字符串进行拼接
         let fullPath = record.name;
@@ -685,6 +833,7 @@ const FileList: React.FC = () => {
         } else {
             setCurrentPlayingName(record.name);
             setIsPlayerVisible(true);
+            currentPlayingRef.current = { record, fullPath };
             playerInitRef.current = true;
             // 使用 setTimeout 确保 DOM 已更新
             setTimeout(() => {
@@ -756,8 +905,8 @@ const FileList: React.FC = () => {
                 });
                 artRef.current = art;
 
-                // 弹幕渲染集成
-                if (record.subtitle_file) {
+                // 弹幕渲染集成（仅在 loadDanmaku 为 true 时加载）
+                if (loadDanmaku && record.subtitle_file) {
                     // 使用 API 返回的 subtitle_file 字段构造 URL，而非推导
                     const dirPath = fullPath.includes('/') ? fullPath.substring(0, fullPath.lastIndexOf('/') + 1) : '';
                     const assUrl = `files/${encodePath(dirPath + record.subtitle_file)}`;
@@ -803,14 +952,14 @@ const FileList: React.FC = () => {
                             })
                             .catch(() => { /* 没有 ASS 文件或加载失败，静默忽略 */ });
                     });
-
-                    // 拖拽进度条时跳转弹幕（注册在 fetch 外，避免 seek 期间未注册）
-                    art.on('video:seeked', () => {
-                        if (danmakuRef.current) {
-                            danmakuRef.current.seek(art.video.currentTime);
-                        }
-                    });
                 }
+
+                // 拖拽进度条时跳转弹幕（始终注册，供 toggle 动态加载后使用）
+                art.on('video:seeked', () => {
+                    if (danmakuRef.current) {
+                        danmakuRef.current.seek(art.video.currentTime);
+                    }
+                });
 
                 art.on('destroy', () => {
                     if (danmakuRef.current) {
@@ -870,6 +1019,11 @@ const FileList: React.FC = () => {
                                     弹幕
                                 </span>
                             </Tooltip>
+                        )}
+                        {!record.is_folder && !record.subtitle_file && isVideoFileName(record.name) && (
+                            <span style={{ marginLeft: 6, fontSize: 11, color: '#8c8c8c', background: '#f5f5f5', padding: '1px 6px', borderRadius: 4, cursor: 'default' }}>
+                                无字幕
+                            </span>
                         )}
                     </div>
                 );
@@ -961,14 +1115,27 @@ const FileList: React.FC = () => {
     };
 
     const renderArtPlayer = () => {
+        const hasAss = currentPlayingRef.current?.record?.subtitle_file;
         return (
             <div className="player-wrapper">
                 <div className="player-header">
                     <div className="playing-title" title={currentPlayingName}>
                         正在播放: {currentPlayingName}
                     </div>
-                    <div className="close-btn" onClick={hidePlayer} title="退出播放 (Esc)">
-                        <CloseOutlined />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        {hasAss && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 400 }}>
+                                <span style={{ color: loadDanmaku ? '#1890ff' : '#ffffff73' }}>弹幕</span>
+                                <Switch
+                                    size="small"
+                                    checked={loadDanmaku}
+                                    onChange={toggleDanmaku}
+                                />
+                            </div>
+                        )}
+                        <div className="close-btn" onClick={hidePlayer} title="退出播放 (Esc)">
+                            <CloseOutlined />
+                        </div>
                     </div>
                 </div>
                 <div id="art-container"></div>
@@ -1007,6 +1174,22 @@ const FileList: React.FC = () => {
                         <Button type="primary" size="small" onClick={showBatchRenameModal}>
                             批量重命名
                         </Button>
+                        {(() => {
+                            const { withAss } = getBurnableCount();
+                            return (
+                                <Tooltip title={withAss > 0 ? `可烧录 ${withAss} 个文件` : '选中的文件中无可烧录的视频（需有同名 ASS 字幕）'}>
+                                    <Button
+                                        size="small"
+                                        type="default"
+                                        loading={batchBurning}
+                                        disabled={withAss === 0}
+                                        onClick={handleBatchBurn}
+                                    >
+                                        批量烧录{withAss > 0 ? ` (${withAss})` : ''}
+                                    </Button>
+                                </Tooltip>
+                            );
+                        })()}
                         <Popconfirm
                             title={`确定要删除选中的 ${selectedRowKeys.length} 个项目吗？`}
                             onConfirm={handleBatchDelete}

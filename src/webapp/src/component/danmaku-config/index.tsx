@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  Card, Form, Switch, InputNumber, Select, Button, message, Spin, Collapse, Tag, Popconfirm, Space, Divider
+  Card, Form, Switch, InputNumber, Select, Button, message, Spin, Collapse, Tag, Popconfirm, Space, Divider, Input
 } from 'antd';
 import { UndoOutlined } from '@ant-design/icons';
 import API from '../../utils/api';
@@ -41,6 +41,14 @@ interface EffectiveConfig {
   danmaku_enable: boolean;
   danmaku: DanmakuConfig;
   platform_configs?: Record<string, any>;
+  on_record_finished?: {
+    burn_subtitles?: boolean;
+    burn_subtitles_codec?: string;
+    burn_subtitles_crf?: string;
+    burn_subtitles_preset?: string;
+    burn_delete_ass?: boolean;
+    burn_delete_source?: boolean;
+  };
 }
 
 interface RoomInfo {
@@ -259,6 +267,7 @@ const DanmakuSettings: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [config, setConfig] = useState<EffectiveConfig | null>(null);
   const [rooms, setRooms] = useState<RoomInfo[]>([]);
+  const [burnForm] = Form.useForm();
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -293,6 +302,20 @@ const DanmakuSettings: React.FC = () => {
     loadData();
   }, [loadData]);
 
+  // 设置字幕烧录表单初始值
+  useEffect(() => {
+    if (config?.on_record_finished) {
+      burnForm.setFieldsValue({
+        burn_subtitles: config.on_record_finished.burn_subtitles ?? false,
+        burn_subtitles_codec: config.on_record_finished.burn_subtitles_codec || 'libx264',
+        burn_subtitles_crf: config.on_record_finished.burn_subtitles_crf || '18',
+        burn_subtitles_preset: config.on_record_finished.burn_subtitles_preset || 'medium',
+        burn_delete_ass: config.on_record_finished.burn_delete_ass ?? false,
+        burn_delete_source: config.on_record_finished.burn_delete_source ?? false,
+      });
+    }
+  }, [config, burnForm]);
+
   const handleSaveGlobal = async (values: any) => {
     setSaving(true);
     try {
@@ -301,6 +324,33 @@ const DanmakuSettings: React.FC = () => {
         danmaku: values.danmaku,
       });
       await loadData();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSaveBurnSettings = async () => {
+    try {
+      const values = await burnForm.validateFields();
+      setSaving(true);
+      await api.updateConfig({
+        on_record_finished: {
+          burn_subtitles: values.burn_subtitles,
+          burn_subtitles_codec: values.burn_subtitles_codec,
+          burn_subtitles_crf: values.burn_subtitles_crf,
+          burn_subtitles_preset: values.burn_subtitles_preset,
+          burn_delete_ass: values.burn_delete_ass,
+          burn_delete_source: values.burn_delete_source,
+        },
+      });
+      message.success('字幕烧录配置已保存');
+      await loadData();
+    } catch (error: any) {
+      if (error?.errorFields) {
+        message.error('表单校验失败，请检查输入项');
+      } else {
+        message.error('保存失败: ' + (error?.message || '未知错误'));
+      }
     } finally {
       setSaving(false);
     }
@@ -353,6 +403,69 @@ const DanmakuSettings: React.FC = () => {
           loading={saving}
           label="全局弹幕"
         />
+      </Card>
+
+      <Card title="字幕烧录设置" size="small" style={{ marginBottom: 16 }}>
+        <Form form={burnForm} layout="vertical" initialValues={{
+          burn_subtitles: false,
+          burn_subtitles_codec: 'libx264',
+          burn_subtitles_crf: '18',
+          burn_subtitles_preset: 'medium',
+          burn_delete_ass: false,
+          burn_delete_source: false,
+        }}>
+          <Form.Item
+            label="烧录弹幕字幕"
+            name="burn_subtitles"
+            valuePropName="checked"
+            extra="将 ASS 弹幕字幕硬编码到视频中（需要开启弹幕录制）"
+          >
+            <Switch />
+          </Form.Item>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+            <Form.Item
+              label="视频编码器"
+              name="burn_subtitles_codec"
+              extra="默认 libx264，可选 libx265"
+            >
+              <Input placeholder="libx264" />
+            </Form.Item>
+            <Form.Item
+              label="CRF 质量值"
+              name="burn_subtitles_crf"
+              extra="0-51，越小画质越好，默认 18"
+            >
+              <Input placeholder="18" />
+            </Form.Item>
+            <Form.Item
+              label="编码预设"
+              name="burn_subtitles_preset"
+              extra="ultrafast~veryslow，默认 medium"
+            >
+              <Input placeholder="medium" />
+            </Form.Item>
+            <Form.Item
+              label="烧录后删除 ASS 文件"
+              name="burn_delete_ass"
+              valuePropName="checked"
+            >
+              <Switch />
+            </Form.Item>
+            <Form.Item
+              label="烧录后删除源视频"
+              name="burn_delete_source"
+              valuePropName="checked"
+              extra="删除烧录前的 MP4/FLV 源文件，仅保留 MKV"
+            >
+              <Switch />
+            </Form.Item>
+          </div>
+          <Form.Item style={{ marginBottom: 0 }}>
+            <Button type="primary" onClick={handleSaveBurnSettings} loading={saving}>
+              保存烧录设置
+            </Button>
+          </Form.Item>
+        </Form>
       </Card>
 
       {rooms.length > 0 && (

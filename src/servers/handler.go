@@ -1531,6 +1531,24 @@ func applyConfigUpdates(c *configs.Config, updates map[string]interface{}) error
 		if fixFlv, ok := orf["fix_flv_at_first"].(bool); ok {
 			c.OnRecordFinished.FixFlvAtFirst = fixFlv
 		}
+		if burnSubtitles, ok := orf["burn_subtitles"].(bool); ok {
+			c.OnRecordFinished.BurnSubtitles = burnSubtitles
+		}
+		if codec, ok := orf["burn_subtitles_codec"].(string); ok {
+			c.OnRecordFinished.BurnSubtitlesCodec = codec
+		}
+		if crf, ok := orf["burn_subtitles_crf"].(string); ok {
+			c.OnRecordFinished.BurnSubtitlesCrf = crf
+		}
+		if preset, ok := orf["burn_subtitles_preset"].(string); ok {
+			c.OnRecordFinished.BurnSubtitlesPreset = preset
+		}
+		if deleteAss, ok := orf["burn_delete_ass"].(bool); ok {
+			c.OnRecordFinished.BurnDeleteAss = deleteAss
+		}
+		if deleteSource, ok := orf["burn_delete_source"].(bool); ok {
+			c.OnRecordFinished.BurnDeleteSource = deleteSource
+		}
 	}
 
 	// 处理通知配置

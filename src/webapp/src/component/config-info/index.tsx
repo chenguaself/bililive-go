@@ -674,6 +674,11 @@ const GlobalSettings: React.FC<{
               <TextArea rows={3} placeholder="留空则不执行自定义命令" style={{ width: 500 }} />
             </Form.Item>
           </ConfigField>
+          <ConfigField label="烧录弹幕字幕" description="将 ASS 弹幕字幕硬编码到视频中（需要开启弹幕录制）">
+            <Form.Item name={['on_record_finished', 'burn_subtitles']} valuePropName="checked" noStyle>
+              <Switch />
+            </Form.Item>
+          </ConfigField>
         </Card>
 
         {/* 云盘上传设置 */}
