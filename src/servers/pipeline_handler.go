@@ -273,7 +273,9 @@ func makeBatchBurnHandler(pm *pipeline.Manager) http.HandlerFunc {
 			Skipped  []string `json:"skipped"`
 			TaskIDs  []int64  `json:"task_ids"`
 		}
-		result := batchResult{}
+		result := batchResult{
+			Skipped: []string{},
+		}
 
 		for _, p := range req.Paths {
 			// 解析绝对路径
@@ -283,8 +285,8 @@ func makeBatchBurnHandler(pm *pipeline.Manager) http.HandlerFunc {
 			}
 
 			// 验证文件存在
-			if _, err := os.Stat(absPath); os.IsNotExist(err) {
-				result.Skipped = append(result.Skipped, filepath.Base(p)+" - 文件不存在")
+			if _, err := os.Stat(absPath); err != nil {
+				result.Skipped = append(result.Skipped, filepath.Base(p)+" - 文件不存在或无法访问")
 				continue
 			}
 
