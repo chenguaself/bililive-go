@@ -22,6 +22,22 @@ import (
 //go:embed sign.js
 var signJSCode string
 
+// signJSProgram 预编译的 sign.js 字节码，避免每次签名都重新解析 485KB 脚本
+var signJSProgram *goja.Program
+var signJSOnce sync.Once
+var signJSErr error
+
+func getCompiledSignJS() (*goja.Program, error) {
+	signJSOnce.Do(func() {
+		if signJSCode == "" {
+			signJSErr = fmt.Errorf("sign.js 未加载")
+			return
+		}
+		signJSProgram, signJSErr = goja.Compile("sign.js", signJSCode, true)
+	})
+	return signJSProgram, signJSErr
+}
+
 // DouyinClient 抖音弹幕 WebSocket 客户端
 type DouyinClient struct {
 	roomID    string
@@ -489,9 +505,14 @@ func generateSignature(wssURL string, logger *logrus.Entry) (string, error) {
 	md5Param := fmt.Sprintf("%x", hash)
 
 	// 调用 sign.js 的 get_sign 函数
+	program, err := getCompiledSignJS()
+	if err != nil {
+		return "", fmt.Errorf("编译 sign.js 失败: %w", err)
+	}
+
 	vm := goja.New()
-	if _, err := vm.RunString(signJSCode); err != nil {
-		return "", fmt.Errorf("加载 sign.js 失败: %w", err)
+	if _, err := vm.RunProgram(program); err != nil {
+		return "", fmt.Errorf("执行 sign.js 失败: %w", err)
 	}
 
 	getSign, ok := goja.AssertFunction(vm.Get("get_sign"))
