@@ -404,11 +404,12 @@ func rgbToAssColor(rgb int) string {
 func escapeText(s string) string {
 	result := make([]byte, 0, len(s))
 	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
+		switch s[i] {
+		case '\n':
 			result = append(result, '\\', 'n')
-		} else if s[i] == '\r' {
+		case '\r':
 			// skip
-		} else {
+		default:
 			result = append(result, s[i])
 		}
 	}
