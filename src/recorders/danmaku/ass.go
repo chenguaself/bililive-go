@@ -254,7 +254,6 @@ func (w *AssWriter) AddDanmaku(recvAt time.Time, username, text string, color in
 	line := fmt.Sprintf("Dialogue: 0,%s,%s,Danmaku,,0,0,%d,Banner;%d;0;30,{\\c%s}%s\n",
 		formatTime(startCS), formatTime(endCS), marginV, w.bannerSpeed, assColor, escapeText(fullText))
 	w.file.WriteString(line)
-	w.file.Sync()
 }
 
 // AddGift appends a gift message as a smaller scrolling line.
@@ -287,7 +286,6 @@ func (w *AssWriter) AddGift(recvAt time.Time, username, giftName string, num int
 	line := fmt.Sprintf("Dialogue: 0,%s,%s,Gift,,0,0,%d,Banner;%d;0;30,%s\n",
 		formatTime(startCS), formatTime(endCS), marginV, w.bannerSpeed, escapeText(fullText))
 	w.file.WriteString(line)
-	w.file.Sync()
 }
 
 // positionToAlignment maps position string to ASS \an alignment value and margin.
@@ -325,7 +323,6 @@ func (w *AssWriter) AddGuard(recvAt time.Time, username, giftName string) {
 	line := fmt.Sprintf("Dialogue: 1,%s,%s,Guard,,0,0,%d,,{\\an%d}{\\q0}%s\n",
 		formatTime(startCS), formatTime(endCS), marginV, alignment, escapeText(fullText))
 	w.file.WriteString(line)
-	w.file.Sync()
 }
 
 // AddSuperChat appends a Super Chat message.
@@ -349,7 +346,6 @@ func (w *AssWriter) AddSuperChat(recvAt time.Time, username, text string, price 
 	line := fmt.Sprintf("Dialogue: 1,%s,%s,%s,,0,0,%d,,{\\an%d}{\\q0}%s\n",
 		formatTime(startCS), formatTime(endCS), styleName, marginV, alignment, escapeText(fullText))
 	w.file.WriteString(line)
-	w.file.Sync()
 }
 
 func (w *AssWriter) assignLane(startCS, endCS int64) int {
