@@ -202,6 +202,16 @@ type Recorder interface {
 	SetInitialRecordedFiles(files []notify.RecordingFileDetail)
 }
 
+// danmakuRecorder 弹幕录制器接口，支持不同平台的实现
+type danmakuRecorder interface {
+	Start(ctx context.Context) error
+	Stop()
+	OutputFile() string
+	GetCount() int
+	IsRunning() bool
+	GetStatus() map[string]interface{}
+}
+
 type recorder struct {
 	Live       live.Live
 	ed         events.Dispatcher
@@ -209,7 +219,7 @@ type recorder struct {
 	startTime  time.Time
 	parser     parser.Parser
 	parserLock *sync.RWMutex
-	danmakuRec *danmaku.DanmakuRecorder
+	danmakuRec danmakuRecorder
 
 	stop  chan struct{}
 	state uint32
@@ -490,28 +500,53 @@ func (r *recorder) tryRecord(ctx context.Context) {
 	r.setAndCloseParser(p)
 	r.startTime = time.Now()
 
-	// 弹幕录制（仅哔哩哔哩平台）
-	if resolvedConfig.DanmakuEnable && r.Live.GetPlatformCNName() == "哔哩哔哩" {
-		assFile := fileName[:strings.LastIndex(fileName, ".")] + ".ass"
-		roomID := extractRoomIDFromUrl(r.Live.GetRawUrl())
-		cookies := extractCookiesString(r.Live)
-		if roomID > 0 {
-			r.getLogger().Infof("弹幕录制已启用，房间ID: %d, 输出: %s", roomID, assFile)
-			rec := danmaku.NewDanmakuRecorder(roomID, cookies, assFile, resolvedConfig.Danmaku, r.getLogger().Entry)
-			if dmErr := rec.Start(ctx); dmErr != nil {
-				r.getLogger().WithError(dmErr).Warn("弹幕录制启动失败，继续录制视频")
-			} else {
-				// 停止旧的录制器（如果有）
-				r.currentFileLock.Lock()
-				old := r.danmakuRec
-				r.danmakuRec = rec
-				r.currentFileLock.Unlock()
-				if old != nil {
-					old.Stop()
+	// 弹幕录制（支持哔哩哔哩和抖音平台）
+	if resolvedConfig.DanmakuEnable {
+		switch r.Live.GetPlatformCNName() {
+		case "哔哩哔哩":
+			assFile := fileName[:strings.LastIndex(fileName, ".")] + ".ass"
+			roomID := extractRoomIDFromUrl(r.Live.GetRawUrl())
+			cookies := extractCookiesString(r.Live)
+			if roomID > 0 {
+				r.getLogger().Infof("弹幕录制已启用，房间ID: %d, 输出: %s", roomID, assFile)
+				rec := danmaku.NewDanmakuRecorder(roomID, cookies, assFile, resolvedConfig.Danmaku, r.getLogger().Entry)
+				if dmErr := rec.Start(ctx); dmErr != nil {
+					r.getLogger().WithError(dmErr).Warn("弹幕录制启动失败，继续录制视频")
+				} else {
+					// 停止旧的录制器（如果有）
+					r.currentFileLock.Lock()
+					old := r.danmakuRec
+					r.danmakuRec = rec
+					r.currentFileLock.Unlock()
+					if old != nil {
+						old.Stop()
+					}
 				}
+			} else {
+				r.getLogger().Warn("弹幕录制已启用但无法解析房间ID: " + r.Live.GetRawUrl())
 			}
-		} else {
-			r.getLogger().Warn("弹幕录制已启用但无法解析房间ID: " + r.Live.GetRawUrl())
+		case "抖音":
+			assFile := fileName[:strings.LastIndex(fileName, ".")] + ".ass"
+			roomID := extractDouyinRoomID(r.Live)
+			cookies := extractCookiesString(r.Live)
+			if roomID != "" {
+				r.getLogger().Infof("弹幕录制已启用，房间ID: %s, 输出: %s", roomID, assFile)
+				rec := danmaku.NewDouyinDanmakuRecorder(roomID, cookies, assFile, resolvedConfig.Danmaku, r.getLogger().Entry)
+				if dmErr := rec.Start(ctx); dmErr != nil {
+					r.getLogger().WithError(dmErr).Warn("弹幕录制启动失败，继续录制视频")
+				} else {
+					// 停止旧的录制器（如果有）
+					r.currentFileLock.Lock()
+					old := r.danmakuRec
+					r.danmakuRec = rec
+					r.currentFileLock.Unlock()
+					if old != nil {
+						old.Stop()
+					}
+				}
+			} else {
+				r.getLogger().Warn("弹幕录制已启用但无法解析房间ID: " + r.Live.GetRawUrl())
+			}
 		}
 	} else {
 		// 弹幕未启用，清理旧的录制器
@@ -1385,4 +1420,22 @@ func extractCookiesString(l live.Live) string {
 		parts = append(parts, c.Name+"="+c.Value)
 	}
 	return strings.Join(parts, "; ")
+}
+
+// extractDouyinRoomID 从抖音直播 URL 中提取房间号（字符串）。
+// 抖音房间号是数字字符串，直接从 URL 路径中提取。
+func extractDouyinRoomID(l live.Live) string {
+	u, err := url.Parse(l.GetRawUrl())
+	if err != nil {
+		return ""
+	}
+	paths := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(paths) < 1 {
+		return ""
+	}
+	roomID := paths[0]
+	if roomID == "" {
+		return ""
+	}
+	return roomID
 }

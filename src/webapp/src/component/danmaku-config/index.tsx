@@ -74,7 +74,8 @@ const DanmakuParamForm: React.FC<{
   danmakuEnable?: boolean;
   label?: string;
   isRoom?: boolean;
-}> = ({ initialValues, globalDefaults, onSave, onReset, loading, showEnable, danmakuEnable, label, isRoom }) => {
+  showBilibiliContent?: boolean;
+}> = ({ initialValues, globalDefaults, onSave, onReset, loading, showEnable, danmakuEnable, label, isRoom, showBilibiliContent }) => {
   const [form] = Form.useForm();
 
   const baseDefaults = useMemo(() => globalDefaults || DEFAULT_DANMAKU, [globalDefaults]);
@@ -198,48 +199,52 @@ const DanmakuParamForm: React.FC<{
         </Form.Item>
       </div>
 
-      <Divider plain style={{ margin: '16px 0', fontSize: 13 }}>录制内容</Divider>
+      {showBilibiliContent && (
+        <>
+          <Divider plain style={{ margin: '16px 0', fontSize: 13 }}>哔哩哔哩录制内容</Divider>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
-        <Form.Item
-          label={<span>礼物消息 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>用户赠送礼物的通知</span></span>}
-          name={['danmaku', 'record_gift']} valuePropName="checked">
-          <Switch />
-        </Form.Item>
-        <Form.Item
-          label={<span>上舰消息 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>开通舰长/提督/总督的通知</span></span>}
-          name={['danmaku', 'record_guard']} valuePropName="checked">
-          <Switch />
-        </Form.Item>
-        <Form.Item
-          label={<span>醒目留言 (SC) <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>Super Chat 付费留言</span></span>}
-          name={['danmaku', 'record_super_chat']} valuePropName="checked">
-          <Switch />
-        </Form.Item>
-      </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+            <Form.Item
+              label={<span>礼物消息 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>用户赠送礼物的通知</span></span>}
+              name={['danmaku', 'record_gift']} valuePropName="checked">
+              <Switch />
+            </Form.Item>
+            <Form.Item
+              label={<span>上舰消息 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>开通舰长/提督/总督的通知</span></span>}
+              name={['danmaku', 'record_guard']} valuePropName="checked">
+              <Switch />
+            </Form.Item>
+            <Form.Item
+              label={<span>醒目留言 (SC) <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>Super Chat 付费留言</span></span>}
+              name={['danmaku', 'record_super_chat']} valuePropName="checked">
+              <Switch />
+            </Form.Item>
+          </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
-        <Form.Item
-          label="上舰消息位置"
-          name={['danmaku', 'guard_position']}>
-          <Select options={[
-            { label: '左下角', value: 'bottom-left' },
-            { label: '右下角', value: 'bottom-right' },
-            { label: '左上角', value: 'top-left' },
-            { label: '右上角', value: 'top-right' },
-          ]} />
-        </Form.Item>
-        <Form.Item
-          label="SC 消息位置"
-          name={['danmaku', 'sc_position']}>
-          <Select options={[
-            { label: '左下角', value: 'bottom-left' },
-            { label: '右下角', value: 'bottom-right' },
-            { label: '左上角', value: 'top-left' },
-            { label: '右上角', value: 'top-right' },
-          ]} />
-        </Form.Item>
-      </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+            <Form.Item
+              label="上舰消息位置"
+              name={['danmaku', 'guard_position']}>
+              <Select options={[
+                { label: '左下角', value: 'bottom-left' },
+                { label: '右下角', value: 'bottom-right' },
+                { label: '左上角', value: 'top-left' },
+                { label: '右上角', value: 'top-right' },
+              ]} />
+            </Form.Item>
+            <Form.Item
+              label="SC 消息位置"
+              name={['danmaku', 'sc_position']}>
+              <Select options={[
+                { label: '左下角', value: 'bottom-left' },
+                { label: '右下角', value: 'bottom-right' },
+                { label: '左上角', value: 'top-left' },
+                { label: '右上角', value: 'top-right' },
+              ]} />
+            </Form.Item>
+          </div>
+        </>
+      )}
       <Form.Item style={{ marginBottom: 0 }}>
         <Space>
           <Button type="primary" onClick={handleSave} loading={loading}>
@@ -262,11 +267,17 @@ const DanmakuParamForm: React.FC<{
   );
 };
 
+// 支持弹幕录制的平台
+const DANMAKU_PLATFORMS: Record<string, string> = {
+  bilibili: '哔哩哔哩',
+  douyin: '抖音',
+};
+
 const DanmakuSettings: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [config, setConfig] = useState<EffectiveConfig | null>(null);
-  const [rooms, setRooms] = useState<RoomInfo[]>([]);
+  const [platformRooms, setPlatformRooms] = useState<Record<string, RoomInfo[]>>({});
   const [burnForm] = Form.useForm();
 
   const loadData = useCallback(async () => {
@@ -278,19 +289,18 @@ const DanmakuSettings: React.FC = () => {
       ]);
       setConfig(effective as EffectiveConfig);
 
-      // Extract Bilibili rooms
+      // Extract rooms from all danmaku-supported platforms
       const stats = platformStats as any;
-      const bilibiliRooms: RoomInfo[] = [];
+      const grouped: Record<string, RoomInfo[]> = {};
       if (Array.isArray(stats?.platforms)) {
         for (const platform of stats.platforms) {
-          if (platform.platform_key?.includes('bilibili') && Array.isArray(platform.rooms)) {
-            for (const room of platform.rooms) {
-              bilibiliRooms.push(room);
-            }
+          const key = Object.keys(DANMAKU_PLATFORMS).find(k => platform.platform_key?.includes(k));
+          if (key && Array.isArray(platform.rooms)) {
+            grouped[key] = platform.rooms;
           }
         }
       }
-      setRooms(bilibiliRooms);
+      setPlatformRooms(grouped);
     } catch (error) {
       message.error('加载配置失败');
     } finally {
@@ -329,6 +339,15 @@ const DanmakuSettings: React.FC = () => {
     }
   };
 
+  const DEFAULT_BURN = {
+    burn_subtitles: false,
+    burn_subtitles_codec: 'libx264',
+    burn_subtitles_crf: '18',
+    burn_subtitles_preset: 'medium',
+    burn_delete_ass: false,
+    burn_delete_source: false,
+  };
+
   const handleSaveBurnSettings = async () => {
     try {
       const values = await burnForm.validateFields();
@@ -351,6 +370,20 @@ const DanmakuSettings: React.FC = () => {
       } else {
         message.error('保存失败: ' + (error?.message || '未知错误'));
       }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleResetBurnSettings = async () => {
+    burnForm.setFieldsValue(DEFAULT_BURN);
+    setSaving(true);
+    try {
+      await api.updateConfig({ on_record_finished: DEFAULT_BURN });
+      message.success('已恢复默认烧录配置');
+      await loadData();
+    } catch (error: any) {
+      message.error('恢复默认失败: ' + (error?.message || '未知错误'));
     } finally {
       setSaving(false);
     }
@@ -402,18 +435,12 @@ const DanmakuSettings: React.FC = () => {
           onSave={handleSaveGlobal}
           loading={saving}
           label="全局弹幕"
+          showBilibiliContent
         />
       </Card>
 
       <Card title="字幕烧录设置" size="small" style={{ marginBottom: 16 }}>
-        <Form form={burnForm} layout="vertical" initialValues={{
-          burn_subtitles: false,
-          burn_subtitles_codec: 'libx264',
-          burn_subtitles_crf: '18',
-          burn_subtitles_preset: 'medium',
-          burn_delete_ass: false,
-          burn_delete_source: false,
-        }}>
+        <Form form={burnForm} layout="vertical" initialValues={DEFAULT_BURN}>
           <Form.Item
             label="烧录弹幕字幕"
             name="burn_subtitles"
@@ -428,7 +455,10 @@ const DanmakuSettings: React.FC = () => {
               name="burn_subtitles_codec"
               extra="默认 libx264，可选 libx265"
             >
-              <Input placeholder="libx264" />
+              <Select options={[
+                { label: 'libx264 (H.264，兼容性好)', value: 'libx264' },
+                { label: 'libx265 (H.265，压缩率高)', value: 'libx265' },
+              ]} />
             </Form.Item>
             <Form.Item
               label="CRF 质量值"
@@ -440,9 +470,19 @@ const DanmakuSettings: React.FC = () => {
             <Form.Item
               label="编码预设"
               name="burn_subtitles_preset"
-              extra="ultrafast~veryslow，默认 medium"
+              extra="从左到右：速度越慢，画质越好，文件越小"
             >
-              <Input placeholder="medium" />
+              <Select options={[
+                { label: 'ultrafast (最快，画质最差)', value: 'ultrafast' },
+                { label: 'superfast', value: 'superfast' },
+                { label: 'veryfast', value: 'veryfast' },
+                { label: 'faster', value: 'faster' },
+                { label: 'fast', value: 'fast' },
+                { label: 'medium (默认)', value: 'medium' },
+                { label: 'slow', value: 'slow' },
+                { label: 'slower', value: 'slower' },
+                { label: 'veryslow (最慢，画质最好)', value: 'veryslow' },
+              ]} />
             </Form.Item>
             <Form.Item
               label="烧录后删除 ASS 文件"
@@ -461,41 +501,57 @@ const DanmakuSettings: React.FC = () => {
             </Form.Item>
           </div>
           <Form.Item style={{ marginBottom: 0 }}>
-            <Button type="primary" onClick={handleSaveBurnSettings} loading={saving}>
-              保存烧录设置
-            </Button>
+            <Space>
+              <Button type="primary" onClick={handleSaveBurnSettings} loading={saving}>
+                保存烧录设置
+              </Button>
+              <Popconfirm
+                title="恢复为系统默认？"
+                description="将重置所有烧录参数为系统默认值"
+                onConfirm={handleResetBurnSettings}
+                okText="确认"
+                cancelText="取消"
+              >
+                <Button icon={<UndoOutlined />}>
+                  恢复默认
+                </Button>
+              </Popconfirm>
+            </Space>
           </Form.Item>
         </Form>
       </Card>
 
-      {rooms.length > 0 && (
-        <Card title="房间设置 (哔哩哔哩)" size="small">
-          <Collapse
-            items={rooms.map((room) => ({
-              key: room.live_id,
-              label: (
-                <span>
-                  {room.room_config?.room_name || room.room_name || room.url}
-                  {room.host_name && <Tag style={{ marginLeft: 8 }}>{room.host_name}</Tag>}
-                </span>
-              ),
-              children: (
-                <DanmakuParamForm
-                  initialValues={room.room_config?.danmaku}
-                  globalDefaults={config?.danmaku}
-                  danmakuEnable={room.room_config?.danmaku_enable ?? config?.danmaku_enable}
-                  showEnable
-                  onSave={(values) => handleSaveRoom(room.live_id, values)}
-                  onReset={() => handleResetRoom(room.live_id)}
-                  loading={saving}
-                  label={room.host_name || '房间弹幕'}
-                  isRoom
-                />
-              ),
-            }))}
-          />
-        </Card>
-      )}
+      {Object.entries(platformRooms).map(([platformKey, rooms]) => (
+        rooms.length > 0 && (
+          <Card key={platformKey} title={`房间设置 (${DANMAKU_PLATFORMS[platformKey] || platformKey})`} size="small" style={{ marginBottom: 16 }}>
+            <Collapse
+              items={rooms.map((room) => ({
+                key: room.live_id,
+                label: (
+                  <span>
+                    {room.room_config?.room_name || room.room_name || room.url}
+                    {room.host_name && <Tag style={{ marginLeft: 8 }}>{room.host_name}</Tag>}
+                  </span>
+                ),
+                children: (
+                  <DanmakuParamForm
+                    initialValues={room.room_config?.danmaku}
+                    globalDefaults={config?.danmaku}
+                    danmakuEnable={room.room_config?.danmaku_enable ?? config?.danmaku_enable}
+                    showEnable
+                    onSave={(values) => handleSaveRoom(room.live_id, values)}
+                    onReset={() => handleResetRoom(room.live_id)}
+                    loading={saving}
+                    label={room.host_name || '房间弹幕'}
+                    isRoom
+                    showBilibiliContent={platformKey === 'bilibili'}
+                  />
+                ),
+              }))}
+            />
+          </Card>
+        )
+      ))}
     </div>
   );
 };

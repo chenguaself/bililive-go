@@ -13,20 +13,21 @@ import (
 
 // AssWriter writes danmaku entries to an ASS subtitle file.
 type AssWriter struct {
-	mu          sync.Mutex
-	file        *os.File
-	closed      bool
-	startAt     time.Time
-	cfg         configs.DanmakuConfig
-	resX        int
-	resY        int
-	scrollTimeMs int    // 滚动总毫秒数
-	bannerSpeed int    // ASS Banner speed (ms per pixel)
-	laneStart   int // first usable lane index
-	laneEnd     int // last usable lane index (exclusive)
-	laneNum     int // total lanes in the usable range
-	nextLane    int
-	laneLast    []int64 // last end time (centiseconds) per lane
+	mu           sync.Mutex
+	file         *os.File
+	closed       bool
+	startAt      time.Time
+	cfg          configs.DanmakuConfig
+	title        string
+	resX         int
+	resY         int
+	scrollTimeMs int // 滚动总毫秒数
+	bannerSpeed  int // ASS Banner speed (ms per pixel)
+	laneStart    int // first usable lane index
+	laneEnd      int // last usable lane index (exclusive)
+	laneNum      int // total lanes in the usable range
+	nextLane     int
+	laneLast     []int64 // last end time (centiseconds) per lane
 }
 
 func parseResolution(res string) (int, int) {
@@ -42,7 +43,7 @@ func parseResolution(res string) (int, int) {
 	return x, y
 }
 
-func NewAssWriter(filePath string, startAt time.Time, cfg configs.DanmakuConfig) (*AssWriter, error) {
+func NewAssWriter(filePath string, startAt time.Time, cfg configs.DanmakuConfig, title string) (*AssWriter, error) {
 	f, err := os.Create(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ass file: %w", err)
@@ -77,10 +78,11 @@ func NewAssWriter(filePath string, startAt time.Time, cfg configs.DanmakuConfig)
 	}
 
 	w := &AssWriter{
-		file:        f,
-		startAt:     startAt,
-		cfg:         cfg,
-		resX:        resX,
+		file:         f,
+		startAt:      startAt,
+		cfg:          cfg,
+		title:        title,
+		resX:         resX,
 		resY:        resY,
 		scrollTimeMs: scrollTimeMs,
 		bannerSpeed: bannerSpeed,
@@ -163,7 +165,7 @@ func (w *AssWriter) writeHeader() error {
 	scDefault := scTierColor(0)
 
 	header := fmt.Sprintf(`[Script Info]
-Title: Bilibili Danmaku
+Title: %s
 ScriptType: v4.00+
 WrapStyle: 2
 ScaledBorderAndShadow: yes
@@ -187,7 +189,7 @@ Style: SCDefault,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-`, w.resX, w.resY,
+`, w.title, w.resX, w.resY,
 		w.cfg.FontName, w.cfg.FontSize, backColor, w.cfg.Outline,
 		w.cfg.FontName, w.cfg.FontSize-6, backColor, w.cfg.Outline,
 		w.cfg.FontName, w.cfg.FontSize, guardBackColor,

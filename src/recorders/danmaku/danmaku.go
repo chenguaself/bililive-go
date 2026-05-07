@@ -43,7 +43,7 @@ func NewDanmakuRecorder(roomID int, cookies string, outputFile string, cfg confi
 func (d *DanmakuRecorder) Start(ctx context.Context) error {
 	d.startAt = time.Now()
 
-	assWriter, err := NewAssWriter(d.outputFile, d.startAt, d.cfg)
+	assWriter, err := NewAssWriter(d.outputFile, d.startAt, d.cfg, "Bilibili Danmaku")
 	if err != nil {
 		return fmt.Errorf("failed to create ass writer: %w", err)
 	}
