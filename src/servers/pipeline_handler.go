@@ -278,10 +278,11 @@ func makeBatchBurnHandler(pm *pipeline.Manager) http.HandlerFunc {
 		}
 
 		for _, p := range req.Paths {
-			// 解析绝对路径
-			absPath := p
-			if !filepath.IsAbs(p) {
-				absPath = filepath.Join(outputPath, p)
+			// 校验路径安全性，防止路径遍历攻击
+			absPath, err := getSafePath(outputPath, p)
+			if err != nil {
+				result.Skipped = append(result.Skipped, filepath.Base(p)+" - 路径越权")
+				continue
 			}
 
 			// 验证文件存在
