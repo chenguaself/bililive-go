@@ -37,6 +37,7 @@ import (
 	bilisentry "github.com/bililive-go/bililive-go/src/pkg/sentry"
 	"github.com/bililive-go/bililive-go/src/pkg/streamprobe"
 	"github.com/bililive-go/bililive-go/src/pkg/utils"
+	"github.com/bililive-go/bililive-go/src/recorders/danmaku"
 )
 
 const (
@@ -201,6 +202,16 @@ type Recorder interface {
 	SetInitialRecordedFiles(files []notify.RecordingFileDetail)
 }
 
+// danmakuRecorder 弹幕录制器接口，支持不同平台的实现
+type danmakuRecorder interface {
+	Start(ctx context.Context) error
+	Stop()
+	OutputFile() string
+	GetCount() int
+	IsRunning() bool
+	GetStatus() map[string]interface{}
+}
+
 type recorder struct {
 	Live       live.Live
 	ed         events.Dispatcher
@@ -208,6 +219,7 @@ type recorder struct {
 	startTime  time.Time
 	parser     parser.Parser
 	parserLock *sync.RWMutex
+	danmakuRec danmakuRecorder
 
 	stop  chan struct{}
 	state uint32
@@ -488,6 +500,65 @@ func (r *recorder) tryRecord(ctx context.Context) {
 	r.setAndCloseParser(p)
 	r.startTime = time.Now()
 
+	// 弹幕录制（支持哔哩哔哩和抖音平台）
+	if resolvedConfig.DanmakuEnable {
+		switch r.Live.GetPlatformCNName() {
+		case "哔哩哔哩":
+			assFile := fileName[:strings.LastIndex(fileName, ".")] + ".ass"
+			roomID := extractRoomIDFromUrl(r.Live.GetRawUrl())
+			cookies := extractCookiesString(r.Live)
+			if roomID > 0 {
+				r.getLogger().Infof("弹幕录制已启用，房间ID: %d, 输出: %s", roomID, assFile)
+				rec := danmaku.NewDanmakuRecorder(roomID, cookies, assFile, resolvedConfig.Danmaku, r.getLogger().Entry)
+				if dmErr := rec.Start(ctx); dmErr != nil {
+					r.getLogger().WithError(dmErr).Warn("弹幕录制启动失败，继续录制视频")
+				} else {
+					// 停止旧的录制器（如果有）
+					r.currentFileLock.Lock()
+					old := r.danmakuRec
+					r.danmakuRec = rec
+					r.currentFileLock.Unlock()
+					if old != nil {
+						old.Stop()
+					}
+				}
+			} else {
+				r.getLogger().Warn("弹幕录制已启用但无法解析房间ID: " + r.Live.GetRawUrl())
+			}
+		case "抖音":
+			assFile := fileName[:strings.LastIndex(fileName, ".")] + ".ass"
+			roomID := extractDouyinRoomID(r.Live)
+			cookies := extractCookiesString(r.Live)
+			if roomID != "" {
+				r.getLogger().Infof("弹幕录制已启用，房间ID: %s, 输出: %s", roomID, assFile)
+				rec := danmaku.NewDouyinDanmakuRecorder(roomID, cookies, assFile, resolvedConfig.Danmaku, r.getLogger().Entry)
+				if dmErr := rec.Start(ctx); dmErr != nil {
+					r.getLogger().WithError(dmErr).Warn("弹幕录制启动失败，继续录制视频")
+				} else {
+					// 停止旧的录制器（如果有）
+					r.currentFileLock.Lock()
+					old := r.danmakuRec
+					r.danmakuRec = rec
+					r.currentFileLock.Unlock()
+					if old != nil {
+						old.Stop()
+					}
+				}
+			} else {
+				r.getLogger().Warn("弹幕录制已启用但无法解析房间ID: " + r.Live.GetRawUrl())
+			}
+		}
+	} else {
+		// 弹幕未启用，清理旧的录制器
+		r.currentFileLock.Lock()
+		old := r.danmakuRec
+		r.danmakuRec = nil
+		r.currentFileLock.Unlock()
+		if old != nil {
+			old.Stop()
+		}
+	}
+
 	// 设置当前录制文件路径
 	r.setCurrentFilePath(fileName)
 
@@ -496,6 +567,17 @@ func (r *recorder) tryRecord(ctx context.Context) {
 
 	// 清除当前录制文件路径
 	r.setCurrentFilePath("")
+
+	// 停止弹幕录制并累积文件
+	r.currentFileLock.RLock()
+	dmRec := r.danmakuRec
+	r.currentFileLock.RUnlock()
+	if dmRec != nil {
+		dmRec.Stop()
+		if fi, dmErr := os.Stat(dmRec.OutputFile()); dmErr == nil && fi.Size() > 0 {
+			r.accumulateRecordedFiles(dmRec.OutputFile())
+		}
+	}
 
 	if err != nil {
 		r.getLogger().WithError(err).Error("failed to parse live stream")
@@ -894,12 +976,21 @@ func (r *recorder) Close() {
 			r.getLogger().WithError(err).Warn("failed to end recorder")
 		}
 	}
+	// 停止弹幕录制器
+	r.currentFileLock.RLock()
+	dmRec := r.danmakuRec
+	r.currentFileLock.RUnlock()
+	if dmRec != nil {
+		dmRec.Stop()
+	}
 	r.getLogger().Info("Record End")
 	r.ed.DispatchEvent(events.NewEvent(RecorderStop, r.Live))
 }
 
 func (r *recorder) CloseForRestart() []notify.RecordingFileDetail {
+	r.recordedFilesMu.Lock()
 	r.suppressSummary = true
+	r.recordedFilesMu.Unlock()
 	r.Close()
 	<-r.done // 等待 run() 完全退出，确保最后一个文件已累积
 	r.recordedFilesMu.Lock()
@@ -1033,6 +1124,12 @@ func (r *recorder) GetStatus() (map[string]interface{}, error) {
 	}
 	if len(r.currentStreamHeaders) > 0 {
 		status["stream_headers"] = sanitizeHeaders(r.currentStreamHeaders)
+	}
+	// 弹幕录制状态（与 currentFileLock 同步保护 danmakuRec 的并发访问）
+	if r.danmakuRec != nil {
+		for k, v := range r.danmakuRec.GetStatus() {
+			status[k] = v
+		}
 	}
 	r.currentFileLock.RUnlock()
 
@@ -1284,4 +1381,61 @@ func maskValue(v string) string {
 		return v[:4] + "***"
 	}
 	return v[:4] + "***" + v[len(v)-4:]
+}
+
+// extractRoomIDFromUrl extracts the numeric room ID from a Bilibili live URL path.
+// Returns 0 if the URL doesn't contain a valid room ID.
+func extractRoomIDFromUrl(rawUrl string) int {
+	u, err := url.Parse(rawUrl)
+	if err != nil {
+		return 0
+	}
+	paths := strings.Split(u.Path, "/")
+	if len(paths) < 2 {
+		return 0
+	}
+	id, err := strconv.Atoi(paths[1])
+	if err != nil {
+		return 0
+	}
+	return id
+}
+
+// extractCookiesString extracts cookies from the Live's cookie jar as a semicolon-separated string.
+func extractCookiesString(l live.Live) string {
+	opts := l.GetOptions()
+	if opts == nil || opts.Cookies == nil {
+		return ""
+	}
+	u, err := url.Parse(l.GetRawUrl())
+	if err != nil {
+		return ""
+	}
+	cookies := opts.Cookies.Cookies(u)
+	if len(cookies) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(cookies))
+	for _, c := range cookies {
+		parts = append(parts, c.Name+"="+c.Value)
+	}
+	return strings.Join(parts, "; ")
+}
+
+// extractDouyinRoomID 从抖音直播 URL 中提取房间号（字符串）。
+// 抖音房间号是数字字符串，直接从 URL 路径中提取。
+func extractDouyinRoomID(l live.Live) string {
+	u, err := url.Parse(l.GetRawUrl())
+	if err != nil {
+		return ""
+	}
+	paths := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(paths) < 1 {
+		return ""
+	}
+	roomID := paths[0]
+	if roomID == "" {
+		return ""
+	}
+	return roomID
 }

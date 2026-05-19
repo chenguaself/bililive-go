@@ -137,6 +137,14 @@ class API {
     }
 
     /**
+     * 批量烧录弹幕字幕到视频文件
+     * @param paths 视频文件路径列表
+     */
+    batchBurnFiles(paths: string[]) {
+        return utils.requestPost(`${BASE_URL}/pipeline/batch-burn`, { paths });
+    }
+
+    /**
      * 获取Cookie列表
      */
     getCookieList() {

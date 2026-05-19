@@ -11,7 +11,8 @@ import {
     MenuFoldOutlined,
     MenuUnfoldOutlined,
     LineChartOutlined,
-    CloudUploadOutlined
+    CloudUploadOutlined,
+    CommentOutlined
 } from '@ant-design/icons';
 import './layout.css';
 
@@ -114,6 +115,11 @@ class RootLayout extends React.Component<Props, State> {
                                         key: '3',
                                         icon: <SettingOutlined />,
                                         label: <Link to="/configInfo">设置</Link>,
+                                    },
+                                    {
+                                        key: 'danmaku',
+                                        icon: <CommentOutlined />,
+                                        label: <Link to="/danmaku">弹幕</Link>,
                                     },
                                     {
                                         key: '4',

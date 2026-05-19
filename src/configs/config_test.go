@@ -31,6 +31,7 @@ func TestConfig_Verify(t *testing.T) {
 		RPC:        defaultRPC,
 		Interval:   30,
 		OutPutPath: os.TempDir(),
+		Danmaku:    defaultDanmakuConfig,
 	}
 	assert.NoError(t, cfg.Verify())
 	cfg.Interval = 0
