@@ -436,8 +436,16 @@ func startScheduler() {
 	// done channel signals when the port-polling goroutine should stop
 	done := make(chan struct{})
 
+	schedulerRegistered := false
+	defer func() {
+		if schedulerRegistered {
+			UnregisterProcess("bililive-scheduler")
+		}
+	}()
+
 	if err := runWithKillOnCloseAndGetPID(cmd, func(pid int) {
 		RegisterProcess("bililive-scheduler", pid, ProcessCategoryScheduler)
+		schedulerRegistered = true
 		blog.GetLogger().Infof("bililive-scheduler started with PID: %d", pid)
 
 		// Poll port file with cancellation support
@@ -470,7 +478,6 @@ func startScheduler() {
 
 	// Process exited - clean up
 	close(done)
-	UnregisterProcess("bililive-scheduler")
 	schedulerPort.Store(0)
 	blog.GetLogger().Warnln("bililive-scheduler process exited")
 }
