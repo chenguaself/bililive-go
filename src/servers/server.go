@@ -198,7 +198,15 @@ func initMux(ctx context.Context) *mux.Router {
 				return
 			case <-ticker.C:
 				port := tools.GetWebUIPort()
-				if port == 0 || port == lastPort {
+				if port == lastPort {
+					continue
+				}
+				if port == 0 {
+					// 端口归零：进程退出，恢复 503 占位 handler
+					dyn.h.Store(handlerHolder{H: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						http.Error(w, "Tools Web UI 未就绪", http.StatusServiceUnavailable)
+					})})
+					lastPort = 0
 					continue
 				}
 				lastPort = port
@@ -244,7 +252,15 @@ func initMux(ctx context.Context) *mux.Router {
 				return
 			case <-ticker.C:
 				port := tools.GetSchedulerPort()
-				if port == 0 || port == lastPort {
+				if port == lastPort {
+					continue
+				}
+				if port == 0 {
+					// 端口归零：进程退出，恢复 503 占位 handler
+					sched.h.Store(handlerHolder{H: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						http.Error(w, "Scheduler Web UI 未就绪", http.StatusServiceUnavailable)
+					})})
+					lastPort = 0
 					continue
 				}
 				lastPort = port
