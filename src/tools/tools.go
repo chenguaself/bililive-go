@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/bililive-go/bililive-go/src/configs"
 	blog "github.com/bililive-go/bililive-go/src/log"
@@ -255,6 +257,11 @@ func Init() (err error) {
 			blog.GetLogger().WithError(err).Errorln("Failed to start bililive-tools")
 		}
 	})
+	bilisentry.Go(func() {
+		if cfg := configs.GetCurrentConfig(); cfg != nil && cfg.RPC.Enable {
+			startScheduler()
+		}
+	})
 
 	return nil
 }
@@ -369,6 +376,112 @@ func DownloadIfNecessary(toolName string) (err error) {
 
 func GetWebUIPort() int {
 	return tools.Get().GetWebUIPort()
+}
+
+var schedulerPort atomic.Int32
+
+func GetSchedulerPort() int {
+	return int(schedulerPort.Load())
+}
+
+func startScheduler() {
+	api := tools.Get()
+	if api == nil {
+		blog.GetLogger().Errorln("Failed to get remotetools API instance for scheduler")
+		return
+	}
+
+	if err := DownloadIfNecessary("bililive-scheduler"); err != nil {
+		blog.GetLogger().WithError(err).Errorln("Failed to download bililive-scheduler")
+		return
+	}
+
+	tool, err := api.GetTool("bililive-scheduler")
+	if err != nil {
+		blog.GetLogger().WithError(err).Errorln("Failed to get bililive-scheduler tool")
+		return
+	}
+
+	cfg := configs.GetCurrentConfig()
+	bind := cfg.RPC.Bind
+	if bind == "" {
+		bind = ":8080"
+	}
+	// Extract port from bind address (":8080" → "8080", "0.0.0.0:8080" → "8080")
+	_, port, err := net.SplitHostPort(bind)
+	if err != nil {
+		// Fallback: try treating bind as ":port"
+		_, port, err = net.SplitHostPort(":" + bind)
+		if err != nil {
+			blog.GetLogger().WithError(err).Errorln("Failed to parse RPC bind address for scheduler")
+			return
+		}
+	}
+	apiURL := "http://localhost:" + port
+	dbPath := filepath.Join(cfg.AppDataPath, "db", "scheduler.db")
+
+	// Clean up stale port file from previous run
+	portFile := filepath.Join(filepath.Dir(dbPath), "scheduler.port")
+	os.Remove(portFile)
+
+	cmd := exec.Command(
+		tool.GetToolPath(),
+		"--api-url", apiURL,
+		"--db-path", dbPath,
+		"--port", "0",
+	)
+	cmd.Stdout = utils.NewDebugControlledWriter(os.Stdout)
+	cmd.Stderr = utils.NewLogFilterWriter(os.Stderr)
+
+	blog.GetLogger().Infoln("Starting bililive-scheduler...")
+
+	// done channel signals when the port-polling goroutine should stop
+	done := make(chan struct{})
+
+	schedulerRegistered := false
+	defer func() {
+		if schedulerRegistered {
+			UnregisterProcess("bililive-scheduler")
+		}
+	}()
+
+	if err := runWithKillOnCloseAndGetPID(cmd, func(pid int) {
+		RegisterProcess("bililive-scheduler", pid, ProcessCategoryScheduler)
+		schedulerRegistered = true
+		blog.GetLogger().Infof("bililive-scheduler started with PID: %d", pid)
+
+		// Poll port file with cancellation support
+		go func() {
+			for i := 0; i < 30; i++ {
+				select {
+				case <-done:
+					return
+				case <-time.After(1 * time.Second):
+				}
+				data, err := os.ReadFile(portFile)
+				if err != nil {
+					continue
+				}
+				var p int
+				if _, err := fmt.Sscanf(string(data), "%d", &p); err == nil && p > 0 {
+					schedulerPort.Store(int32(p))
+					blog.GetLogger().Infof("bililive-scheduler listening on port %d", p)
+					return
+				}
+			}
+			blog.GetLogger().Warnln("Failed to read bililive-scheduler port file")
+		}()
+	}); err != nil {
+		close(done)
+		blog.GetLogger().WithError(err).Errorln("Failed to start bililive-scheduler")
+		schedulerPort.Store(0)
+		return
+	}
+
+	// Process exited - clean up
+	close(done)
+	schedulerPort.Store(0)
+	blog.GetLogger().Warnln("bililive-scheduler process exited")
 }
 
 func Get() *tools.API {

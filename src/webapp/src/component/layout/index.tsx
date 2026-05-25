@@ -12,6 +12,7 @@ import {
     MenuUnfoldOutlined,
     LineChartOutlined,
     CloudUploadOutlined,
+    CalendarOutlined,
     CommentOutlined
 } from '@ant-design/icons';
 import './layout.css';
@@ -135,6 +136,11 @@ class RootLayout extends React.Component<Props, State> {
                                         key: 'tasks',
                                         icon: <UnorderedListOutlined />,
                                         label: <Link to="/tasks">任务队列</Link>,
+                                    },
+                                    {
+                                        key: 'scheduler',
+                                        icon: <CalendarOutlined />,
+                                        label: <a href="/scheduler/" target="_blank" rel="noopener noreferrer">调度器</a>,
                                     },
                                     {
                                         key: 'iostats',
