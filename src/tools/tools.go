@@ -470,6 +470,7 @@ func startScheduler() {
 
 	// Process exited - clean up
 	close(done)
+	UnregisterProcess("bililive-scheduler")
 	schedulerPort.Store(0)
 	blog.GetLogger().Warnln("bililive-scheduler process exited")
 }
