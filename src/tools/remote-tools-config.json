@@ -231,5 +231,57 @@
         "version"
       ]
     }
+  },
+  "bililive-scheduler": {
+    "v0.1.0": {
+      "downloadUrl": {
+        "darwin": {
+          "amd64": [
+            "https://github.com/Joftal/bililive-scheduler/releases/download/v0.1.0/bililive-scheduler-darwin-amd64.zip",
+            "https://bililive-go.com/remotetools/download?downloadurl=https://github.com/Joftal/bililive-scheduler/releases/download/v0.1.0/bililive-scheduler-darwin-amd64.zip"
+          ],
+          "arm64": [
+            "https://github.com/Joftal/bililive-scheduler/releases/download/v0.1.0/bililive-scheduler-darwin-arm64.zip",
+            "https://bililive-go.com/remotetools/download?downloadurl=https://github.com/Joftal/bililive-scheduler/releases/download/v0.1.0/bililive-scheduler-darwin-arm64.zip"
+          ]
+        },
+        "linux": {
+          "amd64": [
+            "https://github.com/Joftal/bililive-scheduler/releases/download/v0.1.0/bililive-scheduler-linux-amd64.zip",
+            "https://bililive-go.com/remotetools/download?downloadurl=https://github.com/Joftal/bililive-scheduler/releases/download/v0.1.0/bililive-scheduler-linux-amd64.zip"
+          ],
+          "arm64": [
+            "https://github.com/Joftal/bililive-scheduler/releases/download/v0.1.0/bililive-scheduler-linux-arm64.zip",
+            "https://bililive-go.com/remotetools/download?downloadurl=https://github.com/Joftal/bililive-scheduler/releases/download/v0.1.0/bililive-scheduler-linux-arm64.zip"
+          ],
+          "arm": [
+            "https://github.com/Joftal/bililive-scheduler/releases/download/v0.1.0/bililive-scheduler-linux-arm.zip",
+            "https://bililive-go.com/remotetools/download?downloadurl=https://github.com/Joftal/bililive-scheduler/releases/download/v0.1.0/bililive-scheduler-linux-arm.zip"
+          ]
+        },
+        "windows": {
+          "amd64": [
+            "https://github.com/Joftal/bililive-scheduler/releases/download/v0.1.0/bililive-scheduler-windows-amd64.zip",
+            "https://bililive-go.com/remotetools/download?downloadurl=https://github.com/Joftal/bililive-scheduler/releases/download/v0.1.0/bililive-scheduler-windows-amd64.zip"
+          ],
+          "386": [
+            "https://github.com/Joftal/bililive-scheduler/releases/download/v0.1.0/bililive-scheduler-windows-386.zip",
+            "https://bililive-go.com/remotetools/download?downloadurl=https://github.com/Joftal/bililive-scheduler/releases/download/v0.1.0/bililive-scheduler-windows-386.zip"
+          ],
+          "arm64": [
+            "https://github.com/Joftal/bililive-scheduler/releases/download/v0.1.0/bililive-scheduler-windows-arm64.zip",
+            "https://bililive-go.com/remotetools/download?downloadurl=https://github.com/Joftal/bililive-scheduler/releases/download/v0.1.0/bililive-scheduler-windows-arm64.zip"
+          ]
+        }
+      },
+      "pathToEntry": {
+        "darwin": "bililive-scheduler",
+        "linux": "bililive-scheduler",
+        "windows": "bililive-scheduler.exe"
+      },
+      "printInfoCmd": [
+        "--version"
+      ]
+    }
   }
 }

@@ -214,6 +214,50 @@ func initMux(ctx context.Context) *mux.Router {
 		}
 	})
 
+	// /scheduler/ 动态反向代理：录制调度器 Web UI
+	sched := &dynamicHandler{}
+	sched.h.Store(handlerHolder{H: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Scheduler Web UI 未就绪", http.StatusServiceUnavailable)
+	})})
+	m.PathPrefix("/scheduler/").Handler(
+		http.StripPrefix(
+			"/scheduler",
+			sched,
+		),
+	)
+	m.HandleFunc("/scheduler", func(w http.ResponseWriter, r *http.Request) {
+		target := "/scheduler/"
+		if q := r.URL.RawQuery; q != "" {
+			target += "?" + q
+		}
+		http.Redirect(w, r, target, http.StatusMovedPermanently)
+	})
+
+	// 监控 scheduler 端口变化并热更新反向代理
+	bilisentry.GoWithContext(ctx, func(ctx context.Context) {
+		var lastPort int
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				port := tools.GetSchedulerPort()
+				if port == 0 || port == lastPort {
+					continue
+				}
+				lastPort = port
+				target, _ := url.Parse("http://localhost:" + strconv.Itoa(port))
+				proxy := httputil.NewSingleHostReverseProxy(target)
+				proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+					http.Error(w, "无法连接到 Scheduler Web UI: "+err.Error(), http.StatusBadGateway)
+				}
+				sched.h.Store(handlerHolder{H: http.Handler(proxy)})
+			}
+		}
+	})
+
 	fs, err := webapp.FS()
 	if err != nil {
 		applog.GetLogger().Fatal(err)
