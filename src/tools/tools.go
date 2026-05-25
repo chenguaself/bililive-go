@@ -258,7 +258,9 @@ func Init() (err error) {
 		}
 	})
 	bilisentry.Go(func() {
-		startScheduler()
+		if cfg := configs.GetCurrentConfig(); cfg != nil && cfg.RPC.Enable {
+			startScheduler()
+		}
 	})
 
 	return nil
