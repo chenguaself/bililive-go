@@ -487,23 +487,24 @@ func unescapeSTTValue(s string) string {
 	return s
 }
 
-// parseDouyuColor maps Douyu color index to ASS RGB color (BBGGRR format).
-// Douyu uses small integers as color indices, not direct RGB values.
+// parseDouyuColor maps Douyu color index to RGB color.
+// Douyu uses small integers as color indices. Values are the softer colors
+// actually used by the Douyu client, not fully saturated primaries.
 func parseDouyuColor(col string) int {
 	switch col {
-	case "1": // red    (RGB #FF0000 → BBGGRR 0x0000FF)
-		return 0x0000FF
-	case "2": // orange (RGB #FF8C00 → BBGGRR 0x008CFF)
-		return 0x008CFF
-	case "3": // green  (RGB #00FF00 → BBGGRR 0x00FF00)
-		return 0x00FF00
-	case "4": // yellow (RGB #FFFF00 → BBGGRR 0x00FFFF)
-		return 0x00FFFF
-	case "5": // purple (RGB #FF00FF → BBGGRR 0xFF00FF)
-		return 0xFF00FF
-	case "6": // cyan   (RGB #00FFFF → BBGGRR 0xFFFF00)
-		return 0xFFFF00
-	default: // white  (RGB #FFFFFF → BBGGRR 0xFFFFFF)
+	case "1": // red    #FF6B6B
+		return 0xFF6B6B
+	case "2": // orange #FFA940
+		return 0xFFA940
+	case "3": // green  #6BD66B
+		return 0x6BD66B
+	case "4": // yellow #FFD666
+		return 0xFFD666
+	case "5": // purple #CC77FF
+		return 0xCC77FF
+	case "6": // cyan   #66DFFF
+		return 0x66DFFF
+	default: // white  #FFFFFF
 		return 16777215
 	}
 }
