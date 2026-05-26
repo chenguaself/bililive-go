@@ -84,7 +84,8 @@ type DanmakuConfig struct {
 	Resolution      string `yaml:"resolution" json:"resolution"`             // 播放分辨率
 	Outline         int    `yaml:"outline" json:"outline"`                   // 描边粗细 (0~4)
 	Opacity         int    `yaml:"opacity" json:"opacity"`                   // 背景透明度 (0~255)
-	RecordGift      *bool  `yaml:"record_gift,omitempty" json:"record_gift,omitempty"`         // 是否录制礼物
+	RecordGift      *bool  `yaml:"record_gift,omitempty" json:"record_gift,omitempty"`         // 是否录制礼物（哔哩哔哩）
+	RecordDouyuGift *bool  `yaml:"record_douyu_gift,omitempty" json:"record_douyu_gift,omitempty"` // 是否录制礼物（斗鱼）
 	RecordGuard     *bool  `yaml:"record_guard,omitempty" json:"record_guard,omitempty"`       // 是否录制上舰
 	RecordSuperChat *bool  `yaml:"record_super_chat,omitempty" json:"record_super_chat,omitempty"` // 是否录制SC
 	GuardPosition   string `yaml:"guard_position" json:"guard_position"`     // 上舰位置: bottom-left, bottom-right, top-left, top-right
@@ -102,6 +103,7 @@ var defaultDanmakuConfig = DanmakuConfig{
 	Outline:         1,
 	Opacity:         128,
 	RecordGift:      BoolPtr(true),
+	RecordDouyuGift: BoolPtr(true),
 	RecordGuard:     BoolPtr(true),
 	RecordSuperChat: BoolPtr(true),
 	GuardPosition:   "bottom-left",
@@ -156,6 +158,9 @@ func (d *DanmakuConfig) SetDefaults() {
 	}
 	if d.RecordGift == nil {
 		d.RecordGift = BoolPtr(true)
+	}
+	if d.RecordDouyuGift == nil {
+		d.RecordDouyuGift = BoolPtr(true)
 	}
 	if d.RecordGuard == nil {
 		d.RecordGuard = BoolPtr(true)
@@ -234,6 +239,9 @@ func mergeDanmakuConfig(base, override *DanmakuConfig) DanmakuConfig {
 	}
 	if override.RecordGift != nil {
 		result.RecordGift = override.RecordGift
+	}
+	if override.RecordDouyuGift != nil {
+		result.RecordDouyuGift = override.RecordDouyuGift
 	}
 	if override.RecordGuard != nil {
 		result.RecordGuard = override.RecordGuard
@@ -426,7 +434,7 @@ type OverridableConfig struct {
 	OnRecordFinished     *OnRecordFinished     `yaml:"on_record_finished,omitempty" json:"on_record_finished,omitempty"`         // 录制完成后的动作
 	TimeoutInUs          *int                  `yaml:"timeout_in_us,omitempty" json:"timeout_in_us,omitempty"`                   // 超时设置(微秒)
 	StreamPreference     *StreamPreference     `yaml:"stream_preference,omitempty" json:"stream_preference,omitempty"`           // 流偏好配置
-	DanmakuEnable        *bool                 `yaml:"danmaku_enable,omitempty" json:"danmaku_enable,omitempty"`                 // 是否录制弹幕（支持哔哩哔哩、抖音）
+	DanmakuEnable        *bool                 `yaml:"danmaku_enable,omitempty" json:"danmaku_enable,omitempty"`                 // 是否录制弹幕（支持哔哩哔哩、抖音、斗鱼）
 	Danmaku              *DanmakuConfig        `yaml:"danmaku,omitempty" json:"danmaku,omitempty"`                               // 弹幕录制参数
 }
 
