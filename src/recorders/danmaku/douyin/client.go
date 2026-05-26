@@ -44,6 +44,7 @@ type DouyinClient struct {
 	cookies   string
 	conn      *websocket.Conn
 	onDanmaku func(username, content string)
+	onGift    func(username, giftName string, num int)
 	done      chan struct{}
 	logger    *logrus.Entry
 	mu        sync.Mutex
@@ -52,11 +53,12 @@ type DouyinClient struct {
 }
 
 // NewDouyinClient 创建新的抖音弹幕客户端
-func NewDouyinClient(roomID, cookies string, onDanmaku func(username, content string), logger *logrus.Entry) *DouyinClient {
+func NewDouyinClient(roomID, cookies string, onDanmaku func(username, content string), onGift func(username, giftName string, num int), logger *logrus.Entry) *DouyinClient {
 	return &DouyinClient{
 		roomID:    roomID,
 		cookies:   cookies,
 		onDanmaku: onDanmaku,
+		onGift:    onGift,
 		done:      make(chan struct{}),
 		logger:    logger,
 	}
@@ -303,12 +305,17 @@ func (c *DouyinClient) readLoop(ctx context.Context) error {
 
 // handleMessage 处理单条消息
 func (c *DouyinClient) handleMessage(msg *Message) {
-	if msg.Method != "WebcastChatMessage" {
-		return
+	switch msg.Method {
+	case "WebcastChatMessage":
+		c.handleChatMessage(msg.Payload)
+	case "WebcastGiftMessage":
+		c.handleGiftMessage(msg.Payload)
 	}
+}
 
+func (c *DouyinClient) handleChatMessage(payload []byte) {
 	chatMsg := &ChatMessage{}
-	if err := chatMsg.Unmarshal(msg.Payload); err != nil {
+	if err := chatMsg.Unmarshal(payload); err != nil {
 		c.logger.WithError(err).Debug("解析 ChatMessage 失败")
 		return
 	}
@@ -327,6 +334,41 @@ func (c *DouyinClient) handleMessage(msg *Message) {
 	if content != "" && c.onDanmaku != nil {
 		c.onDanmaku(username, content)
 	}
+}
+
+func (c *DouyinClient) handleGiftMessage(payload []byte) {
+	giftMsg := &GiftMessage{}
+	if err := giftMsg.Unmarshal(payload); err != nil {
+		c.logger.WithError(err).Debug("解析 GiftMessage 失败")
+		return
+	}
+
+	if c.onGift == nil {
+		return
+	}
+
+	username := ""
+	if giftMsg.User != nil {
+		username = giftMsg.User.Nickname
+	}
+	if username == "" {
+		username = "未知用户"
+	}
+
+	giftName := ""
+	if giftMsg.Gift != nil {
+		giftName = giftMsg.Gift.Name
+	}
+	if giftName == "" {
+		giftName = "礼物"
+	}
+
+	num := int(giftMsg.RepeatCount)
+	if num < 1 {
+		num = 1
+	}
+
+	c.onGift(username, giftName, num)
 }
 
 // heartbeatLoop 心跳循环（每 5 秒发送一次）

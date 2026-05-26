@@ -86,6 +86,7 @@ type DanmakuConfig struct {
 	Opacity         int    `yaml:"opacity" json:"opacity"`                   // 背景透明度 (0~255)
 	RecordGift      *bool  `yaml:"record_gift,omitempty" json:"record_gift,omitempty"`         // 是否录制礼物（哔哩哔哩）
 	RecordDouyuGift *bool  `yaml:"record_douyu_gift,omitempty" json:"record_douyu_gift,omitempty"` // 是否录制礼物（斗鱼）
+	RecordDouyinGift *bool `yaml:"record_douyin_gift,omitempty" json:"record_douyin_gift,omitempty"` // 是否录制礼物（抖音）
 	RecordGuard     *bool  `yaml:"record_guard,omitempty" json:"record_guard,omitempty"`       // 是否录制上舰
 	RecordSuperChat *bool  `yaml:"record_super_chat,omitempty" json:"record_super_chat,omitempty"` // 是否录制SC
 	GuardPosition   string `yaml:"guard_position,omitempty" json:"guard_position"`     // 上舰位置: bottom-left, bottom-right, top-left, top-right
@@ -102,8 +103,9 @@ var defaultDanmakuConfig = DanmakuConfig{
 	Resolution:      "1920x1080",
 	Outline:         1,
 	Opacity:         128,
-	RecordGift:      BoolPtr(true),
-	RecordDouyuGift: BoolPtr(true),
+	RecordGift:       BoolPtr(true),
+	RecordDouyuGift:  BoolPtr(true),
+	RecordDouyinGift: BoolPtr(true),
 	RecordGuard:     BoolPtr(true),
 	RecordSuperChat: BoolPtr(true),
 	GuardPosition:   "bottom-left",
@@ -193,6 +195,14 @@ func (d *DanmakuConfig) SetDefaultsWithPlatform(platformKey string) {
 	} else {
 		d.RecordDouyuGift = nil
 	}
+	// 抖音专属字段
+	if platformKey == "" || platformKey == "douyin" {
+		if d.RecordDouyinGift == nil {
+			d.RecordDouyinGift = BoolPtr(true)
+		}
+	} else {
+		d.RecordDouyinGift = nil
+	}
 }
 
 // Validate 验证弹幕配置参数的有效性
@@ -267,6 +277,9 @@ func mergeDanmakuConfig(base, override *DanmakuConfig) DanmakuConfig {
 	if override.RecordDouyuGift != nil {
 		result.RecordDouyuGift = override.RecordDouyuGift
 	}
+	if override.RecordDouyinGift != nil {
+		result.RecordDouyinGift = override.RecordDouyinGift
+	}
 	if override.RecordGuard != nil {
 		result.RecordGuard = override.RecordGuard
 	}
@@ -299,6 +312,9 @@ func StripIrrelevantDanmakuFields(d *DanmakuConfig, platformKey string) {
 	}
 	if platformKey != "douyu" {
 		d.RecordDouyuGift = nil
+	}
+	if platformKey != "douyin" {
+		d.RecordDouyinGift = nil
 	}
 }
 

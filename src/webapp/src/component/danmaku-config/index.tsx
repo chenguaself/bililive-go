@@ -17,6 +17,7 @@ const DEFAULT_DANMAKU: DanmakuConfig = {
   opacity: 128,
   record_gift: true,
   record_douyu_gift: true,
+  record_douyin_gift: true,
   record_guard: true,
   record_super_chat: true,
   guard_position: 'bottom-left',
@@ -33,6 +34,7 @@ interface DanmakuConfig {
   opacity: number;
   record_gift: boolean;
   record_douyu_gift: boolean;
+  record_douyin_gift: boolean;
   record_guard: boolean;
   record_super_chat: boolean;
   guard_position: string;
@@ -78,7 +80,8 @@ const DanmakuParamForm: React.FC<{
   isRoom?: boolean;
   showBilibiliContent?: boolean;
   showDouyuContent?: boolean;
-}> = ({ initialValues, globalDefaults, onSave, onReset, loading, showEnable, danmakuEnable, label, isRoom, showBilibiliContent, showDouyuContent }) => {
+  showDouyinContent?: boolean;
+}> = ({ initialValues, globalDefaults, onSave, onReset, loading, showEnable, danmakuEnable, label, isRoom, showBilibiliContent, showDouyuContent, showDouyinContent }) => {
   const [form] = Form.useForm();
 
   const baseDefaults = useMemo(() => globalDefaults || DEFAULT_DANMAKU, [globalDefaults]);
@@ -278,6 +281,27 @@ const DanmakuParamForm: React.FC<{
           }]}
         />
       )}
+
+      {showDouyinContent && (
+        <Collapse
+          defaultActiveKey={[]}
+          size="small"
+          style={{ marginBottom: 16 }}
+          items={[{
+            key: 'douyin-content',
+            label: '抖音录制内容',
+            children: (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+                <Form.Item
+                  label={<span>礼物消息 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>用户赠送礼物的通知</span></span>}
+                  name={['danmaku', 'record_douyin_gift']} valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+              </div>
+            ),
+          }]}
+        />
+      )}
       <Form.Item style={{ marginBottom: 0 }}>
         <Space>
           <Button type="primary" onClick={handleSave} loading={loading}>
@@ -425,6 +449,7 @@ const DanmakuSettings: React.FC = () => {
 
   const BILIBILI_DANMAKU_FIELDS = ['record_gift', 'record_guard', 'record_super_chat', 'guard_position', 'sc_position'];
   const DOUYU_DANMAKU_FIELDS = ['record_douyu_gift'];
+  const DOUYIN_DANMAKU_FIELDS = ['record_douyin_gift'];
 
   const filterDanmakuByPlatform = (danmaku: Record<string, any>, platformKey: string): Record<string, any> => {
     if (!danmaku) return danmaku;
@@ -434,6 +459,9 @@ const DanmakuSettings: React.FC = () => {
     }
     if (platformKey !== 'douyu') {
       for (const f of DOUYU_DANMAKU_FIELDS) delete result[f];
+    }
+    if (platformKey !== 'douyin') {
+      for (const f of DOUYIN_DANMAKU_FIELDS) delete result[f];
     }
     return result;
   };
@@ -486,6 +514,7 @@ const DanmakuSettings: React.FC = () => {
           label="全局弹幕"
           showBilibiliContent
           showDouyuContent
+          showDouyinContent
         />
       </Card>
 
@@ -598,6 +627,7 @@ const DanmakuSettings: React.FC = () => {
                     isRoom
                     showBilibiliContent={platformKey === 'bilibili'}
                     showDouyuContent={platformKey === 'douyu'}
+                    showDouyinContent={platformKey === 'douyin'}
                   />
                 ),
               }))}

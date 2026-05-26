@@ -58,8 +58,6 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 	c.OnDanmaku(func(msg *message.Danmaku) {
 		d.mu.Lock()
 		w := d.assWriter
-		d.count++
-		d.mu.Unlock()
 		if w != nil {
 			w.AddDanmaku(
 				time.Now(),
@@ -68,6 +66,8 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 				msg.Extra.Color,
 			)
 		}
+		d.count++
+		d.mu.Unlock()
 	})
 
 	if d.cfg.RecordGift != nil && *d.cfg.RecordGift {
@@ -75,10 +75,11 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 			if msg.Num > 0 {
 				d.mu.Lock()
 				w := d.assWriter
-				d.mu.Unlock()
 				if w != nil {
 					w.AddGift(time.Now(), msg.Uname, msg.GiftName, msg.Num)
 				}
+				d.count++
+				d.mu.Unlock()
 			}
 		})
 	}
@@ -87,10 +88,11 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 		c.OnGuardBuy(func(msg *message.GuardBuy) {
 			d.mu.Lock()
 			w := d.assWriter
-			d.mu.Unlock()
 			if w != nil {
 				w.AddGuard(time.Now(), msg.Username, msg.GiftName)
 			}
+			d.count++
+			d.mu.Unlock()
 		})
 	}
 
@@ -98,10 +100,11 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 		c.OnSuperChat(func(msg *message.SuperChat) {
 			d.mu.Lock()
 			w := d.assWriter
-			d.mu.Unlock()
 			if w != nil {
 				w.AddSuperChat(time.Now(), msg.UserInfo.Uname, msg.Message, msg.Price)
 			}
+			d.count++
+			d.mu.Unlock()
 		})
 	}
 

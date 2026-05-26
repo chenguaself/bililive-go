@@ -1447,6 +1447,11 @@ func applyConfigUpdates(c *configs.Config, updates map[string]interface{}) error
 		} else if _, exists := danmaku["record_douyu_gift"]; exists && danmaku["record_douyu_gift"] == nil {
 			c.Danmaku.RecordDouyuGift = nil
 		}
+		if recordDouyinGift, ok := danmaku["record_douyin_gift"].(bool); ok {
+			c.Danmaku.RecordDouyinGift = configs.BoolPtr(recordDouyinGift)
+		} else if _, exists := danmaku["record_douyin_gift"]; exists && danmaku["record_douyin_gift"] == nil {
+			c.Danmaku.RecordDouyinGift = nil
+		}
 		if recordGuard, ok := danmaku["record_guard"].(bool); ok {
 			c.Danmaku.RecordGuard = configs.BoolPtr(recordGuard)
 		} else if _, exists := danmaku["record_guard"]; exists && danmaku["record_guard"] == nil {
@@ -2005,6 +2010,11 @@ func applyOverridableConfigUpdates(oc *configs.OverridableConfig, updates map[st
 			oc.Danmaku.RecordDouyuGift = configs.BoolPtr(recordDouyuGift)
 		} else if _, exists := danmaku["record_douyu_gift"]; exists && danmaku["record_douyu_gift"] == nil {
 			oc.Danmaku.RecordDouyuGift = nil
+		}
+		if recordDouyinGift, ok := danmaku["record_douyin_gift"].(bool); ok {
+			oc.Danmaku.RecordDouyinGift = configs.BoolPtr(recordDouyinGift)
+		} else if _, exists := danmaku["record_douyin_gift"]; exists && danmaku["record_douyin_gift"] == nil {
+			oc.Danmaku.RecordDouyinGift = nil
 		}
 		if recordGuard, ok := danmaku["record_guard"].(bool); ok {
 			oc.Danmaku.RecordGuard = configs.BoolPtr(recordGuard)

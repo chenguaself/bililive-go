@@ -24,7 +24,6 @@ type DouyinDanmakuRecorder struct {
 	count      int
 	mu         sync.Mutex
 	running    bool
-	done       chan struct{}
 }
 
 // NewDouyinDanmakuRecorder 创建抖音弹幕录制器
@@ -35,7 +34,6 @@ func NewDouyinDanmakuRecorder(roomID, cookies, outputFile string, cfg configs.Da
 		outputFile: outputFile,
 		cfg:        cfg,
 		logger:     logger,
-		done:       make(chan struct{}),
 	}
 }
 
@@ -58,7 +56,11 @@ func (r *DouyinDanmakuRecorder) Start(ctx context.Context) error {
 	r.assWriter = assWriter
 
 	// 创建客户端
-	r.client = douyin.NewDouyinClient(r.roomID, r.cookies, r.onDanmaku, r.logger)
+	var onGift func(username, giftName string, num int)
+	if r.cfg.RecordDouyinGift != nil && *r.cfg.RecordDouyinGift {
+		onGift = r.onGift
+	}
+	r.client = douyin.NewDouyinClient(r.roomID, r.cookies, r.onDanmaku, onGift, r.logger)
 
 	// 启动客户端
 	if err := r.client.Start(ctx); err != nil {
@@ -75,24 +77,27 @@ func (r *DouyinDanmakuRecorder) Start(ctx context.Context) error {
 // Stop 停止弹幕录制
 func (r *DouyinDanmakuRecorder) Stop() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	if !r.running {
+		r.mu.Unlock()
 		return
 	}
 
 	r.running = false
-	close(r.done)
+	client := r.client
+	writer := r.assWriter
+	r.client = nil
+	r.assWriter = nil
+	count := r.count
+	r.mu.Unlock()
 
-	if r.client != nil {
-		r.client.Stop()
+	if client != nil {
+		client.Stop()
+	}
+	if writer != nil {
+		writer.Close()
 	}
 
-	if r.assWriter != nil {
-		r.assWriter.Close()
-	}
-
-	r.logger.Infof("抖音弹幕录制已停止，共录制 %d 条弹幕", r.count)
+	r.logger.Infof("抖音弹幕录制已停止，共录制 %d 条弹幕", count)
 }
 
 // OutputFile 返回输出文件路径
@@ -141,5 +146,18 @@ func (r *DouyinDanmakuRecorder) onDanmaku(username, content string) {
 
 	// 抖音弹幕不含颜色信息，使用默认白色 (16777215)
 	r.assWriter.AddDanmaku(time.Now(), username, content, 16777215)
+	r.count++
+}
+
+// onGift 礼物回调
+func (r *DouyinDanmakuRecorder) onGift(username, giftName string, num int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.running || r.assWriter == nil {
+		return
+	}
+
+	r.assWriter.AddGift(time.Now(), username, giftName, num)
 	r.count++
 }
