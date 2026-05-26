@@ -166,6 +166,17 @@ func (c *DouyuClient) invalidateAddrCache() {
 	c.cachedAddr = ""
 }
 
+// getConn 安全获取当前连接引用，不持锁执行 I/O。
+// 当客户端已停止时返回 nil，避免读取已关闭的连接触发无意义的重连。
+func (c *DouyuClient) getConn() net.Conn {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.running {
+		return nil
+	}
+	return c.conn
+}
+
 func (c *DouyuClient) readLoopWithReconnect(ctx context.Context) {
 	defer func() {
 		c.mu.Lock()
@@ -262,14 +273,12 @@ func (c *DouyuClient) readLoop(ctx context.Context) error {
 		default:
 		}
 
-		c.mu.Lock()
-		if !c.running || c.conn == nil {
-			c.mu.Unlock()
+		conn := c.getConn()
+		if conn == nil {
 			return nil
 		}
-		c.conn.SetReadDeadline(time.Now().Add(readTimeout))
-		frameType, body, err := c.readFrameLocked()
-		c.mu.Unlock()
+		conn.SetReadDeadline(time.Now().Add(readTimeout))
+		frameType, body, err := c.readFrame(conn)
 
 		if err != nil {
 			return fmt.Errorf("读取帧失败: %w", err)
@@ -340,7 +349,7 @@ func (c *DouyuClient) sendKeepAlive() {
 	if !c.running || c.conn == nil {
 		return
 	}
-	c.sendFrameLocked(encodeSTT("type", "keeplive", "tick", fmt.Sprintf("%d", time.Now().UnixMilli())))
+	c.sendFrame(encodeSTT("type", "keeplive", "tick", fmt.Sprintf("%d", time.Now().UnixMilli())))
 }
 
 func (c *DouyuClient) sendLogin() error {
@@ -349,7 +358,7 @@ func (c *DouyuClient) sendLogin() error {
 	if !c.running || c.conn == nil {
 		return fmt.Errorf("client not running")
 	}
-	return c.sendFrameLocked(encodeSTT("type", "loginreq", "roomid", c.roomID))
+	return c.sendFrame(encodeSTT("type", "loginreq", "roomid", c.roomID))
 }
 
 func (c *DouyuClient) sendJoinGroup() error {
@@ -358,31 +367,30 @@ func (c *DouyuClient) sendJoinGroup() error {
 	if !c.running || c.conn == nil {
 		return fmt.Errorf("client not running")
 	}
-	return c.sendFrameLocked(encodeSTT("type", "joingroup", "rid", c.roomID, "gid", "-9999"))
+	return c.sendFrame(encodeSTT("type", "joingroup", "rid", c.roomID, "gid", "-9999"))
 }
 
-func (c *DouyuClient) sendFrameLocked(data []byte) error {
+func (c *DouyuClient) sendFrame(data []byte) error {
 	c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	_, err := c.conn.Write(data)
 	return err
 }
 
 func (c *DouyuClient) readOneFrame() ([]byte, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.running || c.conn == nil {
+	conn := c.getConn()
+	if conn == nil {
 		return nil, fmt.Errorf("client not running")
 	}
-	c.conn.SetReadDeadline(time.Now().Add(readTimeout))
-	_, body, err := c.readFrameLocked()
+	conn.SetReadDeadline(time.Now().Add(readTimeout))
+	_, body, err := c.readFrame(conn)
 	return body, err
 }
 
-// readFrameLocked reads a single Douyu frame from c.conn.
-// Caller must hold c.mu and have set the read deadline.
-func (c *DouyuClient) readFrameLocked() (int, []byte, error) {
+// readFrame reads a single Douyu frame from conn.
+// The caller must have set the read deadline on conn.
+func (c *DouyuClient) readFrame(conn net.Conn) (int, []byte, error) {
 	header := make([]byte, 12)
-	if _, err := c.readFullLocked(header); err != nil {
+	if _, err := c.readFull(conn, header); err != nil {
 		return 0, nil, err
 	}
 	length := binary.LittleEndian.Uint32(header[0:4])
@@ -392,7 +400,7 @@ func (c *DouyuClient) readFrameLocked() (int, []byte, error) {
 		return msgType, nil, fmt.Errorf("invalid body length: %d", bodyLen)
 	}
 	body := make([]byte, bodyLen)
-	if _, err := c.readFullLocked(body); err != nil {
+	if _, err := c.readFull(conn, body); err != nil {
 		return msgType, nil, err
 	}
 	if len(body) > 0 && body[len(body)-1] == 0 {
@@ -401,12 +409,11 @@ func (c *DouyuClient) readFrameLocked() (int, []byte, error) {
 	return msgType, body, nil
 }
 
-// readFullLocked reads exactly len(buf) bytes from c.conn.
-// Caller must hold c.mu.
-func (c *DouyuClient) readFullLocked(buf []byte) (int, error) {
+// readFull reads exactly len(buf) bytes from conn.
+func (c *DouyuClient) readFull(conn net.Conn, buf []byte) (int, error) {
 	total := 0
 	for total < len(buf) {
-		n, err := c.conn.Read(buf[total:])
+		n, err := conn.Read(buf[total:])
 		total += n
 		if err != nil {
 			return total, err
@@ -473,8 +480,10 @@ func escapeSTTValue(s string) string {
 }
 
 func unescapeSTTValue(s string) string {
+	s = strings.ReplaceAll(s, "@@", "\x00") // 先处理 @@，避免 @A 被错误匹配
 	s = strings.ReplaceAll(s, "@A", "@")
 	s = strings.ReplaceAll(s, "@S", "/")
+	s = strings.ReplaceAll(s, "\x00", "@")
 	return s
 }
 

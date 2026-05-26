@@ -135,6 +135,11 @@ var validMessagePositions = map[string]bool{
 
 // SetDefaults 将空字段设为默认值（应在 Validate 之前调用）
 func (d *DanmakuConfig) SetDefaults() {
+	d.SetDefaultsWithPlatform("")
+}
+
+// SetDefaultsWithPlatform 将空字段设为默认值，platformKey 用于跳过不适用平台的字段。
+func (d *DanmakuConfig) SetDefaultsWithPlatform(platformKey string) {
 	if d.FontSize == 0 {
 		d.FontSize = defaultDanmakuConfig.FontSize
 	}
@@ -156,29 +161,48 @@ func (d *DanmakuConfig) SetDefaults() {
 	if d.Opacity == 0 {
 		d.Opacity = defaultDanmakuConfig.Opacity
 	}
-	if d.RecordGift == nil {
-		d.RecordGift = BoolPtr(true)
+	// Bilibili 专属字段
+	if platformKey == "" || platformKey == "bilibili" {
+		if d.RecordGift == nil {
+			d.RecordGift = BoolPtr(true)
+		}
+		if d.RecordGuard == nil {
+			d.RecordGuard = BoolPtr(true)
+		}
+		if d.RecordSuperChat == nil {
+			d.RecordSuperChat = BoolPtr(true)
+		}
+		if d.GuardPosition == "" {
+			d.GuardPosition = "bottom-left"
+		}
+		if d.ScPosition == "" {
+			d.ScPosition = "bottom-left"
+		}
+	} else {
+		d.RecordGift = nil
+		d.RecordGuard = nil
+		d.RecordSuperChat = nil
+		d.GuardPosition = ""
+		d.ScPosition = ""
 	}
-	if d.RecordDouyuGift == nil {
-		d.RecordDouyuGift = BoolPtr(true)
-	}
-	if d.RecordGuard == nil {
-		d.RecordGuard = BoolPtr(true)
-	}
-	if d.RecordSuperChat == nil {
-		d.RecordSuperChat = BoolPtr(true)
-	}
-	if d.GuardPosition == "" {
-		d.GuardPosition = "bottom-left"
-	}
-	if d.ScPosition == "" {
-		d.ScPosition = "bottom-left"
+	// 斗鱼专属字段
+	if platformKey == "" || platformKey == "douyu" {
+		if d.RecordDouyuGift == nil {
+			d.RecordDouyuGift = BoolPtr(true)
+		}
+	} else {
+		d.RecordDouyuGift = nil
 	}
 }
 
 // Validate 验证弹幕配置参数的有效性
 func (d *DanmakuConfig) Validate() error {
-	d.SetDefaults()
+	return d.ValidateWithPlatform("")
+}
+
+// ValidateWithPlatform 验证弹幕配置参数的有效性，同时根据平台清理不适用的字段。
+func (d *DanmakuConfig) ValidateWithPlatform(platformKey string) error {
+	d.SetDefaultsWithPlatform(platformKey)
 	if d.FontSize < 12 || d.FontSize > 120 {
 		return fmt.Errorf("字体大小必须在 12~120 之间，当前值: %d", d.FontSize)
 	}
@@ -200,10 +224,10 @@ func (d *DanmakuConfig) Validate() error {
 	if d.Opacity < 0 || d.Opacity > 255 {
 		return fmt.Errorf("背景透明度必须在 0~255 之间，当前值: %d", d.Opacity)
 	}
-	if !validMessagePositions[d.GuardPosition] {
+	if d.GuardPosition != "" && !validMessagePositions[d.GuardPosition] {
 		return fmt.Errorf("不支持的上舰消息位置: %s，可选值: bottom-left, bottom-right, top-left, top-right", d.GuardPosition)
 	}
-	if !validMessagePositions[d.ScPosition] {
+	if d.ScPosition != "" && !validMessagePositions[d.ScPosition] {
 		return fmt.Errorf("不支持的SC消息位置: %s，可选值: bottom-left, bottom-right, top-left, top-right", d.ScPosition)
 	}
 	return nil
@@ -1365,7 +1389,7 @@ func (c *Config) ValidatePlatformConfigs() error {
 
 		// 验证弹幕配置（如果指定）
 		if platformConfig.Danmaku != nil {
-			if err := platformConfig.Danmaku.Validate(); err != nil {
+			if err := platformConfig.Danmaku.ValidateWithPlatform(platformKey); err != nil {
 				return fmt.Errorf("平台 '%s': 弹幕配置无效: %w", platformKey, err)
 			}
 		}

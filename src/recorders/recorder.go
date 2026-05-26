@@ -212,6 +212,13 @@ type danmakuRecorder interface {
 	GetStatus() map[string]interface{}
 }
 
+// 编译期接口断言
+var (
+	_ danmakuRecorder = (*danmaku.DanmakuRecorder)(nil)
+	_ danmakuRecorder = (*danmaku.DouyinDanmakuRecorder)(nil)
+	_ danmakuRecorder = (*danmaku.DouyuDanmakuRecorder)(nil)
+)
+
 type recorder struct {
 	Live       live.Live
 	ed         events.Dispatcher

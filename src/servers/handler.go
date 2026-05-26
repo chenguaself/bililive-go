@@ -1722,7 +1722,7 @@ func updatePlatformConfig(writer http.ResponseWriter, r *http.Request) {
 
 		// 验证弹幕配置有效性
 		if pc.Danmaku != nil {
-			if err := pc.Danmaku.Validate(); err != nil {
+			if err := pc.Danmaku.ValidateWithPlatform(platformKey); err != nil {
 				return fmt.Errorf("弹幕参数无效: %w", err)
 			}
 		}
@@ -1840,17 +1840,12 @@ func updateRoomConfigById(writer http.ResponseWriter, r *http.Request) {
 		// 更新可覆盖配置
 		applyOverridableConfigUpdates(&room.OverridableConfig, updates)
 
-		// 验证弹幕配置有效性
-		if room.Danmaku != nil {
-			if err := room.Danmaku.Validate(); err != nil {
-				return fmt.Errorf("弹幕参数无效: %w", err)
-			}
-		}
-
-		// 移除平台不适用的弹幕字段（必须在 Validate 之后，因为 Validate 内部调用 SetDefaults 会恢复 nil 字段）
+		// 验证弹幕配置有效性（同时根据平台清理不适用的字段）
 		if room.Danmaku != nil {
 			platformKey := configs.GetPlatformKeyFromUrl(room.Url)
-			configs.StripIrrelevantDanmakuFields(room.Danmaku, platformKey)
+			if err := room.Danmaku.ValidateWithPlatform(platformKey); err != nil {
+				return fmt.Errorf("弹幕参数无效: %w", err)
+			}
 		}
 
 		return nil
@@ -2086,17 +2081,12 @@ func updateRoomConfig(writer http.ResponseWriter, r *http.Request) {
 		// 处理可覆盖配置（弹幕、interval、outPutPath、ffmpegPath 等）
 		applyOverridableConfigUpdates(&room.OverridableConfig, updates)
 
-		// 验证弹幕配置
-		if room.Danmaku != nil {
-			if err := room.Danmaku.Validate(); err != nil {
-				return fmt.Errorf("弹幕配置无效: %w", err)
-			}
-		}
-
-		// 移除平台不适用的弹幕字段（必须在 Validate 之后）
+		// 验证弹幕配置（同时根据平台清理不适用的字段）
 		if room.Danmaku != nil {
 			platformKey := configs.GetPlatformKeyFromUrl(decodedUrl)
-			configs.StripIrrelevantDanmakuFields(room.Danmaku, platformKey)
+			if err := room.Danmaku.ValidateWithPlatform(platformKey); err != nil {
+				return fmt.Errorf("弹幕配置无效: %w", err)
+			}
 		}
 
 		return nil
