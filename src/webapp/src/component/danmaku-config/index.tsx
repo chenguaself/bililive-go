@@ -423,12 +423,27 @@ const DanmakuSettings: React.FC = () => {
     }
   };
 
-  const handleSaveRoom = async (liveId: string, values: any) => {
+  const BILIBILI_DANMAKU_FIELDS = ['record_gift', 'record_guard', 'record_super_chat', 'guard_position', 'sc_position'];
+  const DOUYU_DANMAKU_FIELDS = ['record_douyu_gift'];
+
+  const filterDanmakuByPlatform = (danmaku: Record<string, any>, platformKey: string): Record<string, any> => {
+    if (!danmaku) return danmaku;
+    const result = { ...danmaku };
+    if (platformKey !== 'bilibili') {
+      for (const f of BILIBILI_DANMAKU_FIELDS) delete result[f];
+    }
+    if (platformKey !== 'douyu') {
+      for (const f of DOUYU_DANMAKU_FIELDS) delete result[f];
+    }
+    return result;
+  };
+
+  const handleSaveRoom = async (liveId: string, values: any, platformKey: string) => {
     setSaving(true);
     try {
       await api.updateRoomConfigById(liveId, {
         danmaku_enable: values.danmaku_enable,
-        danmaku: values.danmaku,
+        danmaku: filterDanmakuByPlatform(values.danmaku, platformKey),
       });
       await loadData();
     } finally {
@@ -576,7 +591,7 @@ const DanmakuSettings: React.FC = () => {
                     globalDefaults={config?.danmaku}
                     danmakuEnable={room.room_config?.danmaku_enable ?? config?.danmaku_enable}
                     showEnable
-                    onSave={(values) => handleSaveRoom(room.live_id, values)}
+                    onSave={(values) => handleSaveRoom(room.live_id, values, platformKey)}
                     onReset={() => handleResetRoom(room.live_id)}
                     loading={saving}
                     label={room.host_name || '房间弹幕'}

@@ -1847,6 +1847,12 @@ func updateRoomConfigById(writer http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// 移除平台不适用的弹幕字段（必须在 Validate 之后，因为 Validate 内部调用 SetDefaults 会恢复 nil 字段）
+		if room.Danmaku != nil {
+			platformKey := configs.GetPlatformKeyFromUrl(room.Url)
+			configs.StripIrrelevantDanmakuFields(room.Danmaku, platformKey)
+		}
+
 		return nil
 	}, 3, 10*time.Millisecond)
 
@@ -2085,6 +2091,12 @@ func updateRoomConfig(writer http.ResponseWriter, r *http.Request) {
 			if err := room.Danmaku.Validate(); err != nil {
 				return fmt.Errorf("弹幕配置无效: %w", err)
 			}
+		}
+
+		// 移除平台不适用的弹幕字段（必须在 Validate 之后）
+		if room.Danmaku != nil {
+			platformKey := configs.GetPlatformKeyFromUrl(decodedUrl)
+			configs.StripIrrelevantDanmakuFields(room.Danmaku, platformKey)
 		}
 
 		return nil

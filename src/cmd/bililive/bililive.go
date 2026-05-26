@@ -60,10 +60,18 @@ func getConfig() (*configs.Config, error) {
 		// if config is invalid, try using the config.yml file besides the executable file.
 		config, err := getConfigBesidesExecutable()
 		if err == nil {
-			return config, config.Verify()
+			if vErr := config.Verify(); vErr != nil {
+				return config, vErr
+			}
+			config.StripAllIrrelevantDanmakuFields()
+			return config, nil
 		}
 	}
-	return config, config.Verify()
+	if vErr := config.Verify(); vErr != nil {
+		return config, vErr
+	}
+	config.StripAllIrrelevantDanmakuFields()
+	return config, nil
 }
 
 func getConfigBesidesExecutable() (*configs.Config, error) {

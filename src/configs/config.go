@@ -88,8 +88,8 @@ type DanmakuConfig struct {
 	RecordDouyuGift *bool  `yaml:"record_douyu_gift,omitempty" json:"record_douyu_gift,omitempty"` // 是否录制礼物（斗鱼）
 	RecordGuard     *bool  `yaml:"record_guard,omitempty" json:"record_guard,omitempty"`       // 是否录制上舰
 	RecordSuperChat *bool  `yaml:"record_super_chat,omitempty" json:"record_super_chat,omitempty"` // 是否录制SC
-	GuardPosition   string `yaml:"guard_position" json:"guard_position"`     // 上舰位置: bottom-left, bottom-right, top-left, top-right
-	ScPosition      string `yaml:"sc_position" json:"sc_position"`           // SC位置: bottom-left, bottom-right, top-left, top-right
+	GuardPosition   string `yaml:"guard_position,omitempty" json:"guard_position"`     // 上舰位置: bottom-left, bottom-right, top-left, top-right
+	ScPosition      string `yaml:"sc_position,omitempty" json:"sc_position"`           // SC位置: bottom-left, bottom-right, top-left, top-right
 }
 
 func BoolPtr(b bool) *bool { return &b }
@@ -262,6 +262,30 @@ func mergeDanmakuConfig(base, override *DanmakuConfig) DanmakuConfig {
 // GetDefaultDanmakuConfig 返回弹幕配置的默认值
 func GetDefaultDanmakuConfig() DanmakuConfig {
 	return defaultDanmakuConfig
+}
+
+// StripIrrelevantDanmakuFields 根据平台移除不适用的弹幕配置字段，避免 config 中存储无用数据。
+func StripIrrelevantDanmakuFields(d *DanmakuConfig, platformKey string) {
+	if platformKey != "bilibili" {
+		d.RecordGift = nil
+		d.RecordGuard = nil
+		d.RecordSuperChat = nil
+		d.GuardPosition = ""
+		d.ScPosition = ""
+	}
+	if platformKey != "douyu" {
+		d.RecordDouyuGift = nil
+	}
+}
+
+// StripAllIrrelevantDanmakuFields 对所有房间执行平台字段清理。
+func (c *Config) StripAllIrrelevantDanmakuFields() {
+	for i := range c.LiveRooms {
+		if c.LiveRooms[i].Danmaku != nil {
+			platformKey := GetPlatformKeyFromUrl(c.LiveRooms[i].Url)
+			StripIrrelevantDanmakuFields(c.LiveRooms[i].Danmaku, platformKey)
+		}
+	}
 }
 
 // VideoSplitStrategies info.
