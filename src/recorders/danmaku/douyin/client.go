@@ -511,6 +511,20 @@ func generateSignature(wssURL string, logger *logrus.Entry) (string, error) {
 	}
 
 	vm := goja.New()
+	// sign.js 内部用无 var 的赋值（如 document = {}）声明全局对象，
+	// 在 goja 中会因变量未声明报错。通过 this 赋值注入全局属性，
+	// 确保预编译的 RunProgram 能正确访问。
+	vm.Set("window", vm.GlobalObject())
+	vm.Set("document", vm.NewObject())
+	nav := vm.NewObject()
+	nav.Set("userAgent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	vm.Set("navigator", nav)
+	for _, g := range []string{"location", "screen", "history", "localStorage", "sessionStorage", "crypto", "performance"} {
+		vm.Set(g, vm.NewObject())
+	}
+	for _, g := range []string{"Image", "WebSocket", "XMLHttpRequest", "fetch", "setTimeout", "setInterval", "clearTimeout", "clearInterval"} {
+		vm.Set(g, vm.NewObject())
+	}
 	if _, err := vm.RunProgram(program); err != nil {
 		return "", fmt.Errorf("执行 sign.js 失败: %w", err)
 	}
