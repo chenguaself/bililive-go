@@ -106,7 +106,7 @@ func scTierColor(price int) string {
 	case price >= 2000:
 		return "&H80E73CC6" // 紫色 #C678F5
 	case price >= 1000:
-		return "&H80396AFF" // 深红 #FF6A39
+		return "&H8030CAFF" // 橙金 #FFCA30
 	case price >= 500:
 		return "&H80396AFF" // 红色 #FF6A39
 	case price >= 200:
@@ -401,6 +401,8 @@ func escapeText(s string) string {
 	result := make([]byte, 0, len(s))
 	for i := 0; i < len(s); i++ {
 		switch s[i] {
+		case '\\':
+			result = append(result, '\\', '\\')
 		case '\n':
 			result = append(result, '\\', 'n')
 		case '\r':
