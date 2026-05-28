@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/bluele/gcache"
+	"github.com/sirupsen/logrus"
 
 	"github.com/bililive-go/bililive-go/src/configs"
 	"github.com/bililive-go/bililive-go/src/instance"
@@ -511,70 +512,20 @@ func (r *recorder) tryRecord(ctx context.Context) {
 	if resolvedConfig.DanmakuEnable {
 		switch r.Live.GetPlatformCNName() {
 		case "哔哩哔哩":
-			assFile := fileName[:strings.LastIndex(fileName, ".")] + ".ass"
-			roomID := extractRoomIDFromUrl(r.Live.GetRawUrl())
-			cookies := extractCookiesString(r.Live)
-			if roomID > 0 {
-				r.getLogger().Infof("弹幕录制已启用，房间ID: %d, 输出: %s", roomID, assFile)
-				rec := danmaku.NewDanmakuRecorder(roomID, cookies, assFile, resolvedConfig.Danmaku, r.getLogger().Entry)
-				if dmErr := rec.Start(ctx); dmErr != nil {
-					r.getLogger().WithError(dmErr).Warn("弹幕录制启动失败，继续录制视频")
-				} else {
-					// 停止旧的录制器（如果有）
-					r.currentFileLock.Lock()
-					old := r.danmakuRec
-					r.danmakuRec = rec
-					r.currentFileLock.Unlock()
-					if old != nil {
-						old.Stop()
-					}
-				}
-			} else {
-				r.getLogger().Warn("弹幕录制已启用但无法解析房间ID: " + r.Live.GetRawUrl())
-			}
+			r.startDanmakuRecorder(ctx, fileName, "哔哩哔哩", resolvedConfig,
+				func(rid, cookies, assFile string, cfg configs.DanmakuConfig, logger *logrus.Entry) danmakuRecorder {
+					return danmaku.NewDanmakuRecorder(extractRoomIDFromUrl(r.Live.GetRawUrl()), cookies, assFile, cfg, logger)
+				})
 		case "抖音":
-			assFile := fileName[:strings.LastIndex(fileName, ".")] + ".ass"
-			roomID := extractDouyinRoomID(r.Live)
-			cookies := extractCookiesString(r.Live)
-			if roomID != "" {
-				r.getLogger().Infof("弹幕录制已启用，房间ID: %s, 输出: %s", roomID, assFile)
-				rec := danmaku.NewDouyinDanmakuRecorder(roomID, cookies, assFile, resolvedConfig.Danmaku, r.getLogger().Entry)
-				if dmErr := rec.Start(ctx); dmErr != nil {
-					r.getLogger().WithError(dmErr).Warn("弹幕录制启动失败，继续录制视频")
-				} else {
-					// 停止旧的录制器（如果有）
-					r.currentFileLock.Lock()
-					old := r.danmakuRec
-					r.danmakuRec = rec
-					r.currentFileLock.Unlock()
-					if old != nil {
-						old.Stop()
-					}
-				}
-			} else {
-				r.getLogger().Warn("弹幕录制已启用但无法解析房间ID: " + r.Live.GetRawUrl())
-			}
+			r.startDanmakuRecorder(ctx, fileName, "抖音", resolvedConfig,
+				func(rid, cookies, assFile string, cfg configs.DanmakuConfig, logger *logrus.Entry) danmakuRecorder {
+					return danmaku.NewDouyinDanmakuRecorder(rid, cookies, assFile, cfg, logger)
+				})
 		case "斗鱼":
-			assFile := fileName[:strings.LastIndex(fileName, ".")] + ".ass"
-			roomID := extractDouyuRoomID(r.Live)
-			cookies := extractCookiesString(r.Live)
-			if roomID != "" {
-				r.getLogger().Infof("弹幕录制已启用，房间ID: %s, 输出: %s", roomID, assFile)
-				rec := danmaku.NewDouyuDanmakuRecorder(roomID, cookies, assFile, resolvedConfig.Danmaku, r.getLogger().Entry)
-				if dmErr := rec.Start(ctx); dmErr != nil {
-					r.getLogger().WithError(dmErr).Warn("弹幕录制启动失败，继续录制视频")
-				} else {
-					r.currentFileLock.Lock()
-					old := r.danmakuRec
-					r.danmakuRec = rec
-					r.currentFileLock.Unlock()
-					if old != nil {
-						old.Stop()
-					}
-				}
-			} else {
-				r.getLogger().Warn("弹幕录制已启用但无法解析房间ID: " + r.Live.GetRawUrl())
-			}
+			r.startDanmakuRecorder(ctx, fileName, "斗鱼", resolvedConfig,
+				func(rid, cookies, assFile string, cfg configs.DanmakuConfig, logger *logrus.Entry) danmakuRecorder {
+					return danmaku.NewDouyuDanmakuRecorder(rid, cookies, assFile, cfg, logger)
+				})
 		}
 	} else {
 		// 弹幕未启用，清理旧的录制器
@@ -742,8 +693,49 @@ func (r *recorder) tryRecord(ctx context.Context) {
 	}
 }
 
-// stopRetryForExplicitOffline 在平台已明确给出“已下播”信号时补发一次 LiveEnd，
-// 让 recorder manager 走正常回收流程，避免 recorder 永久停留在“录制准备中”。
+// danmakuRecorderFactory 弹幕录制器工厂函数类型
+type danmakuRecorderFactory func(roomID, cookies, outputFile string, cfg configs.DanmakuConfig, logger *logrus.Entry) danmakuRecorder
+
+// startDanmakuRecorder 弹幕录制通用启动流程：解析房间ID、创建录制器、启动、替换旧录制器。
+func (r *recorder) startDanmakuRecorder(ctx context.Context, fileName, platform string, resolvedConfig configs.ResolvedConfig, factory danmakuRecorderFactory) {
+	assFile := fileName[:strings.LastIndex(fileName, ".")] + ".ass"
+	cookies := extractCookiesString(r.Live)
+
+	var roomID string
+	switch platform {
+	case "哔哩哔哩":
+		if id := extractRoomIDFromUrl(r.Live.GetRawUrl()); id > 0 {
+			roomID = strconv.Itoa(id)
+		}
+	case "抖音":
+		roomID = extractDouyinRoomID(r.Live)
+	case "斗鱼":
+		roomID = extractDouyuRoomID(r.Live)
+	}
+
+	if roomID == "" {
+		r.getLogger().Warn("弹幕录制已启用但无法解析房间ID: " + r.Live.GetRawUrl())
+		return
+	}
+
+	r.getLogger().Infof("弹幕录制已启用，房间ID: %s, 输出: %s", roomID, assFile)
+	rec := factory(roomID, cookies, assFile, resolvedConfig.Danmaku, r.getLogger().Entry)
+	if dmErr := rec.Start(ctx); dmErr != nil {
+		r.getLogger().WithError(dmErr).Warn("弹幕录制启动失败，继续录制视频")
+		return
+	}
+
+	r.currentFileLock.Lock()
+	old := r.danmakuRec
+	r.danmakuRec = rec
+	r.currentFileLock.Unlock()
+	if old != nil {
+		old.Stop()
+	}
+}
+
+// stopRetryForExplicitOffline 在平台已明确给出"已下播"信号时补发一次 LiveEnd，
+// 让 recorder manager 走正常回收流程，避免 recorder 永久停留在"录制准备中"。
 func (r *recorder) stopRetryForExplicitOffline(err error) bool {
 	if !errors.Is(err, live.ErrLiveOffline) {
 		return false

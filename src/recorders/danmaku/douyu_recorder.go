@@ -2,7 +2,6 @@ package danmaku
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -11,30 +10,28 @@ import (
 	"github.com/bililive-go/bililive-go/src/recorders/danmaku/douyu"
 )
 
+// DouyuDanmakuRecorder 斗鱼弹幕录制器
 type DouyuDanmakuRecorder struct {
-	roomID     string
-	cookies    string
-	outputFile string
-	cfg        configs.DanmakuConfig
-	startAt    time.Time
-	assWriter  *AssWriter
-	client     *douyu.DouyuClient
-	logger     *logrus.Entry
-	count      int
-	mu         sync.Mutex
-	running    bool
+	baseRecorder
+	roomID  string
+	cookies string
+	client  *douyu.DouyuClient
 }
 
+// NewDouyuDanmakuRecorder 创建斗鱼弹幕录制器
 func NewDouyuDanmakuRecorder(roomID, cookies, outputFile string, cfg configs.DanmakuConfig, logger *logrus.Entry) *DouyuDanmakuRecorder {
 	return &DouyuDanmakuRecorder{
-		roomID:     roomID,
-		cookies:    cookies,
-		outputFile: outputFile,
-		cfg:        cfg,
-		logger:     logger,
+		baseRecorder: baseRecorder{
+			outputFile: outputFile,
+			cfg:        cfg,
+			logger:     logger,
+		},
+		roomID:  roomID,
+		cookies: cookies,
 	}
 }
 
+// Start 开始弹幕录制
 func (r *DouyuDanmakuRecorder) Start(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -50,10 +47,13 @@ func (r *DouyuDanmakuRecorder) Start(ctx context.Context) error {
 		return err
 	}
 	r.assWriter = assWriter
+	r.startAt = startAt
 
 	var onGift func(username, giftName string, num int)
 	if r.cfg.RecordDouyuGift != nil && *r.cfg.RecordDouyuGift {
-		onGift = r.onGift
+		onGift = func(username, giftName string, num int) {
+			r.addGift(time.Now(), username, giftName, num)
+		}
 	}
 
 	r.client = douyu.NewDouyuClient(r.roomID, r.cookies, r.onDanmaku, onGift, r.logger)
@@ -63,89 +63,27 @@ func (r *DouyuDanmakuRecorder) Start(ctx context.Context) error {
 		return err
 	}
 
-	r.startAt = startAt
 	r.running = true
 	r.logger.Info("斗鱼弹幕录制已启动")
 
 	return nil
 }
 
+// Stop 停止弹幕录制
 func (r *DouyuDanmakuRecorder) Stop() {
-	r.mu.Lock()
-	if !r.running {
-		r.mu.Unlock()
-		return
-	}
-
-	r.running = false
-	client := r.client
-	writer := r.assWriter
+	w := r.stopBase()
+	c := r.client
 	r.client = nil
-	r.assWriter = nil
-	count := r.count
-	r.mu.Unlock()
-
-	if client != nil {
-		client.Stop()
+	if c != nil {
+		c.Stop()
 	}
-	if writer != nil {
-		writer.Close()
+	if w != nil {
+		w.Close()
 	}
-
-	r.logger.Infof("斗鱼弹幕录制已停止，共录制 %d 条弹幕", count)
+	r.logger.Infof("斗鱼弹幕录制已停止，共录制 %d 条弹幕", r.GetCount())
 }
 
-func (r *DouyuDanmakuRecorder) OutputFile() string {
-	return r.outputFile
-}
-
-func (r *DouyuDanmakuRecorder) GetCount() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.count
-}
-
-func (r *DouyuDanmakuRecorder) IsRunning() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.running
-}
-
-func (r *DouyuDanmakuRecorder) GetStatus() map[string]interface{} {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	status := map[string]interface{}{
-		"danmaku_running": r.running,
-		"danmaku_count":   r.count,
-		"danmaku_output":  r.outputFile,
-	}
-	if r.running {
-		status["danmaku_start_time"] = r.startAt.Format(time.RFC3339)
-	}
-	return status
-}
-
+// onDanmaku 弹幕回调
 func (r *DouyuDanmakuRecorder) onDanmaku(username, content string, color int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if !r.running || r.assWriter == nil {
-		return
-	}
-
-	r.assWriter.AddDanmaku(time.Now(), username, content, color)
-	r.count++
-}
-
-func (r *DouyuDanmakuRecorder) onGift(username, giftName string, num int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if !r.running || r.assWriter == nil {
-		return
-	}
-
-	r.assWriter.AddGift(time.Now(), username, giftName, num)
-	r.count++
+	r.addDanmaku(time.Now(), username, content, color)
 }
