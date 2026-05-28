@@ -22,6 +22,11 @@ import (
 //go:embed sign.js
 var signJSCode string
 
+var (
+	reRoomID  = regexp.MustCompile(`"room_id"\s*:\s*(\d+)`)
+	reRoomID2 = regexp.MustCompile(`roomId\\?":\\?"(\d+)`)
+)
+
 // signJSProgram 预编译的 sign.js 字节码，避免每次签名都重新解析 485KB 脚本
 var signJSProgram *goja.Program
 var signJSOnce sync.Once
@@ -510,8 +515,7 @@ func fetchRealRoomID(roomID, cookies string, logger *logrus.Entry) (string, erro
 	}
 
 	// 从页面 JSON 中提取 roomId
-	re := regexp.MustCompile(`"room_id"\s*:\s*(\d+)`)
-	matches := re.FindSubmatch(body)
+	matches := reRoomID.FindSubmatch(body)
 	if len(matches) >= 2 {
 		realID := string(matches[1])
 		if realID != "0" {
@@ -520,8 +524,7 @@ func fetchRealRoomID(roomID, cookies string, logger *logrus.Entry) (string, erro
 		}
 	}
 
-	re2 := regexp.MustCompile(`roomId\\?":\\?"(\d+)`)
-	matches2 := re2.FindSubmatch(body)
+	matches2 := reRoomID2.FindSubmatch(body)
 	if len(matches2) >= 2 {
 		realID := string(matches2[1])
 		logger.Infof("从页面解析到真实 roomId: %s (web_rid: %s)", realID, roomID)
