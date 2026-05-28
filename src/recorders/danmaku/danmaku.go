@@ -35,6 +35,13 @@ func NewDanmakuRecorder(roomID int, cookies string, outputFile string, cfg confi
 
 // Start 开始弹幕录制
 func (d *DanmakuRecorder) Start(ctx context.Context) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.running {
+		return nil
+	}
+
 	d.startAt = time.Now()
 
 	assWriter, err := NewAssWriter(d.outputFile, d.startAt, d.cfg, "Bilibili Danmaku")
@@ -89,10 +96,12 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 
 	if err := c.Start(); err != nil {
 		assWriter.Close()
+		d.assWriter = nil
 		return fmt.Errorf("failed to start danmaku client: %w", err)
 	}
 
 	d.running = true
+	d.logger.Info("弹幕录制已启动")
 
 	go func() {
 		<-ctx.Done()

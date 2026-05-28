@@ -149,7 +149,9 @@ func scTierStyle(price int) string {
 }
 
 func (w *AssWriter) writeHeader() error {
-	assAlpha := 255 - w.cfg.Opacity
+	opacity := *w.cfg.Opacity
+	outline := *w.cfg.Outline
+	assAlpha := 255 - opacity
 	backColor := fmt.Sprintf("&H%02X000000&", assAlpha)
 	guardBackColor := "&H800080FF"
 
@@ -190,8 +192,8 @@ Style: SCDefault,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 `, w.title, w.resX, w.resY,
-		w.cfg.FontName, w.cfg.FontSize, backColor, w.cfg.Outline,
-		w.cfg.FontName, w.cfg.FontSize-6, backColor, w.cfg.Outline,
+		w.cfg.FontName, w.cfg.FontSize, backColor, outline,
+		w.cfg.FontName, w.cfg.FontSize-6, backColor, outline,
 		w.cfg.FontName, w.cfg.FontSize, guardBackColor,
 		w.cfg.FontName, w.cfg.FontSize, sc2,
 		w.cfg.FontName, w.cfg.FontSize, sc30,
@@ -403,6 +405,10 @@ func escapeText(s string) string {
 		switch s[i] {
 		case '\\':
 			result = append(result, '\\', '\\')
+		case '{':
+			result = append(result, '\\', '{')
+		case '}':
+			result = append(result, '\\', '}')
 		case '\n':
 			result = append(result, '\\', 'n')
 		case '\r':

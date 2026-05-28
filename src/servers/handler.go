@@ -1432,10 +1432,10 @@ func applyConfigUpdates(c *configs.Config, updates map[string]interface{}) error
 			c.Danmaku.Resolution = resolution
 		}
 		if outline, ok := danmaku["outline"].(float64); ok {
-			c.Danmaku.Outline = int(outline)
+			c.Danmaku.Outline = configs.IntPtr(int(outline))
 		}
 		if opacity, ok := danmaku["opacity"].(float64); ok {
-			c.Danmaku.Opacity = int(opacity)
+			c.Danmaku.Opacity = configs.IntPtr(int(opacity))
 		}
 		if recordGift, ok := danmaku["record_gift"].(bool); ok {
 			c.Danmaku.RecordGift = configs.BoolPtr(recordGift)
@@ -1996,10 +1996,10 @@ func applyOverridableConfigUpdates(oc *configs.OverridableConfig, updates map[st
 			oc.Danmaku.Resolution = resolution
 		}
 		if outline, ok := danmaku["outline"].(float64); ok {
-			oc.Danmaku.Outline = int(outline)
+			oc.Danmaku.Outline = configs.IntPtr(int(outline))
 		}
 		if opacity, ok := danmaku["opacity"].(float64); ok {
-			oc.Danmaku.Opacity = int(opacity)
+			oc.Danmaku.Opacity = configs.IntPtr(int(opacity))
 		}
 		if recordGift, ok := danmaku["record_gift"].(bool); ok {
 			oc.Danmaku.RecordGift = configs.BoolPtr(recordGift)
