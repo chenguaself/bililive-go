@@ -46,6 +46,7 @@ type DouyinClient struct {
 	onDanmaku func(username, content string)
 	onGift    func(username, giftName string, num int)
 	done      chan struct{}
+	closeOnce sync.Once
 	logger    *logrus.Entry
 	mu        sync.Mutex
 	running   bool
@@ -147,7 +148,7 @@ func (c *DouyinClient) Stop() {
 		return
 	}
 	c.running = false
-	close(c.done)
+	c.closeOnce.Do(func() { close(c.done) })
 	if c.conn != nil {
 		c.conn.Close()
 	}
@@ -189,6 +190,13 @@ func (c *DouyinClient) readLoopWithReconnect(ctx context.Context, realRoomID, tt
 		reconnectCount++
 		if reconnectCount > maxReconnect {
 			c.logger.Errorf("重连 %d 次仍然失败，停止弹幕录制", maxReconnect)
+			c.mu.Lock()
+			c.running = false
+			c.closeOnce.Do(func() { close(c.done) })
+			if c.conn != nil {
+				c.conn.Close()
+			}
+			c.mu.Unlock()
 			return
 		}
 
@@ -244,6 +252,17 @@ func (c *DouyinClient) readLoopWithReconnect(ctx context.Context, realRoomID, tt
 	}
 }
 
+// getConn 安全获取当前连接引用，不持锁执行 I/O。
+// 当客户端已停止时返回 nil，避免读取已关闭的连接触发无意义的重连。
+func (c *DouyinClient) getConn() *websocket.Conn {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.running {
+		return nil
+	}
+	return c.conn
+}
+
 // readLoop 消息读取循环
 func (c *DouyinClient) readLoop(ctx context.Context) error {
 	for {
@@ -255,9 +274,14 @@ func (c *DouyinClient) readLoop(ctx context.Context) error {
 		default:
 		}
 
-		c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		conn := c.getConn()
+		if conn == nil {
+			return nil
+		}
 
-		_, message, err := c.conn.ReadMessage()
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+
+		_, message, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 				c.logger.Info("WebSocket 连接正常关闭")

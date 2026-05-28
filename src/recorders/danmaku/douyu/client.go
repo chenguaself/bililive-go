@@ -34,6 +34,7 @@ type DouyuClient struct {
 	onDanmaku func(username, content string, color int)
 	onGift    func(username, giftName string, num int)
 	done      chan struct{}
+	closeOnce sync.Once
 	logger    *logrus.Entry
 	mu        sync.Mutex
 	running   bool
@@ -102,7 +103,7 @@ func (c *DouyuClient) Stop() {
 		return
 	}
 	c.running = false
-	close(c.done)
+	c.closeOnce.Do(func() { close(c.done) })
 	if c.conn != nil {
 		c.conn.Close()
 	}
@@ -211,6 +212,13 @@ func (c *DouyuClient) readLoopWithReconnect(ctx context.Context) {
 		reconnectCount++
 		if reconnectCount > maxReconnect {
 			c.logger.Errorf("重连 %d 次仍然失败，停止弹幕录制", maxReconnect)
+			c.mu.Lock()
+			c.running = false
+			c.closeOnce.Do(func() { close(c.done) })
+			if c.conn != nil {
+				c.conn.Close()
+			}
+			c.mu.Unlock()
 			return
 		}
 
