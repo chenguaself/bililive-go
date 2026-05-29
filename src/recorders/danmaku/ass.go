@@ -16,6 +16,7 @@ type AssWriter struct {
 	mu           sync.Mutex
 	file         *os.File
 	closed       bool
+	writeErr     bool // 首次写入出错后置 true，后续跳过无意义写入
 	startAt      time.Time
 	cfg          configs.DanmakuConfig
 	title        string
@@ -224,7 +225,7 @@ func (w *AssWriter) estimateTextWidth(text string) int {
 func (w *AssWriter) AddDanmaku(recvAt time.Time, username, text string, color int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.closed {
+	if w.closed || w.writeErr {
 		return
 	}
 
@@ -255,14 +256,16 @@ func (w *AssWriter) AddDanmaku(recvAt time.Time, username, text string, color in
 
 	line := fmt.Sprintf("Dialogue: 0,%s,%s,Danmaku,,0,0,%d,Banner;%d;0;30,{\\c%s}%s\n",
 		formatTime(startCS), formatTime(endCS), marginV, w.bannerSpeed, assColor, escapeText(fullText))
-	w.file.WriteString(line)
+	if _, err := w.file.WriteString(line); err != nil {
+		w.writeErr = true
+	}
 }
 
 // AddGift appends a gift message as a smaller scrolling line.
 func (w *AssWriter) AddGift(recvAt time.Time, username, giftName string, num int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.closed {
+	if w.closed || w.writeErr {
 		return
 	}
 
@@ -287,7 +290,9 @@ func (w *AssWriter) AddGift(recvAt time.Time, username, giftName string, num int
 
 	line := fmt.Sprintf("Dialogue: 0,%s,%s,Gift,,0,0,%d,Banner;%d;0;30,%s\n",
 		formatTime(startCS), formatTime(endCS), marginV, w.bannerSpeed, escapeText(fullText))
-	w.file.WriteString(line)
+	if _, err := w.file.WriteString(line); err != nil {
+		w.writeErr = true
+	}
 }
 
 // positionToAlignment maps position string to ASS \an alignment value and margin.
@@ -309,7 +314,7 @@ func positionToAlignment(pos string, bottomMargin int) (alignment int, marginV i
 func (w *AssWriter) AddGuard(recvAt time.Time, username, giftName string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.closed {
+	if w.closed || w.writeErr {
 		return
 	}
 
@@ -324,14 +329,16 @@ func (w *AssWriter) AddGuard(recvAt time.Time, username, giftName string) {
 	alignment, marginV := positionToAlignment(w.cfg.GuardPosition, 60)
 	line := fmt.Sprintf("Dialogue: 1,%s,%s,Guard,,0,0,%d,,{\\an%d}{\\q0}%s\n",
 		formatTime(startCS), formatTime(endCS), marginV, alignment, escapeText(fullText))
-	w.file.WriteString(line)
+	if _, err := w.file.WriteString(line); err != nil {
+		w.writeErr = true
+	}
 }
 
 // AddSuperChat appends a Super Chat message.
 func (w *AssWriter) AddSuperChat(recvAt time.Time, username, text string, price int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.closed {
+	if w.closed || w.writeErr {
 		return
 	}
 
@@ -347,7 +354,9 @@ func (w *AssWriter) AddSuperChat(recvAt time.Time, username, text string, price 
 	styleName := scTierStyle(price)
 	line := fmt.Sprintf("Dialogue: 1,%s,%s,%s,,0,0,%d,,{\\an%d}{\\q0}%s\n",
 		formatTime(startCS), formatTime(endCS), styleName, marginV, alignment, escapeText(fullText))
-	w.file.WriteString(line)
+	if _, err := w.file.WriteString(line); err != nil {
+		w.writeErr = true
+	}
 }
 
 func (w *AssWriter) assignLane(startCS, endCS int64) int {

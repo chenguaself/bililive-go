@@ -417,7 +417,7 @@ func (c *DouyinClient) heartbeatLoop(ctx context.Context) {
 	}
 }
 
-// sendHeartbeat 发送心跳（PING 帧，payloadType='hb'）
+// sendHeartbeat 发送心跳帧（BinaryMessage，payloadType='hb'）
 func (c *DouyinClient) sendHeartbeat() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -438,7 +438,7 @@ func (c *DouyinClient) sendHeartbeat() {
 	}
 
 	c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	c.conn.WriteMessage(websocket.PingMessage, data)
+	c.conn.WriteMessage(websocket.BinaryMessage, data)
 }
 
 // sendACK 发送 ACK 确认帧
@@ -586,7 +586,7 @@ func generateSignature(wssURL string, logger *logrus.Entry) (string, error) {
 	vm.Set("window", vm.GlobalObject())
 	vm.Set("document", vm.NewObject())
 	nav := vm.NewObject()
-	nav.Set("userAgent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	nav.Set("userAgent", userAgent)
 	vm.Set("navigator", nav)
 	for _, g := range []string{"location", "screen", "history", "localStorage", "sessionStorage", "crypto", "performance"} {
 		vm.Set(g, vm.NewObject())
