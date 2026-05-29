@@ -69,23 +69,39 @@ func (c *DouyuClient) Start(ctx context.Context) error {
 
 	if err := c.sendLogin(); err != nil {
 		conn.Close()
+		c.mu.Lock()
+		c.running = false
+		c.conn = nil
+		c.mu.Unlock()
 		return fmt.Errorf("发送登录消息失败: %w", err)
 	}
 
 	resp, err := c.readOneFrame()
 	if err != nil {
 		conn.Close()
+		c.mu.Lock()
+		c.running = false
+		c.conn = nil
+		c.mu.Unlock()
 		return fmt.Errorf("读取登录响应失败: %w", err)
 	}
 	fields := parseSTT(resp)
 	if fields["type"] != "loginres" {
 		conn.Close()
+		c.mu.Lock()
+		c.running = false
+		c.conn = nil
+		c.mu.Unlock()
 		return fmt.Errorf("登录失败: %s", string(resp))
 	}
 	c.logger.Debug("斗鱼弹幕登录成功")
 
 	if err := c.sendJoinGroup(); err != nil {
 		conn.Close()
+		c.mu.Lock()
+		c.running = false
+		c.conn = nil
+		c.mu.Unlock()
 		return fmt.Errorf("加入房间失败: %w", err)
 	}
 
