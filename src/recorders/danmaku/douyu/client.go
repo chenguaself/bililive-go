@@ -198,6 +198,10 @@ func (c *DouyuClient) readLoopWithReconnect(ctx context.Context) {
 	defer func() {
 		c.mu.Lock()
 		c.running = false
+		c.closeOnce.Do(func() { close(c.done) })
+		if c.conn != nil {
+			c.conn.Close()
+		}
 		c.mu.Unlock()
 	}()
 
