@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -418,7 +419,7 @@ func (c *DouyuClient) readOneFrame() ([]byte, error) {
 // The caller must have set the read deadline on conn.
 func (c *DouyuClient) readFrame(conn net.Conn) (int, []byte, error) {
 	header := make([]byte, 12)
-	if _, err := c.readFull(conn, header); err != nil {
+	if _, err := io.ReadFull(conn, header); err != nil {
 		return 0, nil, err
 	}
 	length := binary.LittleEndian.Uint32(header[0:4])
@@ -428,26 +429,13 @@ func (c *DouyuClient) readFrame(conn net.Conn) (int, []byte, error) {
 		return msgType, nil, fmt.Errorf("invalid body length: %d", bodyLen)
 	}
 	body := make([]byte, bodyLen)
-	if _, err := c.readFull(conn, body); err != nil {
+	if _, err := io.ReadFull(conn, body); err != nil {
 		return msgType, nil, err
 	}
 	if len(body) > 0 && body[len(body)-1] == 0 {
 		body = body[:len(body)-1]
 	}
 	return msgType, body, nil
-}
-
-// readFull reads exactly len(buf) bytes from conn.
-func (c *DouyuClient) readFull(conn net.Conn, buf []byte) (int, error) {
-	total := 0
-	for total < len(buf) {
-		n, err := conn.Read(buf[total:])
-		total += n
-		if err != nil {
-			return total, err
-		}
-	}
-	return total, nil
 }
 
 // encodeSTT encodes key-value pairs into Douyu STT binary frame.
