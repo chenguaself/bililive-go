@@ -328,7 +328,7 @@ func (c *DouyuClient) readLoop(ctx context.Context) error {
 
 		conn := c.getConn()
 		if conn == nil {
-			return nil
+			return fmt.Errorf("连接不可用")
 		}
 		conn.SetReadDeadline(time.Now().Add(readTimeout))
 		frameType, body, err := c.readFrame(conn)
