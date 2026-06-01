@@ -121,11 +121,19 @@ const DANMAKU_GAP = 50;      // 同轨道弹幕间隔（px）
  * 这样可以精确跟踪每条弹幕的右边缘，实现真正的多弹幕同轨。
  * 同时支持固定位置的消息（Guard/SC/Toast）。
  */
+export interface DanmakuFilter {
+    danmaku: boolean;
+    gift: boolean;
+    guard: boolean;
+    sc: boolean;
+}
+
 class DanmakuRenderer {
     private overlay: HTMLDivElement;
     private video: HTMLVideoElement;
     private items: DanmakuEntry[];
     private scrollTime: number;
+    private filter: DanmakuFilter;
     private rafId = 0;
     private running = false;
     private nextIdx = 0;
@@ -137,11 +145,24 @@ class DanmakuRenderer {
     // 滚动样式白名单
     private static SCROLL_STYLES = new Set(['Danmaku', 'Gift']);
 
-    constructor(overlay: HTMLDivElement, video: HTMLVideoElement, items: DanmakuEntry[], scrollTime: number) {
+    constructor(overlay: HTMLDivElement, video: HTMLVideoElement, items: DanmakuEntry[], scrollTime: number, filter: DanmakuFilter) {
         this.overlay = overlay;
         this.video = video;
         this.items = items.slice().sort((a, b) => a.start - b.start);
         this.scrollTime = scrollTime;
+        this.filter = filter;
+    }
+
+    private matchesFilter(style: string): boolean {
+        if (style === 'Danmaku') return this.filter.danmaku;
+        if (style === 'Gift') return this.filter.gift;
+        if (style === 'Guard') return this.filter.guard;
+        if (style.startsWith('SC')) return this.filter.sc;
+        return true;
+    }
+
+    getCurrentTime(): number {
+        return this.video.currentTime;
     }
 
     start() {
@@ -232,6 +253,10 @@ class DanmakuRenderer {
         // 3. 发射新弹幕
         while (this.nextIdx < this.items.length && this.items[this.nextIdx].start <= t) {
             const item = this.items[this.nextIdx];
+            if (!this.matchesFilter(item.style)) {
+                this.nextIdx++;
+                continue;
+            }
             if (DanmakuRenderer.SCROLL_STYLES.has(item.style)) {
                 this.spawnScroll(item, t, cw);
             } else {
@@ -429,6 +454,11 @@ const FileList: React.FC = () => {
     const [danmakuStats, setDanmakuStats] = useState<{ danmaku: number; gift: number; guard: number; sc: number; scAmount: number } | null>(null);
     const playerInitRef = useRef(false); // 跟踪播放器是否应该激活
     const [loadDanmaku, setLoadDanmaku] = useState(true); // 是否加载 ASS 弹幕
+    const [filterDanmaku, setFilterDanmaku] = useState(true);
+    const [filterGift, setFilterGift] = useState(true);
+    const [filterGuard, setFilterGuard] = useState(true);
+    const [filterSC, setFilterSC] = useState(true);
+    const parsedItemsRef = useRef<{ items: DanmakuEntry[]; scrollTime: number } | null>(null);
     const currentPlayingRef = useRef<{ record: CurrentFolderFile; fullPath: string } | null>(null);
 
     // 重命名相关状态
@@ -573,6 +603,7 @@ const FileList: React.FC = () => {
             .then(text => {
                 const { items, scrollTime } = parseAss(text);
                 if (items.length === 0) return;
+                parsedItemsRef.current = { items, scrollTime };
 
                 // 统计弹幕类型
                 let danmakuCount = 0, giftCount = 0, guardCount = 0, scCount = 0, scAmount = 0;
@@ -595,7 +626,7 @@ const FileList: React.FC = () => {
                 overlay.className = 'danmaku-overlay';
                 artInner.appendChild(overlay);
 
-                const renderer = new DanmakuRenderer(overlay, artRef.current!.video, items, scrollTime);
+                const renderer = new DanmakuRenderer(overlay, artRef.current!.video, items, scrollTime, { danmaku: filterDanmaku, gift: filterGift, guard: filterGuard, sc: filterSC });
                 danmakuRef.current = renderer;
                 renderer.start();
                 if (artRef.current!.video.currentTime > 0) {
@@ -603,7 +634,27 @@ const FileList: React.FC = () => {
                 }
             })
             .catch(() => { /* 没有 ASS 文件或加载失败，静默忽略 */ });
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [filterDanmaku, filterGift, filterGuard, filterSC]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // 过滤开关变化时刷新弹幕渲染器
+    useEffect(() => {
+        if (!danmakuRef.current || !parsedItemsRef.current || !artRef.current) return;
+        const currentTime = danmakuRef.current.getCurrentTime();
+        danmakuRef.current.stop();
+
+        const artContainer = document.getElementById('art-container');
+        if (!artContainer) return;
+        const artInner = artContainer.querySelector('.art-video-player') as HTMLElement || artContainer;
+        const overlay = document.createElement('div');
+        overlay.className = 'danmaku-overlay';
+        artInner.appendChild(overlay);
+
+        const { items, scrollTime } = parsedItemsRef.current;
+        const renderer = new DanmakuRenderer(overlay, artRef.current.video, items, scrollTime, { danmaku: filterDanmaku, gift: filterGift, guard: filterGuard, sc: filterSC });
+        danmakuRef.current = renderer;
+        renderer.start();
+        if (currentTime > 0) renderer.seek(currentTime);
+    }, [filterDanmaku, filterGift, filterGuard, filterSC]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const showBatchRenameModal = () => {
         setBatchFind("");
@@ -916,8 +967,7 @@ const FileList: React.FC = () => {
                             .then(text => {
                                 const { items, scrollTime } = parseAss(text);
                                 if (items.length === 0) return;
-
-                                // 统计弹幕类型
+                                parsedItemsRef.current = { items, scrollTime };
                                 let danmakuCount = 0, giftCount = 0, guardCount = 0, scCount = 0, scAmount = 0;
                                 for (const item of items) {
                                     if (item.style === 'Danmaku') danmakuCount++;
@@ -942,7 +992,7 @@ const FileList: React.FC = () => {
                                 overlay.className = 'danmaku-overlay';
                                 artInner.appendChild(overlay);
 
-                                const renderer = new DanmakuRenderer(overlay, art.video, items, scrollTime);
+                                const renderer = new DanmakuRenderer(overlay, art.video, items, scrollTime, { danmaku: filterDanmaku, gift: filterGift, guard: filterGuard, sc: filterSC });
                                 danmakuRef.current = renderer;
                                 renderer.start();
                                 // 如果浏览器恢复了播放位置，跳转到当前时间
@@ -1131,6 +1181,22 @@ const FileList: React.FC = () => {
                                     checked={loadDanmaku}
                                     onChange={toggleDanmaku}
                                 />
+                                {loadDanmaku && (
+                                    <>
+                                        <span style={{ color: '#ffffff40' }}>|</span>
+                                        {([
+                                            { label: '文字', checked: filterDanmaku, onChange: setFilterDanmaku },
+                                            { label: '礼物', checked: filterGift, onChange: setFilterGift },
+                                            { label: '上舰', checked: filterGuard, onChange: setFilterGuard },
+                                            { label: 'SC', checked: filterSC, onChange: setFilterSC },
+                                        ] as const).map(({ label, checked, onChange }) => (
+                                            <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+                                                <span style={{ color: checked ? '#1890ff' : '#ffffff73' }}>{label}</span>
+                                                <Switch size="small" checked={checked} onChange={onChange} />
+                                            </div>
+                                        ))}
+                                    </>
+                                )}
                             </div>
                         )}
                         <div className="close-btn" onClick={hidePlayer} title="退出播放 (Esc)">
@@ -1141,20 +1207,20 @@ const FileList: React.FC = () => {
                 <div id="art-container"></div>
                 {danmakuStats && (
                     <div className="danmaku-stats">
-                        <span className="stat-item">
+                        <span className="stat-item" style={{ opacity: filterDanmaku ? 1 : 0.4 }}>
                             <span className="stat-icon" style={{ color: '#1890ff' }}>💬</span>
                             弹幕 <b>{danmakuStats.danmaku}</b>
                         </span>
-                        <span className="stat-item">
+                        <span className="stat-item" style={{ opacity: filterGift ? 1 : 0.4 }}>
                             <span className="stat-icon" style={{ color: '#faad14' }}>🎁</span>
                             礼物 <b>{danmakuStats.gift}</b>
                         </span>
-                        <span className="stat-item">
+                        <span className="stat-item" style={{ opacity: filterSC ? 1 : 0.4 }}>
                             <span className="stat-icon" style={{ color: '#ff6a39' }}>💰</span>
                             SC <b>{danmakuStats.sc}</b>
                             {danmakuStats.scAmount > 0 && <span className="stat-amount"> ¥{danmakuStats.scAmount}</span>}
                         </span>
-                        <span className="stat-item">
+                        <span className="stat-item" style={{ opacity: filterGuard ? 1 : 0.4 }}>
                             <span className="stat-icon" style={{ color: '#ff8c00' }}>⚓</span>
                             上舰 <b>{danmakuStats.guard}</b>
                         </span>
