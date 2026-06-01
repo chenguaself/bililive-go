@@ -270,20 +270,44 @@ func (c *DouyuClient) readLoopWithReconnect(ctx context.Context) {
 
 		if loginErr := c.sendLogin(); loginErr != nil {
 			c.logger.WithError(loginErr).Warn("重连后登录失败")
+			c.mu.Lock()
+			if c.conn != nil {
+				c.conn.Close()
+				c.conn = nil
+			}
+			c.mu.Unlock()
 			continue
 		}
 		resp, readErr := c.readOneFrame()
 		if readErr != nil {
 			c.logger.WithError(readErr).Warn("重连后读取登录响应失败")
+			c.mu.Lock()
+			if c.conn != nil {
+				c.conn.Close()
+				c.conn = nil
+			}
+			c.mu.Unlock()
 			continue
 		}
 		respFields := parseSTT(resp)
 		if respFields["type"] != "loginres" {
 			c.logger.Warnf("重连后登录失败: %s", string(resp))
+			c.mu.Lock()
+			if c.conn != nil {
+				c.conn.Close()
+				c.conn = nil
+			}
+			c.mu.Unlock()
 			continue
 		}
 		if joinErr := c.sendJoinGroup(); joinErr != nil {
 			c.logger.WithError(joinErr).Warn("重连后加入房间失败")
+			c.mu.Lock()
+			if c.conn != nil {
+				c.conn.Close()
+				c.conn = nil
+			}
+			c.mu.Unlock()
 			continue
 		}
 
