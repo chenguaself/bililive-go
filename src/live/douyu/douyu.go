@@ -145,6 +145,12 @@ type Live struct {
 	roomID string
 }
 
+// GetRoomID 返回已解析的数字房间号（由 fetchRoomID 解析）。
+// 如果 URL 本身就是数字房间号，也会在 fetchRoomID 中缓存。
+func (l *Live) GetRoomID() string {
+	return l.roomID
+}
+
 func (l *Live) fetchRoomID() error {
 	if l.roomID != "" {
 		return nil

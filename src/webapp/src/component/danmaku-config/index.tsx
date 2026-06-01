@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  Card, Form, Switch, InputNumber, Select, Button, message, Spin, Collapse, Tag, Popconfirm, Space, Divider, Input
+  Card, Form, Switch, InputNumber, Select, Button, message, Spin, Collapse, Tag, Popconfirm, Space, Input
 } from 'antd';
 import { UndoOutlined } from '@ant-design/icons';
 import API from '../../utils/api';
@@ -16,6 +16,8 @@ const DEFAULT_DANMAKU: DanmakuConfig = {
   outline: 1,
   opacity: 128,
   record_gift: true,
+  record_douyu_gift: true,
+  record_douyin_gift: true,
   record_guard: true,
   record_super_chat: true,
   guard_position: 'bottom-left',
@@ -31,6 +33,8 @@ interface DanmakuConfig {
   outline: number;
   opacity: number;
   record_gift: boolean;
+  record_douyu_gift: boolean;
+  record_douyin_gift: boolean;
   record_guard: boolean;
   record_super_chat: boolean;
   guard_position: string;
@@ -75,7 +79,9 @@ const DanmakuParamForm: React.FC<{
   label?: string;
   isRoom?: boolean;
   showBilibiliContent?: boolean;
-}> = ({ initialValues, globalDefaults, onSave, onReset, loading, showEnable, danmakuEnable, label, isRoom, showBilibiliContent }) => {
+  showDouyuContent?: boolean;
+  showDouyinContent?: boolean;
+}> = ({ initialValues, globalDefaults, onSave, onReset, loading, showEnable, danmakuEnable, label, isRoom, showBilibiliContent, showDouyuContent, showDouyinContent }) => {
   const [form] = Form.useForm();
 
   const baseDefaults = useMemo(() => globalDefaults || DEFAULT_DANMAKU, [globalDefaults]);
@@ -200,50 +206,101 @@ const DanmakuParamForm: React.FC<{
       </div>
 
       {showBilibiliContent && (
-        <>
-          <Divider plain style={{ margin: '16px 0', fontSize: 13 }}>哔哩哔哩录制内容</Divider>
+        <Collapse
+          defaultActiveKey={[]}
+          size="small"
+          style={{ marginBottom: 16 }}
+          items={[{
+            key: 'bilibili-content',
+            label: '哔哩哔哩录制内容',
+            children: (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+                  <Form.Item
+                    label={<span>礼物消息 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>用户赠送礼物的通知</span></span>}
+                    name={['danmaku', 'record_gift']} valuePropName="checked">
+                    <Switch />
+                  </Form.Item>
+                  <Form.Item
+                    label={<span>上舰消息 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>开通舰长/提督/总督的通知</span></span>}
+                    name={['danmaku', 'record_guard']} valuePropName="checked">
+                    <Switch />
+                  </Form.Item>
+                  <Form.Item
+                    label={<span>醒目留言 (SC) <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>Super Chat 付费留言</span></span>}
+                    name={['danmaku', 'record_super_chat']} valuePropName="checked">
+                    <Switch />
+                  </Form.Item>
+                </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
-            <Form.Item
-              label={<span>礼物消息 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>用户赠送礼物的通知</span></span>}
-              name={['danmaku', 'record_gift']} valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item
-              label={<span>上舰消息 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>开通舰长/提督/总督的通知</span></span>}
-              name={['danmaku', 'record_guard']} valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item
-              label={<span>醒目留言 (SC) <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>Super Chat 付费留言</span></span>}
-              name={['danmaku', 'record_super_chat']} valuePropName="checked">
-              <Switch />
-            </Form.Item>
-          </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+                  <Form.Item
+                    label="上舰消息位置"
+                    name={['danmaku', 'guard_position']}>
+                    <Select options={[
+                      { label: '左下角', value: 'bottom-left' },
+                      { label: '右下角', value: 'bottom-right' },
+                      { label: '左上角', value: 'top-left' },
+                      { label: '右上角', value: 'top-right' },
+                    ]} />
+                  </Form.Item>
+                  <Form.Item
+                    label="SC 消息位置"
+                    name={['danmaku', 'sc_position']}>
+                    <Select options={[
+                      { label: '左下角', value: 'bottom-left' },
+                      { label: '右下角', value: 'bottom-right' },
+                      { label: '左上角', value: 'top-left' },
+                      { label: '右上角', value: 'top-right' },
+                    ]} />
+                  </Form.Item>
+                </div>
+              </>
+            ),
+          }]}
+        />
+      )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
-            <Form.Item
-              label="上舰消息位置"
-              name={['danmaku', 'guard_position']}>
-              <Select options={[
-                { label: '左下角', value: 'bottom-left' },
-                { label: '右下角', value: 'bottom-right' },
-                { label: '左上角', value: 'top-left' },
-                { label: '右上角', value: 'top-right' },
-              ]} />
-            </Form.Item>
-            <Form.Item
-              label="SC 消息位置"
-              name={['danmaku', 'sc_position']}>
-              <Select options={[
-                { label: '左下角', value: 'bottom-left' },
-                { label: '右下角', value: 'bottom-right' },
-                { label: '左上角', value: 'top-left' },
-                { label: '右上角', value: 'top-right' },
-              ]} />
-            </Form.Item>
-          </div>
-        </>
+      {showDouyuContent && (
+        <Collapse
+          defaultActiveKey={[]}
+          size="small"
+          style={{ marginBottom: 16 }}
+          items={[{
+            key: 'douyu-content',
+            label: '斗鱼录制内容',
+            children: (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+                <Form.Item
+                  label={<span>礼物消息 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>用户赠送礼物的通知</span></span>}
+                  name={['danmaku', 'record_douyu_gift']} valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+              </div>
+            ),
+          }]}
+        />
+      )}
+
+      {showDouyinContent && (
+        <Collapse
+          defaultActiveKey={[]}
+          size="small"
+          style={{ marginBottom: 16 }}
+          items={[{
+            key: 'douyin-content',
+            label: '抖音录制内容',
+            children: (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+                <Form.Item
+                  label={<span>礼物消息 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>用户赠送礼物的通知</span></span>}
+                  name={['danmaku', 'record_douyin_gift']} valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+              </div>
+            ),
+          }]}
+        />
       )}
       <Form.Item style={{ marginBottom: 0 }}>
         <Space>
@@ -271,6 +328,7 @@ const DanmakuParamForm: React.FC<{
 const DANMAKU_PLATFORMS: Record<string, string> = {
   bilibili: '哔哩哔哩',
   douyin: '抖音',
+  douyu: '斗鱼',
 };
 
 const DanmakuSettings: React.FC = () => {
@@ -389,12 +447,31 @@ const DanmakuSettings: React.FC = () => {
     }
   };
 
-  const handleSaveRoom = async (liveId: string, values: any) => {
+  const BILIBILI_DANMAKU_FIELDS = ['record_gift', 'record_guard', 'record_super_chat', 'guard_position', 'sc_position'];
+  const DOUYU_DANMAKU_FIELDS = ['record_douyu_gift'];
+  const DOUYIN_DANMAKU_FIELDS = ['record_douyin_gift'];
+
+  const filterDanmakuByPlatform = (danmaku: Record<string, any>, platformKey: string): Record<string, any> => {
+    if (!danmaku) return danmaku;
+    const result = { ...danmaku };
+    if (platformKey !== 'bilibili') {
+      for (const f of BILIBILI_DANMAKU_FIELDS) delete result[f];
+    }
+    if (platformKey !== 'douyu') {
+      for (const f of DOUYU_DANMAKU_FIELDS) delete result[f];
+    }
+    if (platformKey !== 'douyin') {
+      for (const f of DOUYIN_DANMAKU_FIELDS) delete result[f];
+    }
+    return result;
+  };
+
+  const handleSaveRoom = async (liveId: string, values: any, platformKey: string) => {
     setSaving(true);
     try {
       await api.updateRoomConfigById(liveId, {
         danmaku_enable: values.danmaku_enable,
-        danmaku: values.danmaku,
+        danmaku: filterDanmakuByPlatform(values.danmaku, platformKey),
       });
       await loadData();
     } finally {
@@ -436,6 +513,8 @@ const DanmakuSettings: React.FC = () => {
           loading={saving}
           label="全局弹幕"
           showBilibiliContent
+          showDouyuContent
+          showDouyinContent
         />
       </Card>
 
@@ -521,9 +600,11 @@ const DanmakuSettings: React.FC = () => {
         </Form>
       </Card>
 
-      {Object.entries(platformRooms).map(([platformKey, rooms]) => (
-        rooms.length > 0 && (
-          <Card key={platformKey} title={`房间设置 (${DANMAKU_PLATFORMS[platformKey] || platformKey})`} size="small" style={{ marginBottom: 16 }}>
+      {Object.keys(DANMAKU_PLATFORMS).map((platformKey) => {
+        const rooms = platformRooms[platformKey];
+        if (!rooms || rooms.length === 0) return null;
+        return (
+          <Card key={platformKey} title={`房间设置 (${DANMAKU_PLATFORMS[platformKey]})`} size="small" style={{ marginBottom: 16 }}>
             <Collapse
               items={rooms.map((room) => ({
                 key: room.live_id,
@@ -539,19 +620,21 @@ const DanmakuSettings: React.FC = () => {
                     globalDefaults={config?.danmaku}
                     danmakuEnable={room.room_config?.danmaku_enable ?? config?.danmaku_enable}
                     showEnable
-                    onSave={(values) => handleSaveRoom(room.live_id, values)}
+                    onSave={(values) => handleSaveRoom(room.live_id, values, platformKey)}
                     onReset={() => handleResetRoom(room.live_id)}
                     loading={saving}
                     label={room.host_name || '房间弹幕'}
                     isRoom
                     showBilibiliContent={platformKey === 'bilibili'}
+                    showDouyuContent={platformKey === 'douyu'}
+                    showDouyinContent={platformKey === 'douyin'}
                   />
                 ),
               }))}
             />
           </Card>
-        )
-      ))}
+        );
+      })}
     </div>
   );
 };

@@ -1432,15 +1432,25 @@ func applyConfigUpdates(c *configs.Config, updates map[string]interface{}) error
 			c.Danmaku.Resolution = resolution
 		}
 		if outline, ok := danmaku["outline"].(float64); ok {
-			c.Danmaku.Outline = int(outline)
+			c.Danmaku.Outline = configs.IntPtr(int(outline))
 		}
 		if opacity, ok := danmaku["opacity"].(float64); ok {
-			c.Danmaku.Opacity = int(opacity)
+			c.Danmaku.Opacity = configs.IntPtr(int(opacity))
 		}
 		if recordGift, ok := danmaku["record_gift"].(bool); ok {
 			c.Danmaku.RecordGift = configs.BoolPtr(recordGift)
 		} else if _, exists := danmaku["record_gift"]; exists && danmaku["record_gift"] == nil {
 			c.Danmaku.RecordGift = nil
+		}
+		if recordDouyuGift, ok := danmaku["record_douyu_gift"].(bool); ok {
+			c.Danmaku.RecordDouyuGift = configs.BoolPtr(recordDouyuGift)
+		} else if _, exists := danmaku["record_douyu_gift"]; exists && danmaku["record_douyu_gift"] == nil {
+			c.Danmaku.RecordDouyuGift = nil
+		}
+		if recordDouyinGift, ok := danmaku["record_douyin_gift"].(bool); ok {
+			c.Danmaku.RecordDouyinGift = configs.BoolPtr(recordDouyinGift)
+		} else if _, exists := danmaku["record_douyin_gift"]; exists && danmaku["record_douyin_gift"] == nil {
+			c.Danmaku.RecordDouyinGift = nil
 		}
 		if recordGuard, ok := danmaku["record_guard"].(bool); ok {
 			c.Danmaku.RecordGuard = configs.BoolPtr(recordGuard)
@@ -1717,7 +1727,7 @@ func updatePlatformConfig(writer http.ResponseWriter, r *http.Request) {
 
 		// 验证弹幕配置有效性
 		if pc.Danmaku != nil {
-			if err := pc.Danmaku.Validate(); err != nil {
+			if err := pc.Danmaku.ValidateWithPlatform(platformKey); err != nil {
 				return fmt.Errorf("弹幕参数无效: %w", err)
 			}
 		}
@@ -1835,9 +1845,10 @@ func updateRoomConfigById(writer http.ResponseWriter, r *http.Request) {
 		// 更新可覆盖配置
 		applyOverridableConfigUpdates(&room.OverridableConfig, updates)
 
-		// 验证弹幕配置有效性
+		// 验证弹幕配置有效性（同时根据平台清理不适用的字段）
 		if room.Danmaku != nil {
-			if err := room.Danmaku.Validate(); err != nil {
+			platformKey := configs.GetPlatformKeyFromUrl(room.Url)
+			if err := room.Danmaku.ValidateWithPlatform(platformKey); err != nil {
 				return fmt.Errorf("弹幕参数无效: %w", err)
 			}
 		}
@@ -1985,15 +1996,25 @@ func applyOverridableConfigUpdates(oc *configs.OverridableConfig, updates map[st
 			oc.Danmaku.Resolution = resolution
 		}
 		if outline, ok := danmaku["outline"].(float64); ok {
-			oc.Danmaku.Outline = int(outline)
+			oc.Danmaku.Outline = configs.IntPtr(int(outline))
 		}
 		if opacity, ok := danmaku["opacity"].(float64); ok {
-			oc.Danmaku.Opacity = int(opacity)
+			oc.Danmaku.Opacity = configs.IntPtr(int(opacity))
 		}
 		if recordGift, ok := danmaku["record_gift"].(bool); ok {
 			oc.Danmaku.RecordGift = configs.BoolPtr(recordGift)
 		} else if _, exists := danmaku["record_gift"]; exists && danmaku["record_gift"] == nil {
 			oc.Danmaku.RecordGift = nil
+		}
+		if recordDouyuGift, ok := danmaku["record_douyu_gift"].(bool); ok {
+			oc.Danmaku.RecordDouyuGift = configs.BoolPtr(recordDouyuGift)
+		} else if _, exists := danmaku["record_douyu_gift"]; exists && danmaku["record_douyu_gift"] == nil {
+			oc.Danmaku.RecordDouyuGift = nil
+		}
+		if recordDouyinGift, ok := danmaku["record_douyin_gift"].(bool); ok {
+			oc.Danmaku.RecordDouyinGift = configs.BoolPtr(recordDouyinGift)
+		} else if _, exists := danmaku["record_douyin_gift"]; exists && danmaku["record_douyin_gift"] == nil {
+			oc.Danmaku.RecordDouyinGift = nil
 		}
 		if recordGuard, ok := danmaku["record_guard"].(bool); ok {
 			oc.Danmaku.RecordGuard = configs.BoolPtr(recordGuard)
@@ -2070,9 +2091,10 @@ func updateRoomConfig(writer http.ResponseWriter, r *http.Request) {
 		// 处理可覆盖配置（弹幕、interval、outPutPath、ffmpegPath 等）
 		applyOverridableConfigUpdates(&room.OverridableConfig, updates)
 
-		// 验证弹幕配置
+		// 验证弹幕配置（同时根据平台清理不适用的字段）
 		if room.Danmaku != nil {
-			if err := room.Danmaku.Validate(); err != nil {
+			platformKey := configs.GetPlatformKeyFromUrl(decodedUrl)
+			if err := room.Danmaku.ValidateWithPlatform(platformKey); err != nil {
 				return fmt.Errorf("弹幕配置无效: %w", err)
 			}
 		}

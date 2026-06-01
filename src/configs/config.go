@@ -77,21 +77,24 @@ func (f *Feature) GetEffectiveDownloaderType() DownloaderType {
 
 // DanmakuConfig 弹幕录制配置
 type DanmakuConfig struct {
-	FontSize        int    `yaml:"font_size" json:"font_size"`               // 字体大小 (12~120)
-	FontName        string `yaml:"font_name" json:"font_name"`               // 字体名称
-	ScrollArea      string `yaml:"scroll_area" json:"scroll_area"`           // 滚动区域: full(全屏), top(顶部), bottom(底部)
-	ScrollTime      int    `yaml:"scroll_time" json:"scroll_time"`           // 弹幕滚过屏幕的秒数 (5~20)
-	Resolution      string `yaml:"resolution" json:"resolution"`             // 播放分辨率
-	Outline         int    `yaml:"outline" json:"outline"`                   // 描边粗细 (0~4)
-	Opacity         int    `yaml:"opacity" json:"opacity"`                   // 背景透明度 (0~255)
-	RecordGift      *bool  `yaml:"record_gift,omitempty" json:"record_gift,omitempty"`         // 是否录制礼物
+	FontSize         int    `yaml:"font_size" json:"font_size"`               // 字体大小 (12~120)
+	FontName         string `yaml:"font_name" json:"font_name"`               // 字体名称
+	ScrollArea       string `yaml:"scroll_area" json:"scroll_area"`           // 滚动区域: full(全屏), top(顶部), bottom(底部)
+	ScrollTime       int    `yaml:"scroll_time" json:"scroll_time"`           // 弹幕滚过屏幕的秒数 (5~20)
+	Resolution       string `yaml:"resolution" json:"resolution"`             // 播放分辨率
+	Outline          *int   `yaml:"outline,omitempty" json:"outline,omitempty"`   // 描边粗细 (0~4)，nil 表示使用默认值
+	Opacity          *int   `yaml:"opacity,omitempty" json:"opacity,omitempty"`   // 背景透明度 (0~255)，nil 表示使用默认值
+	RecordGift      *bool  `yaml:"record_gift,omitempty" json:"record_gift,omitempty"`         // 是否录制礼物（哔哩哔哩）
+	RecordDouyuGift *bool  `yaml:"record_douyu_gift,omitempty" json:"record_douyu_gift,omitempty"` // 是否录制礼物（斗鱼）
+	RecordDouyinGift *bool `yaml:"record_douyin_gift,omitempty" json:"record_douyin_gift,omitempty"` // 是否录制礼物（抖音）
 	RecordGuard     *bool  `yaml:"record_guard,omitempty" json:"record_guard,omitempty"`       // 是否录制上舰
 	RecordSuperChat *bool  `yaml:"record_super_chat,omitempty" json:"record_super_chat,omitempty"` // 是否录制SC
-	GuardPosition   string `yaml:"guard_position" json:"guard_position"`     // 上舰位置: bottom-left, bottom-right, top-left, top-right
-	ScPosition      string `yaml:"sc_position" json:"sc_position"`           // SC位置: bottom-left, bottom-right, top-left, top-right
+	GuardPosition   string `yaml:"guard_position,omitempty" json:"guard_position"`     // 上舰位置: bottom-left, bottom-right, top-left, top-right
+	ScPosition      string `yaml:"sc_position,omitempty" json:"sc_position"`           // SC位置: bottom-left, bottom-right, top-left, top-right
 }
 
 func BoolPtr(b bool) *bool { return &b }
+func IntPtr(i int) *int   { return &i }
 
 var defaultDanmakuConfig = DanmakuConfig{
 	FontSize:        36,
@@ -99,9 +102,11 @@ var defaultDanmakuConfig = DanmakuConfig{
 	ScrollArea:      "full",
 	ScrollTime:      10,
 	Resolution:      "1920x1080",
-	Outline:         1,
-	Opacity:         128,
-	RecordGift:      BoolPtr(true),
+	Outline:         IntPtr(1),
+	Opacity:         IntPtr(128),
+	RecordGift:       BoolPtr(true),
+	RecordDouyuGift:  BoolPtr(true),
+	RecordDouyinGift: BoolPtr(true),
 	RecordGuard:     BoolPtr(true),
 	RecordSuperChat: BoolPtr(true),
 	GuardPosition:   "bottom-left",
@@ -133,6 +138,11 @@ var validMessagePositions = map[string]bool{
 
 // SetDefaults 将空字段设为默认值（应在 Validate 之前调用）
 func (d *DanmakuConfig) SetDefaults() {
+	d.SetDefaultsWithPlatform("")
+}
+
+// SetDefaultsWithPlatform 将空字段设为默认值，platformKey 用于跳过不适用平台的字段。
+func (d *DanmakuConfig) SetDefaultsWithPlatform(platformKey string) {
 	if d.FontSize == 0 {
 		d.FontSize = defaultDanmakuConfig.FontSize
 	}
@@ -148,32 +158,62 @@ func (d *DanmakuConfig) SetDefaults() {
 	if d.Resolution == "" {
 		d.Resolution = "1920x1080"
 	}
-	if d.Outline == 0 {
-		d.Outline = defaultDanmakuConfig.Outline
+	if d.Outline == nil {
+		d.Outline = IntPtr(*defaultDanmakuConfig.Outline)
 	}
-	if d.Opacity == 0 {
-		d.Opacity = defaultDanmakuConfig.Opacity
+	if d.Opacity == nil {
+		d.Opacity = IntPtr(*defaultDanmakuConfig.Opacity)
 	}
-	if d.RecordGift == nil {
-		d.RecordGift = BoolPtr(true)
+	// Bilibili 专属字段
+	if platformKey == "" || platformKey == "bilibili" {
+		if d.RecordGift == nil {
+			d.RecordGift = BoolPtr(true)
+		}
+		if d.RecordGuard == nil {
+			d.RecordGuard = BoolPtr(true)
+		}
+		if d.RecordSuperChat == nil {
+			d.RecordSuperChat = BoolPtr(true)
+		}
+		if d.GuardPosition == "" {
+			d.GuardPosition = "bottom-left"
+		}
+		if d.ScPosition == "" {
+			d.ScPosition = "bottom-left"
+		}
+	} else {
+		d.RecordGift = nil
+		d.RecordGuard = nil
+		d.RecordSuperChat = nil
+		d.GuardPosition = ""
+		d.ScPosition = ""
 	}
-	if d.RecordGuard == nil {
-		d.RecordGuard = BoolPtr(true)
+	// 斗鱼专属字段
+	if platformKey == "" || platformKey == "douyu" {
+		if d.RecordDouyuGift == nil {
+			d.RecordDouyuGift = BoolPtr(true)
+		}
+	} else {
+		d.RecordDouyuGift = nil
 	}
-	if d.RecordSuperChat == nil {
-		d.RecordSuperChat = BoolPtr(true)
-	}
-	if d.GuardPosition == "" {
-		d.GuardPosition = "bottom-left"
-	}
-	if d.ScPosition == "" {
-		d.ScPosition = "bottom-left"
+	// 抖音专属字段
+	if platformKey == "" || platformKey == "douyin" {
+		if d.RecordDouyinGift == nil {
+			d.RecordDouyinGift = BoolPtr(true)
+		}
+	} else {
+		d.RecordDouyinGift = nil
 	}
 }
 
 // Validate 验证弹幕配置参数的有效性
 func (d *DanmakuConfig) Validate() error {
-	d.SetDefaults()
+	return d.ValidateWithPlatform("")
+}
+
+// ValidateWithPlatform 验证弹幕配置参数的有效性，同时根据平台清理不适用的字段。
+func (d *DanmakuConfig) ValidateWithPlatform(platformKey string) error {
+	d.SetDefaultsWithPlatform(platformKey)
 	if d.FontSize < 12 || d.FontSize > 120 {
 		return fmt.Errorf("字体大小必须在 12~120 之间，当前值: %d", d.FontSize)
 	}
@@ -189,23 +229,23 @@ func (d *DanmakuConfig) Validate() error {
 	if !validResolutions[d.Resolution] {
 		return fmt.Errorf("不支持的分辨率: %s，可选值: 1920x1080, 1280x720, 2560x1440, 3840x2160", d.Resolution)
 	}
-	if d.Outline < 0 || d.Outline > 4 {
-		return fmt.Errorf("描边粗细必须在 0~4 之间，当前值: %d", d.Outline)
+	if *d.Outline < 0 || *d.Outline > 4 {
+		return fmt.Errorf("描边粗细必须在 0~4 之间，当前值: %d", *d.Outline)
 	}
-	if d.Opacity < 0 || d.Opacity > 255 {
-		return fmt.Errorf("背景透明度必须在 0~255 之间，当前值: %d", d.Opacity)
+	if *d.Opacity < 0 || *d.Opacity > 255 {
+		return fmt.Errorf("背景透明度必须在 0~255 之间，当前值: %d", *d.Opacity)
 	}
-	if !validMessagePositions[d.GuardPosition] {
+	if d.GuardPosition != "" && !validMessagePositions[d.GuardPosition] {
 		return fmt.Errorf("不支持的上舰消息位置: %s，可选值: bottom-left, bottom-right, top-left, top-right", d.GuardPosition)
 	}
-	if !validMessagePositions[d.ScPosition] {
+	if d.ScPosition != "" && !validMessagePositions[d.ScPosition] {
 		return fmt.Errorf("不支持的SC消息位置: %s，可选值: bottom-left, bottom-right, top-left, top-right", d.ScPosition)
 	}
 	return nil
 }
 
-// mergeDanmakuConfig 合并弹幕配置，override 中的非零值覆盖 base
-// *bool 字段：nil 表示继承，非 nil 表示覆盖
+// mergeDanmakuConfig 合并弹幕配置，override 中的非零/非nil值覆盖 base
+// *bool/*int 字段：nil 表示继承，非 nil 表示覆盖
 func mergeDanmakuConfig(base, override *DanmakuConfig) DanmakuConfig {
 	if override == nil {
 		return *base
@@ -226,14 +266,20 @@ func mergeDanmakuConfig(base, override *DanmakuConfig) DanmakuConfig {
 	if override.Resolution != "" {
 		result.Resolution = override.Resolution
 	}
-	if override.Outline != 0 {
-		result.Outline = override.Outline
+	if override.Outline != nil {
+		result.Outline = IntPtr(*override.Outline)
 	}
-	if override.Opacity != 0 {
-		result.Opacity = override.Opacity
+	if override.Opacity != nil {
+		result.Opacity = IntPtr(*override.Opacity)
 	}
 	if override.RecordGift != nil {
 		result.RecordGift = override.RecordGift
+	}
+	if override.RecordDouyuGift != nil {
+		result.RecordDouyuGift = override.RecordDouyuGift
+	}
+	if override.RecordDouyinGift != nil {
+		result.RecordDouyinGift = override.RecordDouyinGift
 	}
 	if override.RecordGuard != nil {
 		result.RecordGuard = override.RecordGuard
@@ -247,13 +293,39 @@ func mergeDanmakuConfig(base, override *DanmakuConfig) DanmakuConfig {
 	if override.ScPosition != "" {
 		result.ScPosition = override.ScPosition
 	}
-	result.SetDefaults()
 	return result
 }
 
 // GetDefaultDanmakuConfig 返回弹幕配置的默认值
 func GetDefaultDanmakuConfig() DanmakuConfig {
 	return defaultDanmakuConfig
+}
+
+// StripIrrelevantDanmakuFields 根据平台移除不适用的弹幕配置字段，避免 config 中存储无用数据。
+func StripIrrelevantDanmakuFields(d *DanmakuConfig, platformKey string) {
+	if platformKey != "bilibili" {
+		d.RecordGift = nil
+		d.RecordGuard = nil
+		d.RecordSuperChat = nil
+		d.GuardPosition = ""
+		d.ScPosition = ""
+	}
+	if platformKey != "douyu" {
+		d.RecordDouyuGift = nil
+	}
+	if platformKey != "douyin" {
+		d.RecordDouyinGift = nil
+	}
+}
+
+// StripAllIrrelevantDanmakuFields 对所有房间执行平台字段清理。
+func (c *Config) StripAllIrrelevantDanmakuFields() {
+	for i := range c.LiveRooms {
+		if c.LiveRooms[i].Danmaku != nil {
+			platformKey := GetPlatformKeyFromUrl(c.LiveRooms[i].Url)
+			StripIrrelevantDanmakuFields(c.LiveRooms[i].Danmaku, platformKey)
+		}
+	}
 }
 
 // VideoSplitStrategies info.
@@ -426,7 +498,7 @@ type OverridableConfig struct {
 	OnRecordFinished     *OnRecordFinished     `yaml:"on_record_finished,omitempty" json:"on_record_finished,omitempty"`         // 录制完成后的动作
 	TimeoutInUs          *int                  `yaml:"timeout_in_us,omitempty" json:"timeout_in_us,omitempty"`                   // 超时设置(微秒)
 	StreamPreference     *StreamPreference     `yaml:"stream_preference,omitempty" json:"stream_preference,omitempty"`           // 流偏好配置
-	DanmakuEnable        *bool                 `yaml:"danmaku_enable,omitempty" json:"danmaku_enable,omitempty"`                 // 是否录制弹幕（支持哔哩哔哩、抖音）
+	DanmakuEnable        *bool                 `yaml:"danmaku_enable,omitempty" json:"danmaku_enable,omitempty"`                 // 是否录制弹幕（支持哔哩哔哩、抖音、斗鱼）
 	Danmaku              *DanmakuConfig        `yaml:"danmaku,omitempty" json:"danmaku,omitempty"`                               // 弹幕录制参数
 }
 
@@ -1333,7 +1405,7 @@ func (c *Config) ValidatePlatformConfigs() error {
 
 		// 验证弹幕配置（如果指定）
 		if platformConfig.Danmaku != nil {
-			if err := platformConfig.Danmaku.Validate(); err != nil {
+			if err := platformConfig.Danmaku.ValidateWithPlatform(platformKey); err != nil {
 				return fmt.Errorf("平台 '%s': 弹幕配置无效: %w", platformKey, err)
 			}
 		}

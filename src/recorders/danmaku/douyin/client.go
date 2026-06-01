@@ -22,6 +22,11 @@ import (
 //go:embed sign.js
 var signJSCode string
 
+var (
+	reRoomID  = regexp.MustCompile(`"room_id"\s*:\s*(\d+)`)
+	reRoomID2 = regexp.MustCompile(`roomId\\?":\\?"(\d+)`)
+)
+
 // signJSProgram 预编译的 sign.js 字节码，避免每次签名都重新解析 485KB 脚本
 var signJSProgram *goja.Program
 var signJSOnce sync.Once
@@ -44,7 +49,9 @@ type DouyinClient struct {
 	cookies   string
 	conn      *websocket.Conn
 	onDanmaku func(username, content string)
+	onGift    func(username, giftName string, num int)
 	done      chan struct{}
+	closeOnce sync.Once
 	logger    *logrus.Entry
 	mu        sync.Mutex
 	running   bool
@@ -52,11 +59,12 @@ type DouyinClient struct {
 }
 
 // NewDouyinClient 创建新的抖音弹幕客户端
-func NewDouyinClient(roomID, cookies string, onDanmaku func(username, content string), logger *logrus.Entry) *DouyinClient {
+func NewDouyinClient(roomID, cookies string, onDanmaku func(username, content string), onGift func(username, giftName string, num int), logger *logrus.Entry) *DouyinClient {
 	return &DouyinClient{
 		roomID:    roomID,
 		cookies:   cookies,
 		onDanmaku: onDanmaku,
+		onGift:    onGift,
 		done:      make(chan struct{}),
 		logger:    logger,
 	}
@@ -145,7 +153,7 @@ func (c *DouyinClient) Stop() {
 		return
 	}
 	c.running = false
-	close(c.done)
+	c.closeOnce.Do(func() { close(c.done) })
 	if c.conn != nil {
 		c.conn.Close()
 	}
@@ -187,6 +195,13 @@ func (c *DouyinClient) readLoopWithReconnect(ctx context.Context, realRoomID, tt
 		reconnectCount++
 		if reconnectCount > maxReconnect {
 			c.logger.Errorf("重连 %d 次仍然失败，停止弹幕录制", maxReconnect)
+			c.mu.Lock()
+			c.running = false
+			c.closeOnce.Do(func() { close(c.done) })
+			if c.conn != nil {
+				c.conn.Close()
+			}
+			c.mu.Unlock()
 			return
 		}
 
@@ -242,6 +257,17 @@ func (c *DouyinClient) readLoopWithReconnect(ctx context.Context, realRoomID, tt
 	}
 }
 
+// getConn 安全获取当前连接引用，不持锁执行 I/O。
+// 当客户端已停止时返回 nil，避免读取已关闭的连接触发无意义的重连。
+func (c *DouyinClient) getConn() *websocket.Conn {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.running {
+		return nil
+	}
+	return c.conn
+}
+
 // readLoop 消息读取循环
 func (c *DouyinClient) readLoop(ctx context.Context) error {
 	for {
@@ -253,9 +279,14 @@ func (c *DouyinClient) readLoop(ctx context.Context) error {
 		default:
 		}
 
-		c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		conn := c.getConn()
+		if conn == nil {
+			return nil
+		}
 
-		_, message, err := c.conn.ReadMessage()
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+
+		_, message, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 				c.logger.Info("WebSocket 连接正常关闭")
@@ -303,12 +334,17 @@ func (c *DouyinClient) readLoop(ctx context.Context) error {
 
 // handleMessage 处理单条消息
 func (c *DouyinClient) handleMessage(msg *Message) {
-	if msg.Method != "WebcastChatMessage" {
-		return
+	switch msg.Method {
+	case "WebcastChatMessage":
+		c.handleChatMessage(msg.Payload)
+	case "WebcastGiftMessage":
+		c.handleGiftMessage(msg.Payload)
 	}
+}
 
+func (c *DouyinClient) handleChatMessage(payload []byte) {
 	chatMsg := &ChatMessage{}
-	if err := chatMsg.Unmarshal(msg.Payload); err != nil {
+	if err := chatMsg.Unmarshal(payload); err != nil {
 		c.logger.WithError(err).Debug("解析 ChatMessage 失败")
 		return
 	}
@@ -329,6 +365,41 @@ func (c *DouyinClient) handleMessage(msg *Message) {
 	}
 }
 
+func (c *DouyinClient) handleGiftMessage(payload []byte) {
+	giftMsg := &GiftMessage{}
+	if err := giftMsg.Unmarshal(payload); err != nil {
+		c.logger.WithError(err).Debug("解析 GiftMessage 失败")
+		return
+	}
+
+	if c.onGift == nil {
+		return
+	}
+
+	username := ""
+	if giftMsg.User != nil {
+		username = giftMsg.User.Nickname
+	}
+	if username == "" {
+		username = "未知用户"
+	}
+
+	giftName := ""
+	if giftMsg.Gift != nil {
+		giftName = giftMsg.Gift.Name
+	}
+	if giftName == "" {
+		giftName = "礼物"
+	}
+
+	num := int(giftMsg.RepeatCount)
+	if num < 1 {
+		num = 1
+	}
+
+	c.onGift(username, giftName, num)
+}
+
 // heartbeatLoop 心跳循环（每 5 秒发送一次）
 func (c *DouyinClient) heartbeatLoop(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
@@ -346,7 +417,7 @@ func (c *DouyinClient) heartbeatLoop(ctx context.Context) {
 	}
 }
 
-// sendHeartbeat 发送心跳（PING 帧，payloadType='hb'）
+// sendHeartbeat 发送心跳帧（BinaryMessage，payloadType='hb'）
 func (c *DouyinClient) sendHeartbeat() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -367,7 +438,7 @@ func (c *DouyinClient) sendHeartbeat() {
 	}
 
 	c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	c.conn.WriteMessage(websocket.PingMessage, data)
+	c.conn.WriteMessage(websocket.BinaryMessage, data)
 }
 
 // sendACK 发送 ACK 确认帧
@@ -444,8 +515,7 @@ func fetchRealRoomID(roomID, cookies string, logger *logrus.Entry) (string, erro
 	}
 
 	// 从页面 JSON 中提取 roomId
-	re := regexp.MustCompile(`"room_id"\s*:\s*(\d+)`)
-	matches := re.FindSubmatch(body)
+	matches := reRoomID.FindSubmatch(body)
 	if len(matches) >= 2 {
 		realID := string(matches[1])
 		if realID != "0" {
@@ -454,8 +524,7 @@ func fetchRealRoomID(roomID, cookies string, logger *logrus.Entry) (string, erro
 		}
 	}
 
-	re2 := regexp.MustCompile(`roomId\\?":\\?"(\d+)`)
-	matches2 := re2.FindSubmatch(body)
+	matches2 := reRoomID2.FindSubmatch(body)
 	if len(matches2) >= 2 {
 		realID := string(matches2[1])
 		logger.Infof("从页面解析到真实 roomId: %s (web_rid: %s)", realID, roomID)
@@ -511,6 +580,20 @@ func generateSignature(wssURL string, logger *logrus.Entry) (string, error) {
 	}
 
 	vm := goja.New()
+	// sign.js 内部用无 var 的赋值（如 document = {}）声明全局对象，
+	// 在 goja 中会因变量未声明报错。通过 this 赋值注入全局属性，
+	// 确保预编译的 RunProgram 能正确访问。
+	vm.Set("window", vm.GlobalObject())
+	vm.Set("document", vm.NewObject())
+	nav := vm.NewObject()
+	nav.Set("userAgent", userAgent)
+	vm.Set("navigator", nav)
+	for _, g := range []string{"location", "screen", "history", "localStorage", "sessionStorage", "crypto", "performance"} {
+		vm.Set(g, vm.NewObject())
+	}
+	for _, g := range []string{"Image", "WebSocket", "XMLHttpRequest", "fetch", "setTimeout", "setInterval", "clearTimeout", "clearInterval"} {
+		vm.Set(g, vm.NewObject())
+	}
 	if _, err := vm.RunProgram(program); err != nil {
 		return "", fmt.Errorf("执行 sign.js 失败: %w", err)
 	}

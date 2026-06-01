@@ -16,6 +16,7 @@ type AssWriter struct {
 	mu           sync.Mutex
 	file         *os.File
 	closed       bool
+	writeErr     bool // 首次写入出错后置 true，后续跳过无意义写入
 	startAt      time.Time
 	cfg          configs.DanmakuConfig
 	title        string
@@ -106,7 +107,7 @@ func scTierColor(price int) string {
 	case price >= 2000:
 		return "&H80E73CC6" // 紫色 #C678F5
 	case price >= 1000:
-		return "&H80396AFF" // 深红 #FF6A39
+		return "&H8030CAFF" // 橙金 #FFCA30
 	case price >= 500:
 		return "&H80396AFF" // 红色 #FF6A39
 	case price >= 200:
@@ -149,7 +150,9 @@ func scTierStyle(price int) string {
 }
 
 func (w *AssWriter) writeHeader() error {
-	assAlpha := 255 - w.cfg.Opacity
+	opacity := *w.cfg.Opacity
+	outline := *w.cfg.Outline
+	assAlpha := 255 - opacity
 	backColor := fmt.Sprintf("&H%02X000000&", assAlpha)
 	guardBackColor := "&H800080FF"
 
@@ -190,8 +193,8 @@ Style: SCDefault,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 `, w.title, w.resX, w.resY,
-		w.cfg.FontName, w.cfg.FontSize, backColor, w.cfg.Outline,
-		w.cfg.FontName, w.cfg.FontSize-6, backColor, w.cfg.Outline,
+		w.cfg.FontName, w.cfg.FontSize, backColor, outline,
+		w.cfg.FontName, w.cfg.FontSize-6, backColor, outline,
 		w.cfg.FontName, w.cfg.FontSize, guardBackColor,
 		w.cfg.FontName, w.cfg.FontSize, sc2,
 		w.cfg.FontName, w.cfg.FontSize, sc30,
@@ -222,7 +225,7 @@ func (w *AssWriter) estimateTextWidth(text string) int {
 func (w *AssWriter) AddDanmaku(recvAt time.Time, username, text string, color int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.closed {
+	if w.closed || w.writeErr {
 		return
 	}
 
@@ -253,14 +256,16 @@ func (w *AssWriter) AddDanmaku(recvAt time.Time, username, text string, color in
 
 	line := fmt.Sprintf("Dialogue: 0,%s,%s,Danmaku,,0,0,%d,Banner;%d;0;30,{\\c%s}%s\n",
 		formatTime(startCS), formatTime(endCS), marginV, w.bannerSpeed, assColor, escapeText(fullText))
-	w.file.WriteString(line)
+	if _, err := w.file.WriteString(line); err != nil {
+		w.writeErr = true
+	}
 }
 
 // AddGift appends a gift message as a smaller scrolling line.
 func (w *AssWriter) AddGift(recvAt time.Time, username, giftName string, num int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.closed {
+	if w.closed || w.writeErr {
 		return
 	}
 
@@ -285,7 +290,9 @@ func (w *AssWriter) AddGift(recvAt time.Time, username, giftName string, num int
 
 	line := fmt.Sprintf("Dialogue: 0,%s,%s,Gift,,0,0,%d,Banner;%d;0;30,%s\n",
 		formatTime(startCS), formatTime(endCS), marginV, w.bannerSpeed, escapeText(fullText))
-	w.file.WriteString(line)
+	if _, err := w.file.WriteString(line); err != nil {
+		w.writeErr = true
+	}
 }
 
 // positionToAlignment maps position string to ASS \an alignment value and margin.
@@ -307,7 +314,7 @@ func positionToAlignment(pos string, bottomMargin int) (alignment int, marginV i
 func (w *AssWriter) AddGuard(recvAt time.Time, username, giftName string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.closed {
+	if w.closed || w.writeErr {
 		return
 	}
 
@@ -322,14 +329,16 @@ func (w *AssWriter) AddGuard(recvAt time.Time, username, giftName string) {
 	alignment, marginV := positionToAlignment(w.cfg.GuardPosition, 60)
 	line := fmt.Sprintf("Dialogue: 1,%s,%s,Guard,,0,0,%d,,{\\an%d}{\\q0}%s\n",
 		formatTime(startCS), formatTime(endCS), marginV, alignment, escapeText(fullText))
-	w.file.WriteString(line)
+	if _, err := w.file.WriteString(line); err != nil {
+		w.writeErr = true
+	}
 }
 
 // AddSuperChat appends a Super Chat message.
 func (w *AssWriter) AddSuperChat(recvAt time.Time, username, text string, price int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.closed {
+	if w.closed || w.writeErr {
 		return
 	}
 
@@ -345,7 +354,9 @@ func (w *AssWriter) AddSuperChat(recvAt time.Time, username, text string, price 
 	styleName := scTierStyle(price)
 	line := fmt.Sprintf("Dialogue: 1,%s,%s,%s,,0,0,%d,,{\\an%d}{\\q0}%s\n",
 		formatTime(startCS), formatTime(endCS), styleName, marginV, alignment, escapeText(fullText))
-	w.file.WriteString(line)
+	if _, err := w.file.WriteString(line); err != nil {
+		w.writeErr = true
+	}
 }
 
 func (w *AssWriter) assignLane(startCS, endCS int64) int {
@@ -401,6 +412,12 @@ func escapeText(s string) string {
 	result := make([]byte, 0, len(s))
 	for i := 0; i < len(s); i++ {
 		switch s[i] {
+		case '\\':
+			result = append(result, '\\', '\\')
+		case '{':
+			result = append(result, '\\', '{')
+		case '}':
+			result = append(result, '\\', '}')
 		case '\n':
 			result = append(result, '\\', 'n')
 		case '\r':
