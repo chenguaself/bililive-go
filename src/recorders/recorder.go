@@ -1461,8 +1461,17 @@ func extractDouyinRoomID(l live.Live) string {
 }
 
 // extractDouyuRoomID 从斗鱼直播 URL 中提取房间号（字符串）。
-// 斗鱼 URL 格式: https://www.douyu.com/123456
+// 优先使用 Live 中已解析的数字 roomID（fetchRoomID 从页面解析），
+// 避免别名 URL（如 /lotterytimer）传入非数字 ID 导致弹幕登录失败。
 func extractDouyuRoomID(l live.Live) string {
+	type roomIDProvider interface {
+		GetRoomID() string
+	}
+	if provider, ok := l.(roomIDProvider); ok {
+		if rid := provider.GetRoomID(); rid != "" {
+			return rid
+		}
+	}
 	u, err := url.Parse(l.GetRawUrl())
 	if err != nil {
 		return ""
