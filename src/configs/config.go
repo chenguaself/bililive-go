@@ -386,6 +386,7 @@ type Notify struct {
 	Email                Email    `yaml:"email" json:"email"`
 	Ntfy                 Ntfy     `yaml:"ntfy" json:"ntfy"`
 	Bark                 Bark     `yaml:"bark" json:"bark"`
+	WxPusher             WxPusher `yaml:"wxpusher" json:"wxpusher"`
 }
 
 type Telegram struct {
@@ -524,6 +525,12 @@ type Bark struct {
 	Group     string `yaml:"group" json:"group"`         // 通知分组（可选）
 	Icon      string `yaml:"icon" json:"icon"`           // 自定义图标 URL（可选）
 	Level     string `yaml:"level" json:"level"`         // 通知级别: active/timeSensitive/passive/critical
+}
+
+type WxPusher struct {
+	Enable   bool     `yaml:"enable" json:"enable"`
+	AppToken string   `yaml:"appToken" json:"appToken"` // 应用令牌（格式 AT_xxxx）
+	UIDs     []string `yaml:"uids" json:"uids"`         // 接收者 UID 列表（格式 UID_xxxx）
 }
 
 type SoopLiveAuth struct {
@@ -957,6 +964,11 @@ var defaultConfig = Config{
 			Enable:    false,
 			ServerURL: "https://api.day.app",
 			Group:     "bililive-go",
+		},
+		WxPusher: WxPusher{
+			Enable:   false,
+			AppToken: "",
+			UIDs:     []string{},
 		},
 	},
 	AppDataPath:        "",

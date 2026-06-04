@@ -1632,6 +1632,23 @@ func applyConfigUpdates(c *configs.Config, updates map[string]interface{}) error
 				c.Notify.Bark.Level = level
 			}
 		}
+		if wxpusherCfg, ok := notify["wxpusher"].(map[string]interface{}); ok {
+			if enable, ok := wxpusherCfg["enable"].(bool); ok {
+				c.Notify.WxPusher.Enable = enable
+			}
+			if appToken, ok := wxpusherCfg["appToken"].(string); ok {
+				c.Notify.WxPusher.AppToken = appToken
+			}
+			if uids, ok := wxpusherCfg["uids"].([]interface{}); ok {
+				uidList := make([]string, 0, len(uids))
+				for _, uid := range uids {
+					if uidStr, ok := uid.(string); ok && uidStr != "" {
+						uidList = append(uidList, uidStr)
+					}
+				}
+				c.Notify.WxPusher.UIDs = uidList
+			}
+		}
 	}
 
 	// 处理代理配置

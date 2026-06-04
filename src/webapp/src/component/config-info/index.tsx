@@ -10,7 +10,7 @@ import {
   BellOutlined, LinkOutlined, InfoCircleOutlined, SaveOutlined,
   ReloadOutlined, EditOutlined, DeleteOutlined,
   RightOutlined, PlusOutlined, WarningOutlined,
-  ExclamationCircleOutlined, MobileOutlined
+  ExclamationCircleOutlined, MobileOutlined, WechatOutlined
 } from '@ant-design/icons';
 import { useLocation, Link } from 'react-router-dom';
 import Editor from 'react-simple-code-editor';
@@ -978,6 +978,25 @@ const NotifySettings: React.FC<{
                 <Select.Option value="passive">passive（静默）</Select.Option>
                 <Select.Option value="critical">critical（紧急）</Select.Option>
               </Select>
+            </Form.Item>
+          </ConfigField>
+        </Card>
+
+        {/* WxPusher 通知 */}
+        <Card title={<><WechatOutlined /> WxPusher 推送 (微信)</>} size="small" style={{ marginBottom: 16 }}>
+          <ConfigField label="启用" description="开启后会在直播开始/结束时发送 WxPusher 推送通知">
+            <Form.Item name={['wxpusher', 'enable']} valuePropName="checked" noStyle>
+              <Switch />
+            </Form.Item>
+          </ConfigField>
+          <ConfigField label="AppToken" description="在 WxPusher 后台获取的应用令牌（格式 AT_xxxx）">
+            <Form.Item name={['wxpusher', 'appToken']} noStyle>
+              <Input placeholder="AT_xxxx" style={{ width: 400 }} />
+            </Form.Item>
+          </ConfigField>
+          <ConfigField label="接收者 UID" description="接收消息的用户 UID 列表（格式 UID_xxxx，输入后按回车添加）">
+            <Form.Item name={['wxpusher', 'uids']} noStyle>
+              <Select mode="tags" placeholder="输入 UID 后按回车添加" style={{ width: 400 }} />
             </Form.Item>
           </ConfigField>
         </Card>

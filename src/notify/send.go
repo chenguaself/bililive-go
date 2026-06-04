@@ -10,6 +10,7 @@ import (
 	"github.com/bililive-go/bililive-go/src/notify/email"
 	"github.com/bililive-go/bililive-go/src/notify/ntfy"
 	"github.com/bililive-go/bililive-go/src/notify/telegram"
+	"github.com/bililive-go/bililive-go/src/notify/wxpusher"
 	"github.com/bililive-go/bililive-go/src/pkg/livelogger"
 )
 
@@ -162,6 +163,20 @@ func SendNotification(logger *livelogger.LiveLogger, hostName, platform, liveURL
 		}
 	}
 
+	// WxPusher 通知
+	if cfg.Notify.WxPusher.Enable {
+		title := fmt.Sprintf("%s - %s", hostInfo, platform)
+		body := fmt.Sprintf("主播：%s\n平台：%s\n直播地址：%s", hostInfo, platform, liveURL)
+		if err := wxpusher.SendMessage(
+			cfg.Notify.WxPusher.AppToken,
+			cfg.Notify.WxPusher.UIDs,
+			title,
+			body,
+		); err != nil {
+			logger.WithError(err).Error("Failed to send WxPusher message")
+		}
+	}
+
 	return nil
 }
 
@@ -277,6 +292,18 @@ func SendRecordingSummary(logger *livelogger.LiveLogger, hostName, platform stri
 			body,
 		); err != nil {
 			logger.WithError(err).Error("Failed to send recording summary via Bark")
+		}
+	}
+
+	// WxPusher
+	if cfg.Notify.WxPusher.Enable {
+		if err := wxpusher.SendMessage(
+			cfg.Notify.WxPusher.AppToken,
+			cfg.Notify.WxPusher.UIDs,
+			title,
+			body,
+		); err != nil {
+			logger.WithError(err).Error("Failed to send recording summary via WxPusher")
 		}
 	}
 }
