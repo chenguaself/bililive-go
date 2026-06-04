@@ -969,7 +969,7 @@ class LiveList extends React.Component<Props, IState> {
                         roomId: item.id,
                         notifyOnly: item.notify_only || false,
                         isLive: item.status || false,
-                        isRecording: item.recording || false,
+                        isRecording: (item.recording || item.recording_preparing) || false,
                     };
                 });
             })
