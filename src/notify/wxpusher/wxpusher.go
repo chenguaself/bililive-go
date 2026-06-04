@@ -25,7 +25,6 @@ type WxPusherMessage struct {
 type WxPusherResponse struct {
 	Code int    `json:"code"`
 	Msg  string `json:"msg"`
-	Data string `json:"data"`
 }
 
 // SendMessage 发送 WxPusher 消息
