@@ -21,21 +21,35 @@ type RecordingFileDetail struct {
 
 // SendNotification 发送统一通知函数
 // 检测用户是否开启了telegram和email通知服务，然后分别发送通知
-// 参数: logger(LiveLogger), hostName(主播姓名), platform(直播平台), liveURL(直播地址), status(直播状态: consts.LiveStatusStart/consts.LiveStatusStop)
-func SendNotification(logger *livelogger.LiveLogger, hostName, platform, liveURL, status string) error {
+// 参数: logger(LiveLogger), hostName(主播姓名), platform(直播平台), liveURL(直播地址), status(直播状态: consts.LiveStatusStart/consts.LiveStatusStop), notifyOnly(是否为仅提醒模式)
+func SendNotification(logger *livelogger.LiveLogger, hostName, platform, liveURL, status string, notifyOnly ...bool) error {
 	// 获取当前配置
 	cfg := configs.GetCurrentConfig()
 	if cfg == nil {
 		return fmt.Errorf("configuration is nil")
 	}
 
-	// 根据状态设置消息内容
+	// 判断是否为仅提醒模式
+	isNotifyOnly := false
+	if len(notifyOnly) > 0 {
+		isNotifyOnly = notifyOnly[0]
+	}
+
+	// 根据状态和模式设置消息内容
 	var messageStatus string
 	switch status {
 	case consts.LiveStatusStart:
-		messageStatus = "已开始直播,正在录制中"
+		if isNotifyOnly {
+			messageStatus = "已开播，请手动开始录制"
+		} else {
+			messageStatus = "已开始直播,正在录制中"
+		}
 	case consts.LiveStatusStop:
-		messageStatus = "已结束直播,录制已停止"
+		if isNotifyOnly {
+			messageStatus = "已结束直播"
+		} else {
+			messageStatus = "已结束直播,录制已停止"
+		}
 	default:
 		messageStatus = "直播状态未知"
 	}

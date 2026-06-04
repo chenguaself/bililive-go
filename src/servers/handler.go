@@ -87,6 +87,15 @@ func parseInfo(ctx context.Context, l live.Live) *live.Info {
 	if info.RoomName == "" {
 		info.RoomName = l.GetRawUrl()
 	}
+
+	// 设置 NotifyOnly 状态
+	info.NotifyOnly = false
+	if cfg := configs.GetCurrentConfig(); cfg != nil {
+		if room, err := cfg.GetLiveRoomByUrl(l.GetRawUrl()); err == nil {
+			info.NotifyOnly = room.NotifyOnly
+		}
+	}
+
 	return info
 }
 
@@ -1797,6 +1806,10 @@ func updateRoomConfigById(writer http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 记录更新前的 NotifyOnly 状态，用于判断是否需要自动开始录制
+	var wasNotifyOnly bool
+	inst := instance.GetInstance(r.Context())
+
 	_, err = configs.UpdateWithRetry(func(c *configs.Config) error {
 		// 查找直播间（先按 LiveId，回退按 URL 计算的 hash）
 		roomIdx := -1
@@ -1825,6 +1838,9 @@ func updateRoomConfigById(writer http.ResponseWriter, r *http.Request) {
 
 		room := &c.LiveRooms[roomIdx]
 
+		// 保存更新前的 NotifyOnly 状态
+		wasNotifyOnly = room.NotifyOnly
+
 		// 更新直播间特有字段
 		if url, ok := updates["url"].(string); ok {
 			room.Url = url
@@ -1837,6 +1853,9 @@ func updateRoomConfigById(writer http.ResponseWriter, r *http.Request) {
 		}
 		if audioOnly, ok := updates["audio_only"].(bool); ok {
 			room.AudioOnly = audioOnly
+		}
+		if notifyOnly, ok := updates["notify_only"].(bool); ok {
+			room.NotifyOnly = notifyOnly
 		}
 		if nickName, ok := updates["nick_name"].(string); ok {
 			room.NickName = nickName
@@ -1862,6 +1881,35 @@ func updateRoomConfigById(writer http.ResponseWriter, r *http.Request) {
 			ErrMsg: "更新直播间配置失败: " + err.Error(),
 		})
 		return
+	}
+
+	// 如果从 NotifyOnly 切换为普通模式，检查是否正在直播并自动开始录制
+	if notifyOnly, ok := updates["notify_only"].(bool); ok {
+		if wasNotifyOnly && !notifyOnly {
+			// 检查是否正在直播（通过缓存）
+			liveObj, ok := inst.Lives.Get(types.LiveID(liveId))
+			if ok {
+				if obj, err := inst.Cache.Get(liveObj); err == nil && obj != nil {
+					liveInfo := obj.(*live.Info)
+					if liveInfo.Status {
+						// 正在直播，检查是否已经在录制
+						recorderMgr, ok := inst.RecorderManager.(recorders.Manager)
+						if ok && !recorderMgr.HasRecorder(inst.Ctx, liveObj.GetLiveId()) {
+							// 未在录制，自动开始录制
+							if err := recorderMgr.AddRecorder(inst.Ctx, liveObj); err != nil {
+								liveObj.GetLogger().Errorf("自动开始录制失败: %v", err)
+							} else {
+								liveObj.GetLogger().Info("从仅提醒模式切换为普通模式，自动开始录制")
+								// 广播录制开始事件
+								GetSSEHub().BroadcastListChange(liveObj.GetLiveId(), "record_start", map[string]interface{}{
+									"live_id": string(liveObj.GetLiveId()),
+								})
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 
 	writeJSON(writer, commonResp{
@@ -2083,6 +2131,9 @@ func updateRoomConfig(writer http.ResponseWriter, r *http.Request) {
 		}
 		if audioOnly, ok := updates["audio_only"].(bool); ok {
 			room.AudioOnly = audioOnly
+		}
+		if notifyOnly, ok := updates["notify_only"].(bool); ok {
+			room.NotifyOnly = notifyOnly
 		}
 		if nickName, ok := updates["nick_name"].(string); ok {
 			room.NickName = nickName
@@ -3292,4 +3343,93 @@ func verifyBilibiliCookie(writer http.ResponseWriter, r *http.Request) {
 	}
 	writer.Header().Set("Content-Type", "application/json")
 	writer.Write(body)
+}
+
+// startRecordDirect 直接启动录制（绕过 Listener，适用于 NotifyOnly 房间）
+func startRecordDirect(writer http.ResponseWriter, r *http.Request) {
+	inst := instance.GetInstance(r.Context())
+	vars := mux.Vars(r)
+	resp := commonResp{}
+
+	liveObj, ok := inst.Lives.Get(types.LiveID(vars["id"]))
+	if !ok {
+		resp.ErrNo = http.StatusNotFound
+		resp.ErrMsg = fmt.Sprintf("live id: %s can not find", vars["id"])
+		writeJsonWithStatusCode(writer, http.StatusNotFound, resp)
+		return
+	}
+
+	recorderMgr, ok := inst.RecorderManager.(recorders.Manager)
+	if !ok {
+		resp.ErrNo = http.StatusInternalServerError
+		resp.ErrMsg = "录制管理器不可用"
+		writeJsonWithStatusCode(writer, http.StatusInternalServerError, resp)
+		return
+	}
+
+	// 检查是否已在录制
+	if recorderMgr.HasRecorder(inst.Ctx, liveObj.GetLiveId()) {
+		resp.ErrNo = http.StatusConflict
+		resp.ErrMsg = "该直播间已在录制中"
+		writeJsonWithStatusCode(writer, http.StatusConflict, resp)
+		return
+	}
+
+	if err := recorderMgr.AddRecorder(inst.Ctx, liveObj); err != nil {
+		resp.ErrNo = http.StatusInternalServerError
+		resp.ErrMsg = fmt.Sprintf("启动录制失败: %s", err.Error())
+		writeJsonWithStatusCode(writer, http.StatusInternalServerError, resp)
+		return
+	}
+
+	// 广播录制开始事件
+	GetSSEHub().BroadcastListChange(liveObj.GetLiveId(), "record_start", map[string]interface{}{
+		"live_id": string(liveObj.GetLiveId()),
+	})
+
+	writeJSON(writer, parseInfo(r.Context(), liveObj))
+}
+
+// stopRecordDirect 直接停止录制
+func stopRecordDirect(writer http.ResponseWriter, r *http.Request) {
+	inst := instance.GetInstance(r.Context())
+	vars := mux.Vars(r)
+	resp := commonResp{}
+
+	liveObj, ok := inst.Lives.Get(types.LiveID(vars["id"]))
+	if !ok {
+		resp.ErrNo = http.StatusNotFound
+		resp.ErrMsg = fmt.Sprintf("live id: %s can not find", vars["id"])
+		writeJsonWithStatusCode(writer, http.StatusNotFound, resp)
+		return
+	}
+
+	recorderMgr, ok := inst.RecorderManager.(recorders.Manager)
+	if !ok {
+		resp.ErrNo = http.StatusInternalServerError
+		resp.ErrMsg = "录制管理器不可用"
+		writeJsonWithStatusCode(writer, http.StatusInternalServerError, resp)
+		return
+	}
+
+	if !recorderMgr.HasRecorder(inst.Ctx, liveObj.GetLiveId()) {
+		resp.ErrNo = http.StatusNotFound
+		resp.ErrMsg = "该直播间未在录制中"
+		writeJsonWithStatusCode(writer, http.StatusNotFound, resp)
+		return
+	}
+
+	if err := recorderMgr.RemoveRecorder(inst.Ctx, liveObj.GetLiveId()); err != nil {
+		resp.ErrNo = http.StatusInternalServerError
+		resp.ErrMsg = fmt.Sprintf("停止录制失败: %s", err.Error())
+		writeJsonWithStatusCode(writer, http.StatusInternalServerError, resp)
+		return
+	}
+
+	// 广播录制停止事件
+	GetSSEHub().BroadcastListChange(liveObj.GetLiveId(), "record_stop", map[string]interface{}{
+		"live_id": string(liveObj.GetLiveId()),
+	})
+
+	writeJSON(writer, parseInfo(r.Context(), liveObj))
 }

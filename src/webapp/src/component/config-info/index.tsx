@@ -1643,6 +1643,15 @@ export const RoomConfigForm: React.FC<{
       </ConfigField>
 
       <ConfigField
+        label="仅开播提醒"
+        description="开启后，直播开始时仅推送通知，不自动录制。开播后可手动点击【开始录制】按钮启动录制。注意：此模式下定时录制任务也会被跳过，如需定时录制请勿开启此选项"
+      >
+        <Form.Item name="notify_only" valuePropName="checked" noStyle>
+          <Switch />
+        </Form.Item>
+      </ConfigField>
+
+      <ConfigField
         label="录制质量"
         description="0表示原画"
         inheritance={{

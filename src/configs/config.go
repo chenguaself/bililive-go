@@ -850,6 +850,7 @@ type LiveRoom struct {
 	AudioOnly   bool         `yaml:"audio_only,omitempty" json:"audio_only,omitempty"`
 	NickName    string       `yaml:"nick_name,omitempty" json:"nick_name,omitempty"`
 	SchemeUrl   string       `yaml:"scheme" json:"scheme,omitempty"`
+	NotifyOnly  bool         `yaml:"notify_only,omitempty" json:"notify_only,omitempty"` // 仅开播提醒，不自动录制
 
 	// 房间级可覆盖配置
 	OverridableConfig `yaml:",inline" json:",inline"` // 房间级配置覆盖
