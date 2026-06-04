@@ -111,6 +111,7 @@ func SendNotification(logger *livelogger.LiveLogger, hostName, platform, liveURL
 				platform,
 				liveURL,
 				schemeUrl,
+				isNotifyOnly,
 			)
 		case consts.LiveStatusStop:
 			// 发送Ntfy停止录制通知
@@ -121,6 +122,7 @@ func SendNotification(logger *livelogger.LiveLogger, hostName, platform, liveURL
 				hostName,
 				platform,
 				liveURL,
+				isNotifyOnly,
 			)
 		}
 
@@ -144,6 +146,7 @@ func SendNotification(logger *livelogger.LiveLogger, hostName, platform, liveURL
 				hostName,
 				platform,
 				liveURL,
+				isNotifyOnly,
 			)
 		case consts.LiveStatusStop:
 			err = bark.SendStopMessage(
@@ -156,6 +159,7 @@ func SendNotification(logger *livelogger.LiveLogger, hostName, platform, liveURL
 				hostName,
 				platform,
 				liveURL,
+				isNotifyOnly,
 			)
 		}
 		if err != nil {
