@@ -77,8 +77,16 @@ func (l *listener) Close() {
 
 // sendLiveNotification 发送直播状态变更通知
 func (l *listener) sendLiveNotification(hostName, status string) {
+	// 检查是否为仅提醒模式
+	notifyOnly := false
+	if cfg := configs.GetCurrentConfig(); cfg != nil {
+		if room, err := cfg.GetLiveRoomByUrl(l.Live.GetRawUrl()); err == nil {
+			notifyOnly = room.NotifyOnly
+		}
+	}
+
 	// 发送通知
-	if err := notify.SendNotification(l.Live.GetLogger(), hostName, l.Live.GetPlatformCNName(), l.Live.GetRawUrl(), status); err != nil {
+	if err := notify.SendNotification(l.Live.GetLogger(), hostName, l.Live.GetPlatformCNName(), l.Live.GetRawUrl(), status, notifyOnly); err != nil {
 		l.Live.GetLogger().WithError(err).WithField("host", hostName).Error("failed to send notification")
 	}
 }

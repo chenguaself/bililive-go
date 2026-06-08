@@ -324,6 +324,9 @@ interface ItemData {
     tags: string[],
     listening: boolean
     roomId: string
+    notifyOnly: boolean
+    isLive: boolean
+    isRecording: boolean
 }
 interface CookieItemData {
     Platform_cn_name: string,
@@ -372,6 +375,9 @@ class LiveList extends React.Component<Props, IState> {
                     }
                     if (tag === '初始化') {
                         color = 'orange';
+                    }
+                    if (tag === '仅提醒') {
+                        color = 'purple';
                     }
 
                     return (
@@ -427,6 +433,46 @@ class LiveList extends React.Component<Props, IState> {
                     }}>
                     <Button type="link" size="small">{listening ? "停止监控" : "开启监控"}</Button>
                 </PopDialog>
+                {/* 仅提醒模式下的手动录制按钮 */}
+                {data.notifyOnly && data.isLive && !data.isRecording && (
+                    <>
+                        <Divider type="vertical" />
+                        <PopDialog
+                            title="确定开始录制？"
+                            onConfirm={(e) => {
+                                api.startRecordDirect(data.roomId)
+                                    .then(rsp => {
+                                        message.success('已开始录制');
+                                        this.refresh();
+                                    })
+                                    .catch(err => {
+                                        alert(`开始录制失败:\n${err}`);
+                                    });
+                            }}>
+                            <Button type="primary" size="small" danger>开始录制</Button>
+                        </PopDialog>
+                    </>
+                )}
+                {/* 仅提醒模式下的停止录制按钮 */}
+                {data.notifyOnly && data.isLive && data.isRecording && (
+                    <>
+                        <Divider type="vertical" />
+                        <PopDialog
+                            title="确定停止录制？"
+                            onConfirm={(e) => {
+                                api.stopRecordDirect(data.roomId)
+                                    .then(rsp => {
+                                        message.success('已停止录制');
+                                        this.refresh();
+                                    })
+                                    .catch(err => {
+                                        alert(`停止录制失败:\n${err}`);
+                                    });
+                            }}>
+                            <Button type="default" size="small">停止录制</Button>
+                        </PopDialog>
+                    </>
+                )}
                 <Divider type="vertical" />
                 <PopDialog title="确定删除当前直播间？"
                     onConfirm={(e) => {
@@ -904,6 +950,11 @@ class LiveList extends React.Component<Props, IState> {
                         tags.push('初始化')
                     }
 
+                    // 仅提醒模式标签
+                    if (item.notify_only === true) {
+                        tags.push('仅提醒')
+                    }
+
                     return {
                         key: index + 1,
                         name: item.nick_name || item.host_name,
@@ -915,7 +966,10 @@ class LiveList extends React.Component<Props, IState> {
                         address: item.platform_cn_name,
                         tags,
                         listening: item.listening,
-                        roomId: item.id
+                        roomId: item.id,
+                        notifyOnly: item.notify_only || false,
+                        isLive: item.status || false,
+                        isRecording: (item.recording || item.recording_preparing) || false,
                     };
                 });
             })
@@ -1863,6 +1917,8 @@ class LiveList extends React.Component<Props, IState> {
                                         await api.updateRoomConfigById(detail.live_id, updates);
                                         // 更新后重新加载详情以获取最新配置状态
                                         await this.loadRoomDetail(record.roomId);
+                                        // 立即刷新主列表以反映配置变更
+                                        this.requestListData();
                                     }}
                                     loading={false}
                                     onRefresh={() => this.loadRoomDetail(record.roomId)}
@@ -1893,7 +1949,7 @@ class LiveList extends React.Component<Props, IState> {
                 column.onFilter = (value: string | number | boolean, record: ItemData) => record.address === value;
             }
             if (column.key === 'tags') {
-                column.filters = ['初始化', '监控中', '录制中', '录制准备中', '已停止'].map(text => ({ text, value: text }));
+                column.filters = ['初始化', '监控中', '录制中', '录制准备中', '仅提醒', '已停止'].map(text => ({ text, value: text }));
                 column.onFilter = (value: string | number | boolean, record: ItemData) => record.tags.includes(value as string);
             }
         })
