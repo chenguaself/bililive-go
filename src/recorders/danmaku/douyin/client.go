@@ -167,7 +167,6 @@ func (c *DouyinClient) readLoopWithReconnect(ctx context.Context, realRoomID, tt
 		c.mu.Unlock()
 	}()
 
-	const maxReconnect = 5
 	reconnectCount := 0
 
 	for {
@@ -193,26 +192,20 @@ func (c *DouyinClient) readLoopWithReconnect(ctx context.Context, realRoomID, tt
 		}
 
 		reconnectCount++
-		if reconnectCount > maxReconnect {
-			c.logger.Errorf("重连 %d 次仍然失败，停止弹幕录制", maxReconnect)
-			c.mu.Lock()
-			c.running = false
-			c.closeOnce.Do(func() { close(c.done) })
-			if c.conn != nil {
-				c.conn.Close()
-			}
-			c.mu.Unlock()
-			return
-		}
 
-		c.logger.Warnf("连接断开，%d秒后第 %d 次重连...", 3*reconnectCount, reconnectCount)
+		// 指数退避，上限 60 秒
+		delay := 3 * reconnectCount
+		if delay > 60 {
+			delay = 60
+		}
+		c.logger.Warnf("连接断开，%d秒后第 %d 次重连...", delay, reconnectCount)
 
 		select {
 		case <-ctx.Done():
 			return
 		case <-c.done:
 			return
-		case <-time.After(time.Duration(3*reconnectCount) * time.Second):
+		case <-time.After(time.Duration(delay) * time.Second):
 		}
 
 		// 重新构建 URL 并连接
