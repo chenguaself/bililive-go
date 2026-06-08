@@ -88,6 +88,15 @@ type manager struct {
 func (m *manager) registryListener(ctx context.Context, ed events.Dispatcher) {
 	ed.AddEventListener(listeners.LiveStart, events.NewEventListener(func(event *events.Event) {
 		live := event.Object.(live.Live)
+
+		// 如果房间配置为仅提醒模式，跳过自动录制
+		if cfg := configs.GetCurrentConfig(); cfg != nil {
+			if room, err := cfg.GetLiveRoomByUrl(live.GetRawUrl()); err == nil && room.NotifyOnly {
+				live.GetLogger().Info("Room is notify-only, skipping auto-recording")
+				return
+			}
+		}
+
 		if err := m.AddRecorder(ctx, live); err != nil {
 			live.GetLogger().Errorf("failed to add recorder, err: %v", err)
 		}

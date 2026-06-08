@@ -65,6 +65,22 @@ class API {
     }
 
     /**
+     * 直接启动录制（绕过 Listener，适用于 NotifyOnly 房间）
+     * @param liveId 直播间ID
+     */
+    startRecordDirect(liveId: string) {
+        return utils.requestPost(`${BASE_URL}/lives/${liveId}/startRecord`, {});
+    }
+
+    /**
+     * 直接停止录制
+     * @param liveId 直播间ID
+     */
+    stopRecordDirect(liveId: string) {
+        return utils.requestPost(`${BASE_URL}/lives/${liveId}/stopRecord`, {});
+    }
+
+    /**
      * 保存设置至config文件
      */
     saveSettings() {

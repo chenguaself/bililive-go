@@ -10,7 +10,7 @@ import {
   BellOutlined, LinkOutlined, InfoCircleOutlined, SaveOutlined,
   ReloadOutlined, EditOutlined, DeleteOutlined,
   RightOutlined, PlusOutlined, WarningOutlined,
-  ExclamationCircleOutlined, MobileOutlined
+  ExclamationCircleOutlined, MobileOutlined, WechatOutlined
 } from '@ant-design/icons';
 import { useLocation, Link } from 'react-router-dom';
 import Editor from 'react-simple-code-editor';
@@ -982,6 +982,25 @@ const NotifySettings: React.FC<{
           </ConfigField>
         </Card>
 
+        {/* WxPusher 通知 */}
+        <Card title={<><WechatOutlined /> WxPusher 推送 (微信)</>} size="small" style={{ marginBottom: 16 }}>
+          <ConfigField label="启用" description="开启后会在直播开始/结束时发送 WxPusher 推送通知">
+            <Form.Item name={['wxpusher', 'enable']} valuePropName="checked" noStyle>
+              <Switch />
+            </Form.Item>
+          </ConfigField>
+          <ConfigField label="AppToken" description="在 WxPusher 后台获取的应用令牌（格式 AT_xxxx）">
+            <Form.Item name={['wxpusher', 'appToken']} noStyle>
+              <Input placeholder="AT_xxxx" style={{ width: 400 }} />
+            </Form.Item>
+          </ConfigField>
+          <ConfigField label="接收者 UID" description="接收消息的用户 UID 列表（格式 UID_xxxx，输入后按回车添加）">
+            <Form.Item name={['wxpusher', 'uids']} noStyle>
+              <Select mode="tags" placeholder="输入 UID 后按回车添加" style={{ width: 400 }} />
+            </Form.Item>
+          </ConfigField>
+        </Card>
+
         <div className="config-actions">
           <Button
             type="primary"
@@ -1638,6 +1657,15 @@ export const RoomConfigForm: React.FC<{
 
       <ConfigField label="启用监控">
         <Form.Item name="is_listening" valuePropName="checked" noStyle>
+          <Switch />
+        </Form.Item>
+      </ConfigField>
+
+      <ConfigField
+        label="仅开播提醒"
+        description="开启后，直播开始时仅推送通知，不自动录制。开播后可手动点击【开始录制】按钮启动录制。注意：此模式下定时录制任务也会被跳过，如需定时录制请勿开启此选项"
+      >
+        <Form.Item name="notify_only" valuePropName="checked" noStyle>
           <Switch />
         </Form.Item>
       </ConfigField>
