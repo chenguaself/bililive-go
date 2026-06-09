@@ -3,11 +3,11 @@ module github.com/bililive-go/bililive-go
 go 1.25
 
 require (
-	github.com/Akegarasu/blivedm-go v1.6.0
 	github.com/Masterminds/semver/v3 v3.4.0
 	github.com/Masterminds/sprig v2.22.0+incompatible
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/alecthomas/kingpin v2.2.7-0.20180312062423-a39589180ebd+incompatible
+	github.com/andybalholm/brotli v1.1.0
 	github.com/bluele/gcache v0.0.0-20190518031135-bc40bd653833
 	github.com/bluenviron/mediacommon/v2 v2.7.2
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
@@ -46,7 +46,6 @@ require (
 	github.com/Masterminds/semver v1.5.0 // indirect
 	github.com/alecthomas/template v0.0.0-20190718012654-fb15b899a751 // indirect
 	github.com/alecthomas/units v0.0.0-20190924025748-f65c72e2690d // indirect
-	github.com/andybalholm/brotli v1.1.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cilium/ebpf v0.11.0 // indirect

@@ -150,8 +150,14 @@ func scTierStyle(price int) string {
 }
 
 func (w *AssWriter) writeHeader() error {
-	opacity := *w.cfg.Opacity
-	outline := *w.cfg.Outline
+	opacity := 128 // default
+	if w.cfg.Opacity != nil {
+		opacity = *w.cfg.Opacity
+	}
+	outline := 1 // default
+	if w.cfg.Outline != nil {
+		outline = *w.cfg.Outline
+	}
 	assAlpha := 255 - opacity
 	backColor := fmt.Sprintf("&H%02X000000&", assAlpha)
 	guardBackColor := "&H800080FF"
