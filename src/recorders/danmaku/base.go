@@ -78,12 +78,12 @@ func (b *baseRecorder) addDanmaku(recvAt time.Time, username, content string, co
 }
 
 // addGift 礼物回调的通用处理。
-func (b *baseRecorder) addGift(recvAt time.Time, username, giftName string, num int) {
+func (b *baseRecorder) addGift(recvAt time.Time, username, giftName string, num int, price int, coinType string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !b.running || b.assWriter == nil {
 		return
 	}
-	b.assWriter.AddGift(recvAt, username, giftName, num)
+	b.assWriter.AddGift(recvAt, username, giftName, num, price, coinType)
 	b.count++
 }

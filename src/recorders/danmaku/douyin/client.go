@@ -320,9 +320,19 @@ func (c *DouyinClient) readLoop(ctx context.Context) error {
 
 		// 遍历消息
 		for _, msg := range resp.MessagesList {
-			c.handleMessage(msg)
+			c.handleMessageSafe(msg)
 		}
 	}
+}
+
+// handleMessageSafe 带 panic 恢复的消息处理
+func (c *DouyinClient) handleMessageSafe(msg *Message) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Errorf("消息处理 panic: %v", r)
+		}
+	}()
+	c.handleMessage(msg)
 }
 
 // handleMessage 处理单条消息

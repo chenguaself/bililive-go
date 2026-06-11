@@ -345,7 +345,7 @@ func (c *DouyuClient) readLoop(ctx context.Context) error {
 			txt := fields["txt"]
 			if nn != "" && txt != "" && c.onDanmaku != nil {
 				col := parseDouyuColor(fields["col"])
-				c.onDanmaku(nn, txt, col)
+				c.handleDanmakuSafe(nn, txt, col)
 			}
 		case "dgb":
 			if c.onGift != nil {
@@ -357,7 +357,7 @@ func (c *DouyuClient) readLoop(ctx context.Context) error {
 					if n, err := strconv.Atoi(gfcnt); err == nil && n > 0 {
 						num = n
 					}
-					c.onGift(nn, gfn, num)
+					c.handleGiftSafe(nn, gfn, num)
 				}
 			}
 		case "pingreq":
@@ -539,4 +539,24 @@ func parseDouyuColor(col string) int {
 	default: // white  #FFFFFF
 		return 16777215
 	}
+}
+
+// handleDanmakuSafe 带 panic 恢复的弹幕处理
+func (c *DouyuClient) handleDanmakuSafe(username, content string, color int) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Errorf("弹幕处理 panic: %v", r)
+		}
+	}()
+	c.onDanmaku(username, content, color)
+}
+
+// handleGiftSafe 带 panic 恢复的礼物处理
+func (c *DouyuClient) handleGiftSafe(username, giftName string, num int) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Errorf("礼物处理 panic: %v", r)
+		}
+	}()
+	c.onGift(username, giftName, num)
 }

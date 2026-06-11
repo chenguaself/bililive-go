@@ -58,7 +58,7 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 	if d.cfg.RecordGift != nil && *d.cfg.RecordGift {
 		c.OnGift(func(msg bilibili.GiftMsg) {
 			if msg.Num > 0 {
-				d.addGift(time.Now(), msg.Uname, msg.GiftName, msg.Num)
+				d.addGift(time.Now(), msg.Uname, msg.GiftName, msg.Num, msg.Price, msg.CoinType)
 			}
 		})
 	}
@@ -70,7 +70,7 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 				d.mu.Unlock()
 				return
 			}
-			d.assWriter.AddGuard(time.Now(), msg.Username, msg.GiftName)
+			d.assWriter.AddGuard(time.Now(), msg.Username, msg.GiftName, msg.Price)
 			d.count++
 			d.mu.Unlock()
 		})

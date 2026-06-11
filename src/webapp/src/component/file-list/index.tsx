@@ -451,7 +451,7 @@ const FileList: React.FC = () => {
     const [currentPlayingName, setCurrentPlayingName] = useState("");
     const artRef = useRef<Artplayer | null>(null);
     const danmakuRef = useRef<DanmakuRenderer | null>(null);
-    const [danmakuStats, setDanmakuStats] = useState<{ danmaku: number; gift: number; guard: number; sc: number; scAmount: number } | null>(null);
+    const [danmakuStats, setDanmakuStats] = useState<{ danmaku: number; gift: number; giftAmount: number; guard: number; guardAmount: number; sc: number; scAmount: number; totalIncome: number } | null>(null);
     const playerInitRef = useRef(false); // 跟踪播放器是否应该激活
     const [loadDanmaku, setLoadDanmaku] = useState(true); // 是否加载 ASS 弹幕
     const [filterDanmaku, setFilterDanmaku] = useState(true);
@@ -606,18 +606,27 @@ const FileList: React.FC = () => {
                 parsedItemsRef.current = { items, scrollTime };
 
                 // 统计弹幕类型
-                let danmakuCount = 0, giftCount = 0, guardCount = 0, scCount = 0, scAmount = 0;
+                let danmakuCount = 0, giftCount = 0, giftAmount = 0, guardCount = 0, guardAmount = 0, scCount = 0, scAmount = 0;
                 for (const item of items) {
                     if (item.style === 'Danmaku') danmakuCount++;
-                    else if (item.style === 'Gift') giftCount++;
-                    else if (item.style === 'Guard') guardCount++;
+                    else if (item.style === 'Gift') {
+                        giftCount++;
+                        const m = item.text.match(/\[礼物 ¥([\d.]+)\]/);
+                        if (m) giftAmount += parseFloat(m[1]);
+                    }
+                    else if (item.style === 'Guard') {
+                        guardCount++;
+                        const m = item.text.match(/\[.+¥(\d+)\]( .+ 开通了)? \S+/);
+                        if (m) guardAmount += parseInt(m[1]);
+                    }
                     else if (item.style.startsWith('SC')) {
                         scCount++;
                         const m = item.text.match(/\[SC ¥(\d+)\]/);
                         if (m) scAmount += parseInt(m[1]);
                     }
                 }
-                setDanmakuStats({ danmaku: danmakuCount, gift: giftCount, guard: guardCount, sc: scCount, scAmount });
+                const totalIncome = Math.round((giftAmount + guardAmount + scAmount) * 10) / 10;
+                setDanmakuStats({ danmaku: danmakuCount, gift: giftCount, giftAmount, guard: guardCount, guardAmount, sc: scCount, scAmount, totalIncome });
 
                 const artContainer = document.getElementById('art-container');
                 if (!artContainer) return;
@@ -968,11 +977,19 @@ const FileList: React.FC = () => {
                                 const { items, scrollTime } = parseAss(text);
                                 if (items.length === 0) return;
                                 parsedItemsRef.current = { items, scrollTime };
-                                let danmakuCount = 0, giftCount = 0, guardCount = 0, scCount = 0, scAmount = 0;
+                                let danmakuCount = 0, giftCount = 0, giftAmount = 0, guardCount = 0, guardAmount = 0, scCount = 0, scAmount = 0;
                                 for (const item of items) {
                                     if (item.style === 'Danmaku') danmakuCount++;
-                                    else if (item.style === 'Gift') giftCount++;
-                                    else if (item.style === 'Guard') guardCount++;
+                                    else if (item.style === 'Gift') {
+                                        giftCount++;
+                                        const m = item.text.match(/\[礼物 ¥([\d.]+)\]/);
+                                        if (m) giftAmount += parseFloat(m[1]);
+                                    }
+                                    else if (item.style === 'Guard') {
+                                        guardCount++;
+                                        const m = item.text.match(/\[.+¥(\d+)\]( .+ 开通了)? \S+/);
+                                        if (m) guardAmount += parseInt(m[1]);
+                                    }
                                     else if (item.style.startsWith('SC')) {
                                         scCount++;
                                         // 从文本中提取金额: [SC ¥100] ...
@@ -980,7 +997,8 @@ const FileList: React.FC = () => {
                                         if (m) scAmount += parseInt(m[1]);
                                     }
                                 }
-                                setDanmakuStats({ danmaku: danmakuCount, gift: giftCount, guard: guardCount, sc: scCount, scAmount });
+                                const totalIncome = Math.round((giftAmount + guardAmount + scAmount) * 10) / 10;
+                                setDanmakuStats({ danmaku: danmakuCount, gift: giftCount, giftAmount, guard: guardCount, guardAmount, sc: scCount, scAmount, totalIncome });
 
                                 // 找到 Artplayer 内部容器，将覆盖层插入其中（和 video 同级）
                                 const artContainer = document.getElementById('art-container');
@@ -1214,6 +1232,7 @@ const FileList: React.FC = () => {
                         <span className="stat-item" style={{ opacity: filterGift ? 1 : 0.4 }}>
                             <span className="stat-icon" style={{ color: '#faad14' }}>🎁</span>
                             礼物 <b>{danmakuStats.gift}</b>
+                            {danmakuStats.giftAmount > 0 && <span className="stat-amount"> ¥{danmakuStats.giftAmount % 1 === 0 ? danmakuStats.giftAmount : danmakuStats.giftAmount.toFixed(1)}</span>}
                         </span>
                         <span className="stat-item" style={{ opacity: filterSC ? 1 : 0.4 }}>
                             <span className="stat-icon" style={{ color: '#ff6a39' }}>💰</span>
@@ -1223,7 +1242,14 @@ const FileList: React.FC = () => {
                         <span className="stat-item" style={{ opacity: filterGuard ? 1 : 0.4 }}>
                             <span className="stat-icon" style={{ color: '#ff8c00' }}>⚓</span>
                             上舰 <b>{danmakuStats.guard}</b>
+                            {danmakuStats.guardAmount > 0 && <span className="stat-amount"> ¥{danmakuStats.guardAmount}</span>}
                         </span>
+                        {danmakuStats.totalIncome > 0 && (
+                            <span className="stat-item" style={{ fontWeight: 600 }}>
+                                <span className="stat-icon" style={{ color: '#52c41a' }}>💵</span>
+                                总收入 <b>¥{danmakuStats.totalIncome % 1 === 0 ? danmakuStats.totalIncome : danmakuStats.totalIncome.toFixed(1)}</b>
+                            </span>
+                        )}
                     </div>
                 )}
             </div>
