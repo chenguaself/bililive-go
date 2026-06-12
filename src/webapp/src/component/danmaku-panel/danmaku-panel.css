@@ -1,0 +1,319 @@
+.dm-panel {
+  position: relative;
+  padding: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+/* 操作栏 */
+.dm-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  flex-shrink: 0;
+  background: #1a1a1a;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  gap: 12px;
+}
+
+/* 筛选按钮组 */
+.dm-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dm-filter-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 16px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.dm-filter-chip:hover {
+  color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.dm-filter-chip.active {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--chip-color, rgba(255, 255, 255, 0.2));
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.05);
+}
+
+.dm-filter-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.2);
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.dm-filter-chip.active .dm-filter-dot {
+  box-shadow: 0 0 6px currentColor;
+}
+
+.dm-filter-label {
+  line-height: 1;
+}
+
+.dm-filter-count {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.4);
+  line-height: 1;
+  min-width: 16px;
+  text-align: center;
+}
+
+.dm-filter-chip.active .dm-filter-count {
+  background: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* 右侧操作 */
+.dm-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 自动滚动开关 */
+.dm-scroll-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 14px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  user-select: none;
+  border: 1px solid;
+}
+
+.dm-scroll-toggle.on {
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.1);
+  border-color: rgba(74, 222, 128, 0.25);
+}
+
+.dm-scroll-toggle.off {
+  color: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.dm-scroll-toggle:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* 弹幕列表容器 */
+.dm-list-container {
+  height: 360px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: #000;
+  width: 0;
+  min-width: 100%;
+}
+
+/* 弹幕项 */
+.dm-item {
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  box-sizing: border-box;
+  transition: background 0.15s ease;
+}
+
+.dm-item:hover {
+  z-index: 11;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.dm-line {
+  font-size: 13px;
+  line-height: 32px;
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  min-width: 0;
+  padding: 2px 8px;
+  border-radius: 6px;
+  gap: 0;
+  width: 100%;
+}
+
+/* 弹幕类型样式 */
+.dm-danmaku {
+  background: transparent;
+}
+
+.dm-gift {
+  background: linear-gradient(90deg, rgba(250, 173, 20, 0.12), transparent);
+  border-left: 3px solid #ffc53d;
+  margin-left: -14px;
+  padding-left: 17px;
+}
+
+.dm-super-chat {
+  background: linear-gradient(90deg, rgba(250, 140, 22, 0.15), transparent);
+  border-left: 3px solid #ff9c6e;
+  margin-left: -14px;
+  padding-left: 17px;
+}
+
+.dm-guard {
+  background: linear-gradient(90deg, rgba(179, 127, 235, 0.12), transparent);
+  border-left: 3px solid #b37feb;
+  margin-left: -14px;
+  padding-left: 17px;
+}
+
+/* 时间戳 */
+.dm-time {
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 11px;
+  margin-right: 8px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  flex-shrink: 0;
+}
+
+/* 用户名 */
+.dm-username {
+  color: #60a5fa;
+  font-weight: 600;
+  margin-right: 2px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.dm-colon {
+  color: rgba(255, 255, 255, 0.2);
+  margin-right: 2px;
+  flex-shrink: 0;
+}
+
+/* 弹幕内容 */
+.dm-content {
+  color: rgba(255, 255, 255, 0.9);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm-item:hover .dm-content {
+  white-space: normal;
+  word-break: break-all;
+  overflow: visible;
+}
+
+/* 价格 */
+.dm-price {
+  color: #fbbf24;
+  font-weight: 600;
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+
+/* Tag 样式 */
+.dm-line .ant-tag {
+  border: none;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 6px;
+  margin-right: 4px;
+  border-radius: 4px;
+}
+
+.dm-gift .ant-tag-gold {
+  background: rgba(250, 173, 20, 0.2);
+  color: #fbbf24;
+}
+
+.dm-super-chat .ant-tag-orange {
+  background: rgba(250, 140, 22, 0.2);
+  color: #fb923c;
+}
+
+.dm-guard .ant-tag-purple {
+  background: rgba(179, 127, 235, 0.2);
+  color: #c084fc;
+}
+
+/* 空状态 */
+.dm-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: rgba(255, 255, 255, 0.2);
+  font-size: 14px;
+  gap: 8px;
+}
+
+/* 状态栏 */
+.dm-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: #1a1a1a;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.3);
+  flex-shrink: 0;
+}
+
+.dm-limit-hint {
+  color: #fbbf24;
+}
+
+.dm-autoscroll-hint {
+  color: #4ade80;
+  margin-left: auto;
+}
+
+/* 滚动条 */
+.dm-list-container::-webkit-scrollbar {
+  width: 5px;
+}
+
+.dm-list-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.dm-list-container::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+
+.dm-list-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}

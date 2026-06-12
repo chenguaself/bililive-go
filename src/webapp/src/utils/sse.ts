@@ -15,7 +15,8 @@ export type SSEEventType =
   | 'update_available'
   | 'update_downloading'
   | 'update_ready'
-  | 'update_error';
+  | 'update_error'
+  | 'danmaku';
 
 // SSE 消息结构
 export interface SSEMessage {
@@ -137,6 +138,11 @@ class SSEManager {
       // 监听 update_error 事件（更新错误）
       this.eventSource.addEventListener('update_error', (event: MessageEvent) => {
         this.handleMessage('update_error', event.data);
+      });
+
+      // 监听 danmaku 事件（弹幕实时推送）
+      this.eventSource.addEventListener('danmaku', (event: MessageEvent) => {
+        this.handleMessage('danmaku', event.data);
       });
 
     } catch (error) {

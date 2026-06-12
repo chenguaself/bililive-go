@@ -65,27 +65,13 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 
 	if d.cfg.RecordGuard != nil && *d.cfg.RecordGuard {
 		c.OnGuardBuy(func(msg bilibili.GuardBuyMsg) {
-			d.mu.Lock()
-			if !d.running || d.assWriter == nil {
-				d.mu.Unlock()
-				return
-			}
-			d.assWriter.AddGuard(time.Now(), msg.Username, msg.GiftName, msg.Price)
-			d.count++
-			d.mu.Unlock()
+			d.addGuard(time.Now(), msg.Username, msg.GiftName, msg.Price)
 		})
 	}
 
 	if d.cfg.RecordSuperChat != nil && *d.cfg.RecordSuperChat {
 		c.OnSuperChat(func(msg bilibili.SuperChatMsg) {
-			d.mu.Lock()
-			if !d.running || d.assWriter == nil {
-				d.mu.Unlock()
-				return
-			}
-			d.assWriter.AddSuperChat(time.Now(), msg.Uname, msg.Message, msg.Price)
-			d.count++
-			d.mu.Unlock()
+			d.addSuperChat(time.Now(), msg.Uname, msg.Message, msg.Price)
 		})
 	}
 

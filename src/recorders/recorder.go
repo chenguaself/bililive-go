@@ -251,6 +251,7 @@ type danmakuRecorder interface {
 	GetCount() int
 	IsRunning() bool
 	GetStatus() map[string]interface{}
+	SetBroadcastCallback(cb danmaku.DanmakuBroadcastCallback)
 }
 
 // 编译期接口断言
@@ -769,6 +770,14 @@ func (r *recorder) startDanmakuRecorder(ctx context.Context, fileName, platform 
 	if dmErr := rec.Start(ctx); dmErr != nil {
 		r.getLogger().WithError(dmErr).Warn("弹幕录制启动失败，继续录制视频")
 		return
+	}
+
+	// 设置弹幕广播回调，将消息通过 SSE 推送到前端
+	if broadcastDanmakuFunc != nil {
+		liveId := r.Live.GetLiveId()
+		rec.SetBroadcastCallback(func(msgType, username, content string, extra map[string]interface{}) {
+			broadcastDanmakuFunc(liveId, msgType, username, content, extra)
+		})
 	}
 
 	r.currentFileLock.Lock()

@@ -357,6 +357,21 @@ func setupRecorderStatusBroadcast() {
 		GetSSEHub().BroadcastRecorderStatus(liveId, status)
 	})
 
+	// 设置弹幕广播回调，让 recorders 包能够将弹幕消息推送到 SSE
+	recorders.SetBroadcastDanmakuFunc(func(liveId types.LiveID, msgType, username, content string, extra map[string]interface{}) {
+		GetSSEHub().BroadcastDanmaku(liveId, map[string]interface{}{
+			"type":       msgType,
+			"username":   username,
+			"content":    content,
+			"color":      extra["color"],
+			"timestamp":  extra["timestamp"],
+			"gift_name":  extra["gift_name"],
+			"num":        extra["num"],
+			"price":      extra["price"],
+			"coin_type":  extra["coin_type"],
+		})
+	})
+
 	// 设置录制结束回调，用于触发优雅更新检查
 	recorders.SetOnRecordingEndFunc(func(ctx context.Context) {
 		// 延迟一小段时间，确保录制器已完全关闭
