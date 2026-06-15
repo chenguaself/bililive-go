@@ -408,16 +408,19 @@ func startScheduler() {
 		bind = ":8080"
 	}
 	// Extract port from bind address (":8080" → "8080", "0.0.0.0:8080" → "8080")
-	_, port, err := net.SplitHostPort(bind)
+	host, port, err := net.SplitHostPort(bind)
 	if err != nil {
 		// Fallback: try treating bind as ":port"
-		_, port, err = net.SplitHostPort(":" + bind)
+		host, port, err = net.SplitHostPort(":" + bind)
 		if err != nil {
 			blog.GetLogger().WithError(err).Errorln("Failed to parse RPC bind address for scheduler")
 			return
 		}
 	}
-	apiURL := "http://localhost:" + port
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "localhost"
+	}
+	apiURL := "http://" + host + ":" + port
 	dbPath := filepath.Join(cfg.AppDataPath, "db", "scheduler.db")
 
 	// Clean up stale port file from previous run
