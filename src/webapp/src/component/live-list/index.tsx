@@ -347,6 +347,10 @@ class LiveList extends React.Component<Props, IState> {
     //子控件
     child!: AddRoomDialog;
 
+    //弹幕批量缓冲（高频场景优化）
+    private danmakuBuffer: { [roomId: string]: DanmakuMessage[] } = {};
+    private danmakuFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
     //cookie开窗
     cookieChild!: EditCookieDialog;
 
@@ -867,6 +871,12 @@ class LiveList extends React.Component<Props, IState> {
         //clear refresh timer
         clearInterval(this.timer);
         clearInterval(this.countdownTimer);
+        // 清理弹幕批量缓冲
+        if (this.danmakuFlushTimer) {
+            clearTimeout(this.danmakuFlushTimer);
+            this.danmakuFlushTimer = null;
+        }
+        this.danmakuBuffer = {};
 
         // 移除localStorage设置变化监听
         window.removeEventListener('localSettingsChanged', this.handleLocalSettingsChange as EventListener);
@@ -1089,6 +1099,8 @@ class LiveList extends React.Component<Props, IState> {
                 delete newRefreshStatus[roomId];
                 delete newDanmakuMessages[roomId];
                 delete newActiveTabs[roomId];
+                // 清理弹幕缓冲
+                delete this.danmakuBuffer[roomId];
                 return {
                     expandedRowKeys: prevState.expandedRowKeys.filter(key => key !== roomId),
                     sseSubscriptions: newSubscriptions,
@@ -1193,24 +1205,41 @@ class LiveList extends React.Component<Props, IState> {
                 break;
 
             case 'danmaku':
-                // 只在"实时弹幕"Tab 激活时累积消息，避免无谓的 setState 和内存消耗
+                // 只在"实时弹幕"Tab 激活时累积消息
                 if (this.state.expandedActiveTabs[roomId] === 'danmaku' &&
                     message.data && message.data.type && message.data.username && message.data.timestamp) {
-                    this.setState(prevState => {
-                        const current = prevState.danmakuMessages[roomId] || [];
-                        const newMsg = message.data as DanmakuMessage;
-                        const updated = [...current, newMsg].slice(-500);
-                        return {
-                            ...prevState,
-                            danmakuMessages: {
-                                ...prevState.danmakuMessages,
-                                [roomId]: updated
-                            }
-                        };
-                    });
+                    // 写入缓冲区，不立即 setState
+                    if (!this.danmakuBuffer[roomId]) {
+                        this.danmakuBuffer[roomId] = [];
+                    }
+                    this.danmakuBuffer[roomId].push(message.data as DanmakuMessage);
+                    // 启动 flush 定时器（如果还没启动）
+                    if (!this.danmakuFlushTimer) {
+                        this.danmakuFlushTimer = setTimeout(() => this.flushDanmakuBuffer(), 100);
+                    }
                 }
                 break;
         }
+    }
+
+    // 批量 flush 弹幕缓冲到 state（每 100ms 最多一次 setState）
+    flushDanmakuBuffer = () => {
+        this.danmakuFlushTimer = null;
+        const entries = Object.entries(this.danmakuBuffer);
+        if (entries.length === 0) return;
+
+        // 清空缓冲区
+        this.danmakuBuffer = {};
+
+        this.setState(prevState => {
+            const newMsgs = { ...prevState.danmakuMessages };
+            for (const [roomId, msgs] of entries) {
+                if (prevState.expandedActiveTabs[roomId] !== 'danmaku') continue;
+                const current = newMsgs[roomId] || [];
+                newMsgs[roomId] = [...current, ...msgs].slice(-500);
+            }
+            return { danmakuMessages: newMsgs };
+        });
     }
 
     loadRoomDetail = (roomId: string) => {

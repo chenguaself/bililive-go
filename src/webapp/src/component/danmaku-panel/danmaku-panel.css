@@ -76,21 +76,7 @@
   line-height: 1;
 }
 
-.dm-filter-count {
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.4);
-  line-height: 1;
-  min-width: 16px;
-  text-align: center;
-}
 
-.dm-filter-chip.active .dm-filter-count {
-  background: rgba(255, 255, 255, 0.15);
-  color: rgba(255, 255, 255, 0.7);
-}
 
 /* 右侧操作 */
 .dm-actions {
@@ -227,12 +213,6 @@
   white-space: nowrap;
 }
 
-.dm-item:hover .dm-content {
-  white-space: normal;
-  word-break: break-all;
-  overflow: visible;
-}
-
 /* 价格 */
 .dm-price {
   color: #fbbf24;
@@ -316,4 +296,17 @@
 
 .dm-list-container::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.25);
+}
+
+/* Tooltip 暗色适配 */
+.dm-tooltip .ant-tooltip-inner {
+  background: rgba(0, 0, 0, 0.85);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+  max-width: 400px;
+  word-break: break-all;
+}
+
+.dm-tooltip .ant-tooltip-arrow::before {
+  background: rgba(0, 0, 0, 0.85);
 }

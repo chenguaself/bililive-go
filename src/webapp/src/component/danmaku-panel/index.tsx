@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Tag } from 'antd';
+import { Tag, Tooltip } from 'antd';
 import {
   VerticalAlignBottomOutlined
 } from '@ant-design/icons';
@@ -36,7 +36,6 @@ const FILTER_TYPES: { key: DanmakuMessage['type']; label: string; color: string 
 
 const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
   const [autoScroll, setAutoScroll] = useState(true);
-  const [displayMessages, setDisplayMessages] = useState<DanmakuMessage[]>([]);
   const [activeFilters, setActiveFilters] = useState<Set<DanmakuMessage['type']>>(
     () => new Set(FILTER_TYPES.map(f => f.key))
   );
@@ -45,8 +44,10 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
   const [containerHeight, setContainerHeight] = useState(300);
 
   const listContainerRef = useRef<HTMLDivElement>(null);
-  const lastMessagesLengthRef = useRef(0);
   const autoScrollEnabledRef = useRef(true);
+
+  // 直接派生，避免 useState + useEffect 的多余渲染
+  const displayMessages = useMemo(() => messages.slice(-MAX_MESSAGES), [messages]);
 
   // 切换过滤类型
   const toggleFilter = useCallback((type: DanmakuMessage['type']) => {
@@ -68,11 +69,6 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
     if (activeFilters.size === FILTER_TYPES.length) return displayMessages;
     return displayMessages.filter(msg => activeFilters.has(msg.type));
   }, [displayMessages, activeFilters]);
-
-  useEffect(() => {
-    setDisplayMessages(messages.slice(-MAX_MESSAGES));
-    lastMessagesLengthRef.current = messages.length;
-  }, [messages]);
 
   useEffect(() => {
     if (autoScroll && autoScrollEnabledRef.current && listContainerRef.current) {
@@ -144,9 +140,11 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
             <span className="dm-time">{timeStr}</span>
             <span className="dm-username">{msg.username}</span>
             <span className="dm-colon">: </span>
-            <span className="dm-content" style={msg.color ? { color: `#${msg.color.toString(16).padStart(6, '0')}` } : undefined}>
-              {msg.content}
-            </span>
+            <Tooltip title={msg.content} placement="topLeft" overlayClassName="dm-tooltip">
+              <span className="dm-content" style={msg.color ? { color: `#${msg.color.toString(16).padStart(6, '0')}` } : undefined}>
+                {msg.content}
+              </span>
+            </Tooltip>
           </span>
         );
       case 'gift': {
@@ -203,7 +201,6 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
         <div className="dm-filter-group">
           {FILTER_TYPES.map(f => {
             const isActive = activeFilters.has(f.key);
-            const count = displayMessages.filter(m => m.type === f.key).length;
             return (
               <div
                 key={f.key}
@@ -213,7 +210,6 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
               >
                 <span className="dm-filter-dot" style={{ background: isActive ? f.color : undefined }} />
                 <span className="dm-filter-label">{f.label}</span>
-                {count > 0 && <span className="dm-filter-count">{count > 999 ? '999+' : count}</span>}
               </div>
             );
           })}
@@ -232,8 +228,8 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
       <div ref={listContainerRef} className="dm-list-container" onScroll={handleScroll}>
         <div style={{ height: totalHeight, position: 'relative' }}>
           <div style={{ transform: `translateY(${offsetY}px)` }}>
-            {visibleMessages.map((msg, idx) => (
-              <div key={`${msg.timestamp}-${msg.username}-${msg.type}-${startIndex + idx}`} className="dm-item" style={{ height: ITEM_HEIGHT }}>
+            {visibleMessages.map((msg) => (
+              <div key={`${msg.timestamp}-${msg.username}-${msg.type}`} className="dm-item" style={{ height: ITEM_HEIGHT }}>
                 {renderMessage(msg)}
               </div>
             ))}
