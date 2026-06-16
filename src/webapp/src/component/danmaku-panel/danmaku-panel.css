@@ -11,8 +11,8 @@
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 }
 
-/* 操作栏 */
-.dm-filter-bar {
+/* 顶部栏：筛选 + 统计 */
+.dm-top-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -21,6 +21,7 @@
   background: #1a1a1a;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 /* 筛选按钮组 */
@@ -33,50 +34,77 @@
 .dm-filter-chip {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
-  border-radius: 16px;
+  gap: 5px;
+  padding: 2px 4px;
+  border-radius: 4px;
   cursor: pointer;
   font-size: 12px;
   font-weight: 500;
   color: rgba(255, 255, 255, 0.35);
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: transparent;
+  border: none;
   transition: all 0.2s ease;
   user-select: none;
 }
 
 .dm-filter-chip:hover {
   color: rgba(255, 255, 255, 0.6);
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.15);
 }
 
 .dm-filter-chip.active {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.1);
-  border-color: var(--chip-color, rgba(255, 255, 255, 0.2));
-  box-shadow: 0 0 8px rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.85);
 }
 
-.dm-filter-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.2);
+/* 复选框 */
+.dm-filter-checkbox {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1.5px solid rgba(255, 255, 255, 0.2);
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   transition: all 0.2s ease;
+  background: transparent;
 }
 
-.dm-filter-chip.active .dm-filter-dot {
-  box-shadow: 0 0 6px currentColor;
+.dm-filter-chip.active .dm-filter-checkbox {
+  border-color: var(--chip-color, #69b1ff);
+  background: var(--chip-color, #69b1ff);
 }
 
 .dm-filter-label {
   line-height: 1;
 }
 
+/* 统计区 */
+.dm-stats {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
 
+.dm-stat-count {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.dm-stat-count strong {
+  color: rgba(255, 255, 255, 0.85);
+  font-weight: 600;
+}
+
+.dm-stat-amount {
+  font-size: 12px;
+  font-weight: 600;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.1);
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(251, 191, 36, 0.2);
+}
 
 /* 右侧操作 */
 .dm-actions {
@@ -119,7 +147,7 @@
 
 /* 弹幕列表容器 */
 .dm-list-container {
-  height: 360px;
+  height: 480px;
   overflow-y: auto;
   overflow-x: hidden;
   background: #000;
@@ -152,6 +180,7 @@
   border-radius: 6px;
   gap: 0;
   width: 100%;
+  color: rgba(255, 255, 255, 0.9);
 }
 
 /* 弹幕类型样式 */
@@ -160,24 +189,15 @@
 }
 
 .dm-gift {
-  background: linear-gradient(90deg, rgba(250, 173, 20, 0.12), transparent);
-  border-left: 3px solid #ffc53d;
-  margin-left: -14px;
-  padding-left: 17px;
+  background: transparent;
 }
 
 .dm-super-chat {
-  background: linear-gradient(90deg, rgba(250, 140, 22, 0.15), transparent);
-  border-left: 3px solid #ff9c6e;
-  margin-left: -14px;
-  padding-left: 17px;
+  background: transparent;
 }
 
 .dm-guard {
-  background: linear-gradient(90deg, rgba(179, 127, 235, 0.12), transparent);
-  border-left: 3px solid #b37feb;
-  margin-left: -14px;
-  padding-left: 17px;
+  background: transparent;
 }
 
 /* 时间戳 */
@@ -213,15 +233,41 @@
   white-space: nowrap;
 }
 
-/* 价格 */
-.dm-price {
-  color: #fbbf24;
+/* 礼物/SC/舰长消息文字颜色 */
+
+/* 价格徽章 */
+.dm-price-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
   font-weight: 600;
-  margin-left: 4px;
+  line-height: 18px;
+  padding: 0 6px;
+  border-radius: 4px;
+  margin-right: 4px;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
-/* Tag 样式 */
+.dm-price-badge.gift-price {
+  background: rgba(239, 68, 68, 0.25);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.dm-price-badge.sc-price {
+  background: rgba(251, 146, 60, 0.25);
+  color: #fdba74;
+  border: 1px solid rgba(251, 146, 60, 0.3);
+}
+
+.dm-price-badge.guard-price {
+  background: rgba(168, 85, 247, 0.25);
+  color: #d8b4fe;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+/* Tag 样式（保留兼容） */
 .dm-line .ant-tag {
   border: none;
   font-size: 11px;
@@ -232,17 +278,17 @@
 }
 
 .dm-gift .ant-tag-gold {
-  background: rgba(250, 173, 20, 0.2);
+  background: rgba(250, 173, 20, 0.35);
   color: #fbbf24;
 }
 
 .dm-super-chat .ant-tag-orange {
-  background: rgba(250, 140, 22, 0.2);
+  background: rgba(250, 140, 22, 0.35);
   color: #fb923c;
 }
 
 .dm-guard .ant-tag-purple {
-  background: rgba(179, 127, 235, 0.2);
+  background: rgba(179, 127, 235, 0.35);
   color: #c084fc;
 }
 

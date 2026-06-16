@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Tag, Tooltip } from 'antd';
+import { Tooltip } from 'antd';
 import {
   VerticalAlignBottomOutlined
 } from '@ant-design/icons';
@@ -46,15 +46,29 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
   const listContainerRef = useRef<HTMLDivElement>(null);
   const autoScrollEnabledRef = useRef(true);
 
-  // 直接派生，避免 useState + useEffect 的多余渲染
   const displayMessages = useMemo(() => messages.slice(-MAX_MESSAGES), [messages]);
 
-  // 切换过滤类型
+  // 统计：总条数 + 礼物总金额
+  const stats = useMemo(() => {
+    let totalCount = 0;
+    let totalAmount = 0;
+    for (const msg of displayMessages) {
+      totalCount++;
+      if (msg.type === 'gift' && msg.coin_type === 'gold' && msg.price && msg.price > 0) {
+        totalAmount += msg.price * (msg.num || 1) / 1000;
+      } else if (msg.type === 'super_chat' && msg.price && msg.price > 0) {
+        totalAmount += msg.price;
+      } else if (msg.type === 'guard' && msg.price && msg.price > 0) {
+        totalAmount += msg.price / 1000;
+      }
+    }
+    return { totalCount, totalAmount };
+  }, [displayMessages]);
+
   const toggleFilter = useCallback((type: DanmakuMessage['type']) => {
     setActiveFilters(prev => {
       const next = new Set(prev);
       if (next.has(type)) {
-        // 如果只剩一个，不允许取消
         if (next.size <= 1) return prev;
         next.delete(type);
       } else {
@@ -64,7 +78,6 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
     });
   }, []);
 
-  // 过滤后的消息
   const filteredMessages = useMemo(() => {
     if (activeFilters.size === FILTER_TYPES.length) return displayMessages;
     return displayMessages.filter(msg => activeFilters.has(msg.type));
@@ -76,7 +89,6 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
     }
   }, [filteredMessages, autoScroll]);
 
-  // 容器高度监听
   useEffect(() => {
     const el = listContainerRef.current;
     if (!el) return;
@@ -106,7 +118,6 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
     }
   }, [autoScroll]);
 
-  // 虚拟列表
   const totalHeight = filteredMessages.length * ITEM_HEIGHT;
   const startIndex = Math.max(0, Math.floor(scrollTop / ITEM_HEIGHT) - OVERSCAN);
   const endIndex = Math.min(filteredMessages.length, Math.ceil((scrollTop + containerHeight) / ITEM_HEIGHT) + OVERSCAN);
@@ -115,15 +126,14 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
 
   const formatTime = (timestamp: number): string => new Date(timestamp * 1000).toLocaleTimeString();
 
-  // 与 ASS 文件一致的格式化
-  const formatGiftText = (msg: DanmakuMessage): string => {
+  const formatGiftPrice = (msg: DanmakuMessage): string => {
     if (msg.coin_type === 'gold' && msg.price && msg.price > 0) {
       return `¥${(msg.price * (msg.num || 1) / 1000).toFixed(1)}`;
     }
     return '';
   };
 
-  const formatGuardText = (msg: DanmakuMessage): string => {
+  const formatGuardPrice = (msg: DanmakuMessage): string => {
     if (msg.price && msg.price > 0) {
       return `¥${(msg.price / 1000).toFixed(0)}`;
     }
@@ -148,13 +158,13 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
           </span>
         );
       case 'gift': {
-        const priceText = formatGiftText(msg);
+        const priceText = formatGiftPrice(msg);
         return (
           <span className="dm-line dm-gift">
             <span className="dm-time">{timeStr}</span>
-            <Tag color="gold" style={{ fontSize: 11, lineHeight: '18px', padding: '0 4px', marginRight: 4 }}>礼物{priceText ? ` ${priceText}` : ''}</Tag>
             <span className="dm-username">{msg.username}</span>
-            <span> 赠送 {msg.gift_name || ''} x{msg.num}</span>
+            <span> 赠送 </span>
+            {priceText ? <span className="dm-price-badge gift-price">{priceText} {msg.gift_name || ''} x{msg.num}</span> : <span>{msg.gift_name || ''} x{msg.num}</span>}
           </span>
         );
       }
@@ -162,21 +172,19 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
         return (
           <span className="dm-line dm-super-chat">
             <span className="dm-time">{timeStr}</span>
-            <Tag color="orange" style={{ fontSize: 11, lineHeight: '18px', padding: '0 4px', marginRight: 4 }}>SC ¥{msg.price}</Tag>
             <span className="dm-username">{msg.username}</span>
-            <span>: {msg.content}</span>
+            <span> </span>
+            <span className="dm-price-badge sc-price">SC ¥{msg.price} {msg.content}</span>
           </span>
         );
       case 'guard': {
-        const guardPrice = formatGuardText(msg);
+        const guardPrice = formatGuardPrice(msg);
         return (
           <span className="dm-line dm-guard">
             <span className="dm-time">{timeStr}</span>
-            <Tag color="purple" style={{ fontSize: 11, lineHeight: '18px', padding: '0 4px', marginRight: 4 }}>
-              {msg.gift_name}{guardPrice ? ` ${guardPrice}` : ''}
-            </Tag>
             <span className="dm-username">{msg.username}</span>
-            <span> 开通了{msg.gift_name}</span>
+            <span> 开通了</span>
+            <span className="dm-price-badge guard-price">{msg.gift_name} {guardPrice}</span>
           </span>
         );
       }
@@ -195,8 +203,8 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
 
   return (
     <div className="dm-panel">
-      {/* 操作栏 */}
-      <div className="dm-filter-bar">
+      {/* 顶部栏：筛选 + 统计 */}
+      <div className="dm-top-bar">
         {/* 筛选按钮组 */}
         <div className="dm-filter-group">
           {FILTER_TYPES.map(f => {
@@ -208,15 +216,25 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
                 style={isActive ? { '--chip-color': f.color } as React.CSSProperties : undefined}
                 onClick={() => toggleFilter(f.key)}
               >
-                <span className="dm-filter-dot" style={{ background: isActive ? f.color : undefined }} />
+                <span className="dm-filter-checkbox">
+                  {isActive && (
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  )}
+                </span>
                 <span className="dm-filter-label">{f.label}</span>
               </div>
             );
           })}
         </div>
 
-        {/* 右侧操作 */}
+        {/* 统计 + 操作 */}
         <div className="dm-actions">
+          <span className="dm-stat-count">
+            共 <strong>{stats.totalCount}</strong> 条
+          </span>
+          {stats.totalAmount > 0 && (
+            <span className="dm-stat-amount">¥{stats.totalAmount.toFixed(1)}</span>
+          )}
           <div className={`dm-scroll-toggle ${autoScroll ? 'on' : 'off'}`} onClick={toggleAutoScroll}>
             <VerticalAlignBottomOutlined />
             <span>{autoScroll ? '滚动中' : '已暂停'}</span>
