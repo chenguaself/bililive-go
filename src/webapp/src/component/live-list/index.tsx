@@ -1,5 +1,5 @@
 import React from "react";
-import { Button, Divider, Table, Tag, Tabs, Row, Col, Tooltip, message, List, Typography, Switch, Space, Popconfirm, Select } from 'antd';
+import { Button, Divider, Table, Tag, Tabs, Row, Col, Tooltip, message, List, Typography, Switch, Space, Popconfirm, Select, Spin } from 'antd';
 import { EditOutlined, SyncOutlined, CloudSyncOutlined, ReloadOutlined, SwapOutlined, CheckCircleOutlined, ExclamationCircleOutlined, CommentOutlined } from '@ant-design/icons';
 import PopDialog from '../pop-dialog/index';
 import AddRoomDialog from '../add-room-dialog/index';
@@ -1970,6 +1970,7 @@ class LiveList extends React.Component<Props, IState> {
                             }));
                         } else {
                             // 切换到其他Tab：停止累积并清空消息，释放内存
+                            delete this.danmakuBuffer[liveId];
                             this.setState(prevState => {
                                 const newTabs = { ...prevState.expandedActiveTabs };
                                 const newMsgs = { ...prevState.danmakuMessages };
@@ -2012,16 +2013,28 @@ class LiveList extends React.Component<Props, IState> {
                         <HistoryPanel roomId={record.roomId} roomName={record.name} />
                     </Tabs.TabPane>
                     <Tabs.TabPane tab="实时弹幕" key="danmaku">
-                        <div style={{ padding: '12px 16px', background: '#111' }}>
+                        <div style={{
+                            padding: '12px 16px',
+                            background: '#111',
+                            borderRadius: '0 0 6px 6px',
+                            borderLeft: '1px solid rgba(255,255,255,0.06)',
+                            borderRight: '1px solid rgba(255,255,255,0.06)',
+                            borderBottom: '1px solid rgba(255,255,255,0.06)',
+                        }}>
                             {detail?.recorder_status?.danmaku_running ? (
                                 <DanmakuPanel
                                     messages={this.state.danmakuMessages[liveId] || []}
                                     roomName={record.name}
                                 />
+                            ) : detail?.recording ? (
+                                <div style={{ padding: '40px 0', textAlign: 'center', color: '#555' }}>
+                                    <Spin size="small" />
+                                    <div style={{ marginTop: 12, fontSize: 13 }}>弹幕连接中...</div>
+                                </div>
                             ) : (
                                 <div style={{ padding: '40px 0', textAlign: 'center', color: '#555' }}>
                                     <CommentOutlined style={{ fontSize: 32, marginBottom: 12, opacity: 0.3 }} />
-                                    <div>{detail?.recording ? '弹幕录制未启用或连接中...' : '录制开始后可查看实时弹幕'}</div>
+                                    <div>录制开始后可查看实时弹幕</div>
                                 </div>
                             )}
                         </div>

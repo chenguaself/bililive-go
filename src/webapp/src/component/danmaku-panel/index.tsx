@@ -45,14 +45,23 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
 
   const listContainerRef = useRef<HTMLDivElement>(null);
   const autoScrollEnabledRef = useRef(true);
+  const prevFilteredCountRef = useRef(0);
+  const prevActiveFiltersRef = useRef(activeFilters);
+  const prevFilteredLenRef = useRef(0);
+  const [newMessageCount, setNewMessageCount] = useState(0);
 
   const displayMessages = useMemo(() => messages.slice(-MAX_MESSAGES), [messages]);
 
-  // 统计：总条数 + 礼物总金额
+  const filteredMessages = useMemo(() => {
+    if (activeFilters.size === FILTER_TYPES.length) return displayMessages;
+    return displayMessages.filter(msg => activeFilters.has(msg.type));
+  }, [displayMessages, activeFilters]);
+
+  // 统计：筛选后的条数 + 礼物总金额
   const stats = useMemo(() => {
     let totalCount = 0;
     let totalAmount = 0;
-    for (const msg of displayMessages) {
+    for (const msg of filteredMessages) {
       totalCount++;
       if (msg.type === 'gift' && msg.coin_type === 'gold' && msg.price && msg.price > 0) {
         totalAmount += msg.price * (msg.num || 1) / 1000;
@@ -63,7 +72,7 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
       }
     }
     return { totalCount, totalAmount };
-  }, [displayMessages]);
+  }, [filteredMessages]);
 
   const toggleFilter = useCallback((type: DanmakuMessage['type']) => {
     setActiveFilters(prev => {
@@ -78,10 +87,28 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
     });
   }, []);
 
-  const filteredMessages = useMemo(() => {
-    if (activeFilters.size === FILTER_TYPES.length) return displayMessages;
-    return displayMessages.filter(msg => activeFilters.has(msg.type));
-  }, [displayMessages, activeFilters]);
+  // 暂停滚动时，统计新消息数量（过滤器变化时重置）
+  useEffect(() => {
+    const prevCount = prevFilteredCountRef.current;
+    const newCount = filteredMessages.length;
+    if (newCount > prevCount && !autoScrollEnabledRef.current) {
+      setNewMessageCount(prev => prev + (newCount - prevCount));
+    }
+    prevFilteredCountRef.current = newCount;
+  }, [filteredMessages.length]);
+
+  // 过滤器变化时重置新消息计数（避免过滤器切换导致误判）
+  useEffect(() => {
+    if (prevActiveFiltersRef.current !== activeFilters) {
+      // 过滤器变化：重置计数
+      prevActiveFiltersRef.current = activeFilters;
+      prevFilteredLenRef.current = filteredMessages.length;
+      setNewMessageCount(0);
+    } else {
+      // 仅新消息：更新长度 ref
+      prevFilteredLenRef.current = filteredMessages.length;
+    }
+  }, [activeFilters, filteredMessages.length]);
 
   useEffect(() => {
     if (autoScroll && autoScrollEnabledRef.current && listContainerRef.current) {
@@ -114,7 +141,9 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const container = e.currentTarget;
     setScrollTop(container.scrollTop);
-    autoScrollEnabledRef.current = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+    autoScrollEnabledRef.current = atBottom;
+    if (atBottom) setNewMessageCount(0);
   }, []);
 
   const toggleAutoScroll = useCallback(() => {
@@ -122,6 +151,7 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
     setAutoScroll(next);
     if (next) {
       autoScrollEnabledRef.current = true;
+      setNewMessageCount(0);
       if (listContainerRef.current) listContainerRef.current.scrollTop = listContainerRef.current.scrollHeight;
     }
   }, [autoScroll]);
@@ -152,19 +182,25 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
     const timeStr = formatTime(msg.timestamp);
 
     switch (msg.type) {
-      case 'danmaku':
+      case 'danmaku': {
+        const contentEl = (
+          <span className="dm-content" style={msg.color ? { color: `#${msg.color.toString(16).padStart(6, '0')}` } : undefined}>
+            {msg.content}
+          </span>
+        );
         return (
           <span className="dm-line dm-danmaku">
             <span className="dm-time">{timeStr}</span>
             <span className="dm-username">{msg.username}</span>
             <span className="dm-colon">: </span>
-            <Tooltip title={msg.content} placement="topLeft" overlayClassName="dm-tooltip">
-              <span className="dm-content" style={msg.color ? { color: `#${msg.color.toString(16).padStart(6, '0')}` } : undefined}>
-                {msg.content}
-              </span>
-            </Tooltip>
+            {msg.content.length > 20 ? (
+              <Tooltip title={msg.content} placement="topLeft" overlayClassName="dm-tooltip">
+                {contentEl}
+              </Tooltip>
+            ) : contentEl}
           </span>
         );
+      }
       case 'gift': {
         const priceText = formatGiftPrice(msg);
         return (
@@ -238,7 +274,7 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
         {/* 统计 + 操作 */}
         <div className="dm-actions">
           <span className="dm-stat-count">
-            共 <strong>{stats.totalCount}</strong> 条
+            {isAllFiltered ? '共' : '显示'} <strong>{stats.totalCount}</strong> 条
           </span>
           {stats.totalAmount > 0 && (
             <span className="dm-stat-amount">¥{stats.totalAmount.toFixed(1)}</span>
@@ -255,7 +291,7 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
         <div style={{ height: totalHeight, position: 'relative' }}>
           <div style={{ transform: `translateY(${offsetY}px)` }}>
             {visibleMessages.map((msg, idx) => (
-              <div key={`${startIndex + idx}-${msg.timestamp}-${msg.type}`} className="dm-item" style={{ height: ITEM_HEIGHT }}>
+              <div key={startIndex + idx} className="dm-item" style={{ height: ITEM_HEIGHT }}>
                 {renderMessage(msg)}
               </div>
             ))}
@@ -264,6 +300,16 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
         {filteredMessages.length === 0 && (
           <div className="dm-empty">
             {displayMessages.length === 0 ? '暂无弹幕' : '当前筛选无匹配弹幕'}
+          </div>
+        )}
+        {newMessageCount > 0 && (
+          <div className="dm-new-message-hint" onClick={() => {
+            setNewMessageCount(0);
+            setAutoScroll(true);
+            autoScrollEnabledRef.current = true;
+            if (listContainerRef.current) listContainerRef.current.scrollTop = listContainerRef.current.scrollHeight;
+          }}>
+            ↓ {newMessageCount > 99 ? '99+' : newMessageCount} 条新消息
           </div>
         )}
       </div>
