@@ -54,7 +54,7 @@ func ParsePacket(data []byte) (Packet, error) {
 		return Packet{}, fmt.Errorf("packet too short: %d bytes", len(data))
 	}
 	packLen := binary.BigEndian.Uint32(data[0:4])
-	if int(packLen) > len(data) {
+	if uint64(packLen) > uint64(len(data)) {
 		return Packet{}, fmt.Errorf("packet length %d exceeds data %d", packLen, len(data))
 	}
 	if packLen < headerLen {
@@ -100,16 +100,16 @@ func slicePackets(data []byte) []Packet {
 	var packets []Packet
 	cursor := 0
 	for cursor+headerLen <= len(data) {
-		packLen := int(binary.BigEndian.Uint32(data[cursor : cursor+4]))
-		if packLen < headerLen || cursor+packLen > len(data) {
+		packLen := binary.BigEndian.Uint32(data[cursor : cursor+4])
+		if packLen < headerLen || uint64(packLen) > uint64(len(data)-cursor) {
 			break
 		}
-		pkt, err := ParsePacket(data[cursor : cursor+packLen])
+		pkt, err := ParsePacket(data[cursor : cursor+int(packLen)])
 		if err != nil {
 			break
 		}
 		packets = append(packets, pkt)
-		cursor += packLen
+		cursor += int(packLen)
 	}
 	return packets
 }
