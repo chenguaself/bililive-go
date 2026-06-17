@@ -420,7 +420,7 @@ func startScheduler() {
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "localhost"
 	}
-	apiURL := "http://" + host + ":" + port
+	apiURL := "http://" + net.JoinHostPort(host, port)
 	dbPath := filepath.Join(cfg.AppDataPath, "db", "scheduler.db")
 
 	// Clean up stale port file from previous run
