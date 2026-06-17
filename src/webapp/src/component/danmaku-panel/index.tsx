@@ -172,7 +172,7 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
             <span className="dm-time">{timeStr}</span>
             <span className="dm-username">{msg.username}</span>
             <span> 赠送 </span>
-            {priceText ? <span className="dm-price-badge gift-price">{priceText} {msg.gift_name || ''} x{msg.num}</span> : <span>{msg.gift_name || ''} x{msg.num}</span>}
+            <span className="dm-price-badge gift-price">{priceText ? `${priceText} ` : ''}{msg.gift_name || ''} x{msg.num}</span>
           </span>
         );
       }
