@@ -41,7 +41,7 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
   );
 
   const [scrollTop, setScrollTop] = useState(0);
-  const [containerHeight, setContainerHeight] = useState(300);
+  const [containerHeight, setContainerHeight] = useState(480);
 
   const listContainerRef = useRef<HTMLDivElement>(null);
   const autoScrollEnabledRef = useRef(true);
@@ -85,9 +85,17 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
 
   useEffect(() => {
     if (autoScroll && autoScrollEnabledRef.current && listContainerRef.current) {
-      listContainerRef.current.scrollTop = listContainerRef.current.scrollHeight;
+      // 双重 rAF 确保浏览器完成 paint 后再滚动，避免 scrollHeight 未更新
+      const id = requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (listContainerRef.current && autoScrollEnabledRef.current) {
+            listContainerRef.current.scrollTop = listContainerRef.current.scrollHeight;
+          }
+        });
+      });
+      return () => cancelAnimationFrame(id);
     }
-  }, [filteredMessages, autoScroll]);
+  }, [filteredMessages, autoScroll, containerHeight]);
 
   useEffect(() => {
     const el = listContainerRef.current;
@@ -246,8 +254,8 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
       <div ref={listContainerRef} className="dm-list-container" onScroll={handleScroll}>
         <div style={{ height: totalHeight, position: 'relative' }}>
           <div style={{ transform: `translateY(${offsetY}px)` }}>
-            {visibleMessages.map((msg) => (
-              <div key={`${msg.timestamp}-${msg.username}-${msg.type}`} className="dm-item" style={{ height: ITEM_HEIGHT }}>
+            {visibleMessages.map((msg, idx) => (
+              <div key={`${startIndex + idx}-${msg.timestamp}-${msg.type}`} className="dm-item" style={{ height: ITEM_HEIGHT }}>
                 {renderMessage(msg)}
               </div>
             ))}
