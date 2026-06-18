@@ -98,9 +98,12 @@ func cleanupOrphanedDanmakuFiles(assFile string) {
 		}
 		name := entry.Name()
 		ext := strings.ToLower(filepath.Ext(name))
-		if ext == ".ass" && strings.HasPrefix(name, base) {
-			// 检查是否有同名视频文件
+		if ext == ".ass" {
 			assBase := strings.TrimSuffix(name, ".ass")
+			if assBase != base && !strings.HasPrefix(assBase, base+"_PART") {
+				continue
+			}
+			// 检查是否有同名视频文件
 			hasVideo := false
 			for _, vext := range videoExtensions {
 				if _, err := os.Stat(filepath.Join(dir, assBase+vext)); err == nil {
@@ -588,7 +591,7 @@ func (r *recorder) tryRecord(ctx context.Context) {
 	// 清除当前录制文件路径
 	r.setCurrentFilePath("")
 
-	// 停止弹幕录制并累积文件
+	// 停止弹幕录制
 	r.currentFileLock.RLock()
 	dmRec := r.danmakuRec
 	r.currentFileLock.RUnlock()
@@ -596,9 +599,6 @@ func (r *recorder) tryRecord(ctx context.Context) {
 	if dmRec != nil {
 		dmFile = dmRec.OutputFile()
 		dmRec.Stop()
-		if fi, dmErr := os.Stat(dmFile); dmErr == nil && fi.Size() > 0 {
-			r.accumulateRecordedFiles(dmFile)
-		}
 	}
 
 	if err != nil {
@@ -609,6 +609,14 @@ func (r *recorder) tryRecord(ctx context.Context) {
 		}
 		return
 	}
+
+	// 录制成功，累积弹幕文件
+	if dmFile != "" {
+		if fi, dmErr := os.Stat(dmFile); dmErr == nil && fi.Size() > 0 {
+			r.accumulateRecordedFiles(dmFile)
+		}
+	}
+
 	r.getLogger().Debugln("End ParseLiveStream(" + url.String() + ", " + fileName + ")")
 	removeEmptyFile(fileName)
 

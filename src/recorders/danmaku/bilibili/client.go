@@ -332,8 +332,8 @@ func (c *Client) readLoop(stableCh chan struct{}) error {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-				c.logger.Info("WebSocket 连接正常关闭")
-				return nil
+				c.logger.Info("WebSocket 连接被服务端关闭")
+				return fmt.Errorf("remote close: %w", err)
 			}
 			return fmt.Errorf("读取消息失败: %w", err)
 		}

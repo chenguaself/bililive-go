@@ -2024,8 +2024,17 @@ class LiveList extends React.Component<Props, IState> {
                             {detail?.recorder_status?.danmaku_running ? (
                                 <DanmakuPanel
                                     messages={this.state.danmakuMessages[liveId] || []}
-                                    roomName={record.name}
                                 />
+                            ) : detail?.recording && detail?.room_config?.danmaku_enable && detail?.recorder_status?.danmaku_running === false ? (
+                                <div style={{ padding: '40px 0', textAlign: 'center', color: '#555' }}>
+                                    <CommentOutlined style={{ fontSize: 32, marginBottom: 12, opacity: 0.3 }} />
+                                    <div>弹幕录制已停止</div>
+                                </div>
+                            ) : detail?.recording && !detail?.room_config?.danmaku_enable ? (
+                                <div style={{ padding: '40px 0', textAlign: 'center', color: '#555' }}>
+                                    <CommentOutlined style={{ fontSize: 32, marginBottom: 12, opacity: 0.3 }} />
+                                    <div>弹幕录制未启用</div>
+                                </div>
                             ) : detail?.recording ? (
                                 <div style={{ padding: '40px 0', textAlign: 'center', color: '#555' }}>
                                     <Spin size="small" />

@@ -42,14 +42,7 @@ func updateWbiKeys(cookie string) error {
 	}
 	wbiKeys.RUnlock()
 
-	wbiKeys.Lock()
-	defer wbiKeys.Unlock()
-
-	// 双重检查：获取写锁后再次检查
-	if time.Since(wbiKeys.lastUpdate) < time.Hour && wbiKeys.mixin != "" {
-		return nil
-	}
-
+	// HTTP 请求和解析在锁外执行，避免持锁阻塞其他读取
 	req, err := http.NewRequest("GET", "https://api.bilibili.com/x/web-interface/nav", nil)
 	if err != nil {
 		return err
@@ -90,8 +83,12 @@ func updateWbiKeys(cookie string) error {
 	for i := 0; i < 32; i++ {
 		mixin[i] = wbi[mixinKeyEncTab[i]]
 	}
+
+	// 仅在写入结果时持锁
+	wbiKeys.Lock()
 	wbiKeys.mixin = string(mixin)
 	wbiKeys.lastUpdate = time.Now()
+	wbiKeys.Unlock()
 	return nil
 }
 

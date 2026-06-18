@@ -230,7 +230,7 @@ func (c *DouyuClient) readLoopWithReconnect(ctx context.Context) {
 
 		reconnectCount++
 
-		// 指数退避，上限 60 秒
+		// 线性退避，上限 60 秒
 		delay := 3 * reconnectCount
 		if delay > 60 {
 			delay = 60

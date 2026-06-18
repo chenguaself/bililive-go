@@ -193,7 +193,7 @@ func (c *DouyinClient) readLoopWithReconnect(ctx context.Context, realRoomID, tt
 
 		reconnectCount++
 
-		// 指数退避，上限 60 秒
+		// 线性退避，上限 60 秒
 		delay := 3 * reconnectCount
 		if delay > 60 {
 			delay = 60
@@ -282,8 +282,8 @@ func (c *DouyinClient) readLoop(ctx context.Context) error {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-				c.logger.Info("WebSocket 连接正常关闭")
-				return nil
+				c.logger.Info("WebSocket 连接被服务端关闭")
+				return fmt.Errorf("remote close: %w", err)
 			}
 			return fmt.Errorf("读取消息失败: %w", err)
 		}

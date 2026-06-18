@@ -35,10 +35,10 @@ func extractProtobufString(data []byte, targetField uint32) (string, bool) {
 				return "", false
 			}
 			cursor += n
-			end := cursor + int(length)
-			if end > len(data) {
+			if length > uint64(len(data)-cursor) {
 				return "", false
 			}
+			end := cursor + int(length)
 			if fieldNumber == targetField {
 				return string(data[cursor:end]), true
 			}
@@ -90,7 +90,7 @@ func extractProtobufUint32(data []byte, targetField uint32) (uint32, bool) {
 				return 0, false
 			}
 			cursor += n
-			if cursor+int(length) > len(data) {
+			if length > uint64(len(data)-cursor) {
 				return 0, false
 			}
 			cursor += int(length)

@@ -23,7 +23,6 @@ export interface DanmakuMessage {
 
 interface DanmakuPanelProps {
   messages: DanmakuMessage[];
-  roomName?: string;
 }
 
 // 消息类型过滤配置
@@ -34,7 +33,23 @@ const FILTER_TYPES: { key: DanmakuMessage['type']; label: string; color: string 
   { key: 'guard', label: '舰长', color: '#b37feb' },
 ];
 
-const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
+const formatTime = (timestamp: number): string => new Date(timestamp * 1000).toLocaleTimeString();
+
+const formatGiftPrice = (msg: DanmakuMessage): string => {
+  if (msg.coin_type === 'gold' && msg.price && msg.price > 0) {
+    return `¥${(msg.price * (msg.num || 1) / 1000).toFixed(1)}`;
+  }
+  return '';
+};
+
+const formatGuardPrice = (msg: DanmakuMessage): string => {
+  if (msg.price && msg.price > 0) {
+    return `¥${(msg.price / 1000).toFixed(0)}`;
+  }
+  return '';
+};
+
+const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages }) => {
   const [autoScroll, setAutoScroll] = useState(true);
   const [activeFilters, setActiveFilters] = useState<Set<DanmakuMessage['type']>>(
     () => new Set(FILTER_TYPES.map(f => f.key))
@@ -153,6 +168,8 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
       autoScrollEnabledRef.current = true;
       setNewMessageCount(0);
       if (listContainerRef.current) listContainerRef.current.scrollTop = listContainerRef.current.scrollHeight;
+    } else {
+      autoScrollEnabledRef.current = false;
     }
   }, [autoScroll]);
 
@@ -161,22 +178,6 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
   const endIndex = Math.min(filteredMessages.length, Math.ceil((scrollTop + containerHeight) / ITEM_HEIGHT) + OVERSCAN);
   const visibleMessages = filteredMessages.slice(startIndex, endIndex);
   const offsetY = startIndex * ITEM_HEIGHT;
-
-  const formatTime = (timestamp: number): string => new Date(timestamp * 1000).toLocaleTimeString();
-
-  const formatGiftPrice = (msg: DanmakuMessage): string => {
-    if (msg.coin_type === 'gold' && msg.price && msg.price > 0) {
-      return `¥${(msg.price * (msg.num || 1) / 1000).toFixed(1)}`;
-    }
-    return '';
-  };
-
-  const formatGuardPrice = (msg: DanmakuMessage): string => {
-    if (msg.price && msg.price > 0) {
-      return `¥${(msg.price / 1000).toFixed(0)}`;
-    }
-    return '';
-  };
 
   const renderMessage = useCallback((msg: DanmakuMessage) => {
     const timeStr = formatTime(msg.timestamp);
@@ -262,7 +263,7 @@ const DanmakuPanel: React.FC<DanmakuPanelProps> = ({ messages, roomName }) => {
               >
                 <span className="dm-filter-checkbox">
                   {isActive && (
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                   )}
                 </span>
                 <span className="dm-filter-label">{f.label}</span>
