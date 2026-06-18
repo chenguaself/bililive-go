@@ -13,6 +13,9 @@ import (
 
 const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0"
 
+// browserVersion 用于 WebSocket URL 参数，与 userAgent 保持一致
+const browserVersion = "5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+
 // getTtwidFromCookies 从 cookies 字符串中提取 ttwid
 func getTtwidFromCookies(cookies string) string {
 	for _, part := range strings.Split(cookies, ";") {
@@ -66,7 +69,7 @@ func generateUserUniqueID() string {
 // buildWSURL 构建 WebSocket URL（不含签名参数）
 // 参考 DouyinLiveWebFetcher 的参数格式
 func buildWSURL(roomID, ttwid, userUniqueID string) string {
-	cursor := "d-1_u-1_fh-7392091211001140287_t-1721106114633_r-1"
+	cursor := fmt.Sprintf("d-1_u-1_fh-7392091211001140287_t-%d_r-1", time.Now().UnixMilli())
 	internalExt := fmt.Sprintf(
 		"internal_src:dim|wss_push_room_id:%s|wss_push_did:%s|first_req_ms:%d|fetch_time:%d|seq:1|wss_info:0-%d-0-0|wrds_v:7392094459690748497",
 		roomID, userUniqueID, time.Now().UnixMilli(), time.Now().UnixMilli(), time.Now().UnixMilli(),
@@ -85,7 +88,7 @@ func buildWSURL(roomID, ttwid, userUniqueID string) string {
 	params.Set("browser_language", "zh-CN")
 	params.Set("browser_platform", "Win32")
 	params.Set("browser_name", "Mozilla")
-	params.Set("browser_version", "5.0%20(Windows%20NT%2010.0;%20Win64;%20x64)%20AppleWebKit/537.36%20(KHTML,%20like%20Gecko)%20Chrome/126.0.0.0%20Safari/537.36")
+	params.Set("browser_version", browserVersion)
 	params.Set("browser_online", "true")
 	params.Set("tz_name", "Asia/Shanghai")
 	params.Set("cursor", cursor)

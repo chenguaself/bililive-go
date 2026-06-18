@@ -42,6 +42,8 @@ const (
 	SSEEventUpdateError SSEEventType = "update_error"
 	// SSEEventMemoryWarning 内存异常增长警告
 	SSEEventMemoryWarning SSEEventType = "memory_warning"
+	// SSEEventDanmaku 弹幕实时推送
+	SSEEventDanmaku SSEEventType = "danmaku"
 )
 
 // SSEMessage SSE 消息结构
@@ -214,6 +216,15 @@ func (h *SSEHub) BroadcastMemoryWarning(data interface{}) {
 	h.Broadcast(SSEMessage{
 		Type:   SSEEventMemoryWarning,
 		RoomID: "",
+		Data:   data,
+	})
+}
+
+// BroadcastDanmaku 广播弹幕消息
+func (h *SSEHub) BroadcastDanmaku(roomID types.LiveID, data interface{}) {
+	h.Broadcast(SSEMessage{
+		Type:   SSEEventDanmaku,
+		RoomID: string(roomID),
 		Data:   data,
 	})
 }

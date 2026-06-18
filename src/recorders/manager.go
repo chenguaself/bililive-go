@@ -22,11 +22,16 @@ type BroadcastRecorderStatusFunc func(liveId types.LiveID, status map[string]int
 // OnRecordingEndFunc 是录制结束时的回调函数类型
 type OnRecordingEndFunc func(ctx context.Context)
 
+// BroadcastDanmakuFunc 是用于广播弹幕消息的回调函数类型
+type BroadcastDanmakuFunc func(liveId types.LiveID, msgType, username, content string, extra map[string]interface{})
+
 var (
 	// broadcastRecorderStatusFunc 全局广播函数，由 servers 包设置
 	broadcastRecorderStatusFunc BroadcastRecorderStatusFunc
 	// onRecordingEndFunc 录制结束时的回调函数，用于触发优雅更新检查
 	onRecordingEndFunc OnRecordingEndFunc
+	// broadcastDanmakuFunc 全局弹幕广播函数，由 servers 包设置
+	broadcastDanmakuFunc BroadcastDanmakuFunc
 )
 
 // SetBroadcastRecorderStatusFunc 设置录制器状态广播函数
@@ -37,6 +42,11 @@ func SetBroadcastRecorderStatusFunc(fn BroadcastRecorderStatusFunc) {
 // SetOnRecordingEndFunc 设置录制结束回调函数
 func SetOnRecordingEndFunc(fn OnRecordingEndFunc) {
 	onRecordingEndFunc = fn
+}
+
+// SetBroadcastDanmakuFunc 设置弹幕广播函数
+func SetBroadcastDanmakuFunc(fn BroadcastDanmakuFunc) {
+	broadcastDanmakuFunc = fn
 }
 
 func NewManager(ctx context.Context) Manager {

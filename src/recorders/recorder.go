@@ -75,6 +75,49 @@ var (
 	}
 )
 
+// videoExtensions 用于匹配弹幕文件对应的视频文件
+var videoExtensions = []string{".flv", ".mkv", ".ts", ".mp4"}
+
+// cleanupOrphanedDanmakuFiles 清理没有对应视频文件的 ASS 弹幕文件。
+// 视频流快速失败时（如 404），弹幕录制器可能已创建 .ass 文件但视频未生成，
+// 遗留的孤立 .ass 文件会在前端显示为无效录制，需要清理。
+func cleanupOrphanedDanmakuFiles(assFile string) {
+	if assFile == "" {
+		return
+	}
+	dir := filepath.Dir(assFile)
+	base := strings.TrimSuffix(filepath.Base(assFile), ".ass")
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		ext := strings.ToLower(filepath.Ext(name))
+		if ext == ".ass" {
+			assBase := strings.TrimSuffix(name, ".ass")
+			if assBase != base && !strings.HasPrefix(assBase, base+"_PART") {
+				continue
+			}
+			// 检查是否有同名视频文件
+			hasVideo := false
+			for _, vext := range videoExtensions {
+				if _, err := os.Stat(filepath.Join(dir, assBase+vext)); err == nil {
+					hasVideo = true
+					break
+				}
+			}
+			if !hasVideo {
+				os.Remove(filepath.Join(dir, name))
+			}
+		}
+	}
+}
+
 // findBililiveRecorderOutputFiles 查找录播姬生成的分段文件
 // 录播姬的输出文件命名模式: {原文件名}_PART{3位序号}{扩展名}
 // 例如: video.flv -> video_PART000.flv, video_PART001.flv, ...
@@ -211,6 +254,7 @@ type danmakuRecorder interface {
 	GetCount() int
 	IsRunning() bool
 	GetStatus() map[string]interface{}
+	SetBroadcastCallback(cb danmaku.DanmakuBroadcastCallback)
 }
 
 // 编译期接口断言
@@ -547,21 +591,32 @@ func (r *recorder) tryRecord(ctx context.Context) {
 	// 清除当前录制文件路径
 	r.setCurrentFilePath("")
 
-	// 停止弹幕录制并累积文件
+	// 停止弹幕录制
 	r.currentFileLock.RLock()
 	dmRec := r.danmakuRec
 	r.currentFileLock.RUnlock()
+	dmFile := ""
 	if dmRec != nil {
+		dmFile = dmRec.OutputFile()
 		dmRec.Stop()
-		if fi, dmErr := os.Stat(dmRec.OutputFile()); dmErr == nil && fi.Size() > 0 {
-			r.accumulateRecordedFiles(dmRec.OutputFile())
-		}
 	}
 
 	if err != nil {
 		r.getLogger().WithError(err).Error("failed to parse live stream")
+		// 视频流快速失败时（如 404），清理没有对应视频文件的残留弹幕
+		if elapsed := time.Since(r.startTime); elapsed < 5*time.Second {
+			cleanupOrphanedDanmakuFiles(dmFile)
+		}
 		return
 	}
+
+	// 录制成功，累积弹幕文件
+	if dmFile != "" {
+		if fi, dmErr := os.Stat(dmFile); dmErr == nil && fi.Size() > 0 {
+			r.accumulateRecordedFiles(dmFile)
+		}
+	}
+
 	r.getLogger().Debugln("End ParseLiveStream(" + url.String() + ", " + fileName + ")")
 	removeEmptyFile(fileName)
 
@@ -723,6 +778,14 @@ func (r *recorder) startDanmakuRecorder(ctx context.Context, fileName, platform 
 	if dmErr := rec.Start(ctx); dmErr != nil {
 		r.getLogger().WithError(dmErr).Warn("弹幕录制启动失败，继续录制视频")
 		return
+	}
+
+	// 设置弹幕广播回调，将消息通过 SSE 推送到前端
+	if broadcastDanmakuFunc != nil {
+		liveId := r.Live.GetLiveId()
+		rec.SetBroadcastCallback(func(msgType, username, content string, extra map[string]interface{}) {
+			broadcastDanmakuFunc(liveId, msgType, username, content, extra)
+		})
 	}
 
 	r.currentFileLock.Lock()

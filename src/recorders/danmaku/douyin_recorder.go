@@ -51,7 +51,7 @@ func (r *DouyinDanmakuRecorder) Start(ctx context.Context) error {
 	var onGift func(username, giftName string, num int)
 	if r.cfg.RecordDouyinGift != nil && *r.cfg.RecordDouyinGift {
 		onGift = func(username, giftName string, num int) {
-			r.addGift(time.Now(), username, giftName, num)
+			r.addGift(time.Now(), username, giftName, num, 0, "")
 		}
 	}
 	r.client = douyin.NewDouyinClient(r.roomID, r.cookies, r.onDanmaku, onGift, r.logger)

@@ -150,8 +150,14 @@ func scTierStyle(price int) string {
 }
 
 func (w *AssWriter) writeHeader() error {
-	opacity := *w.cfg.Opacity
-	outline := *w.cfg.Outline
+	opacity := 128 // default
+	if w.cfg.Opacity != nil {
+		opacity = *w.cfg.Opacity
+	}
+	outline := 1 // default
+	if w.cfg.Outline != nil {
+		outline = *w.cfg.Outline
+	}
 	assAlpha := 255 - opacity
 	backColor := fmt.Sprintf("&H%02X000000&", assAlpha)
 	guardBackColor := "&H800080FF"
@@ -262,7 +268,9 @@ func (w *AssWriter) AddDanmaku(recvAt time.Time, username, text string, color in
 }
 
 // AddGift appends a gift message as a smaller scrolling line.
-func (w *AssWriter) AddGift(recvAt time.Time, username, giftName string, num int) {
+// price 为金瓜子单价，coinType 为 "gold"(付费) 或 "silver"(免费)。
+// 仅 gold 类型且 price > 0 时显示金额（1 RMB = 1000 金瓜子）。
+func (w *AssWriter) AddGift(recvAt time.Time, username, giftName string, num int, price int, coinType string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed || w.writeErr {
@@ -275,7 +283,13 @@ func (w *AssWriter) AddGift(recvAt time.Time, username, giftName string, num int
 		startCS = 0
 	}
 
-	fullText := fmt.Sprintf("%s 赠送 %s x%d", username, giftName, num)
+	var fullText string
+	if coinType == "gold" && price > 0 {
+		totalPrice := float64(price) * float64(num) / 1000.0
+		fullText = fmt.Sprintf("[礼物 ¥%.1f] %s 赠送 %s x%d", totalPrice, username, giftName, num)
+	} else {
+		fullText = fmt.Sprintf("%s 赠送 %s x%d", username, giftName, num)
+	}
 	textWidth := w.estimateTextWidth(fullText)
 	totalDistance := w.resX + textWidth
 	durationCS := int64(w.scrollTimeMs) * int64(totalDistance) / int64(w.resX) / 10
@@ -311,7 +325,7 @@ func positionToAlignment(pos string, bottomMargin int) (alignment int, marginV i
 }
 
 // AddGuard appends a guard purchase message.
-func (w *AssWriter) AddGuard(recvAt time.Time, username, giftName string) {
+func (w *AssWriter) AddGuard(recvAt time.Time, username, giftName string, price int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed || w.writeErr {
@@ -325,7 +339,7 @@ func (w *AssWriter) AddGuard(recvAt time.Time, username, giftName string) {
 	}
 	endCS := startCS + 500 // 5 seconds
 
-	fullText := fmt.Sprintf("%s %s", username, giftName)
+	fullText := fmt.Sprintf("[%s ¥%d] %s 开通了%s", giftName, price/1000, username, giftName)
 	alignment, marginV := positionToAlignment(w.cfg.GuardPosition, 60)
 	line := fmt.Sprintf("Dialogue: 1,%s,%s,Guard,,0,0,%d,,{\\an%d}{\\q0}%s\n",
 		formatTime(startCS), formatTime(endCS), marginV, alignment, escapeText(fullText))
