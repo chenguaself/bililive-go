@@ -30,7 +30,7 @@ test.describe('设置页面测试', () => {
   });
 
   test('云盘上传设置已隐藏', async ({ page }) => {
-    await page.waitForTimeout(1000);
+    await expect(page.getByRole('main')).toBeVisible();
     await expect(page.getByText('云盘上传')).toHaveCount(0);
   });
 

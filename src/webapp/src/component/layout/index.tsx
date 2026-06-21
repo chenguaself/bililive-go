@@ -18,6 +18,7 @@ import {
 import './layout.css';
 
 const { Header, Content, Sider } = Layout;
+// 功能开关：IO 统计（开发中，设为 false 隐藏 UI）
 const ENABLE_IO_STATS_UI = false;
 
 interface Props {

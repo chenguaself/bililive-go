@@ -30,6 +30,9 @@ test.describe('导航功能测试', () => {
     await expect(page.getByRole('menuitem', { name: /任务队列/ })).toBeVisible();
     await expect(page.getByRole('menuitem', { name: /调度器/ })).toBeVisible();
     await expect(page.getByRole('menuitem', { name: /更新/ })).toBeVisible();
+  });
+
+  test('侧边栏不显示 IO 统计入口', async ({ page }) => {
     await expect(page.getByRole('menuitem', { name: /IO 统计/ })).toHaveCount(0);
   });
 
