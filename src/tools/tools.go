@@ -34,25 +34,36 @@ const (
 
 var currentToolStatus atomic.Int32
 
-// toolsInitDone 在 Init() 真正完成（成功或首次失败）时被关闭
+// toolsInitDone 在 Init() 首次完成（无论成功或失败）时关闭，之后永远可读。
+// toolsInitError 记录最新一次 Init() 的结果，在 Init() 重试成功后会被更新为 nil。
+// 读写 toolsInitError 以及关闭 toolsInitDone 均在 toolsInitMu 下进行，
+// 确保 WaitForToolsInit 始终读到对应调用时刻最新的结果。
 var (
-	toolsInitDone  = make(chan struct{})
-	toolsInitOnce  sync.Once
-	toolsInitError error
+	toolsInitDone   = make(chan struct{})
+	toolsInitMu     sync.Mutex
+	toolsInitClosed bool
+	toolsInitError  error
 )
 
 func signalToolsReady(err error) {
-	toolsInitOnce.Do(func() {
-		toolsInitError = err
+	toolsInitMu.Lock()
+	defer toolsInitMu.Unlock()
+	toolsInitError = err // 每次都更新，包括重试成功后覆盖旧的失败错误
+	if !toolsInitClosed {
+		toolsInitClosed = true
 		close(toolsInitDone)
-	})
+	}
 }
 
-// WaitForToolsInit 等待 Init() 完成，ctx 取消时返回错误
+// WaitForToolsInit 等待 Init() 完成，ctx 取消时返回错误。
+// 若 Init() 曾失败后又被重试并成功，此函数在重试成功后首次被调用时返回 nil。
 func WaitForToolsInit(ctx context.Context) error {
 	select {
 	case <-toolsInitDone:
-		return toolsInitError
+		toolsInitMu.Lock()
+		err := toolsInitError
+		toolsInitMu.Unlock()
+		return err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
