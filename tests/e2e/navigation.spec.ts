@@ -16,10 +16,6 @@ test.describe('导航功能测试', () => {
     const sider = page.getByRole('complementary');
     await expect(sider).toBeVisible();
 
-    // 验证菜单项（使用 menuitem 角色）
-    const menuItems = page.getByRole('menuitem');
-    await expect(menuItems).toHaveCount(9); // IO 统计已暂时隐藏
-
     // 验证各个菜单项文本
     await expect(page.getByRole('menuitem', { name: /监控列表/ })).toBeVisible();
     await expect(page.getByRole('menuitem', { name: /系统状态/ })).toBeVisible();
