@@ -107,13 +107,32 @@ func OnFFmpegStatusChange(fn func(FFmpegStatus)) {
 	ffmpegCbMu.Unlock()
 }
 
+// ForceFFmpegStatus 强制设置 FFmpeg 状态，仅用于测试目的。
+func ForceFFmpegStatus(s FFmpegStatus) {
+	setFFmpegStatus(s)
+}
+
+// isFFmpegAvailableWithoutRemotetools 仅检查配置路径和系统 PATH，
+// 不访问 remotetools（避免在 Init() 完成前触及未配置好的 remotetools 状态）。
+func isFFmpegAvailableWithoutRemotetools() bool {
+	if cfg := configs.GetCurrentConfig(); cfg != nil {
+		if path := strings.TrimSpace(cfg.FfmpegPath); path != "" {
+			if _, err := os.Stat(path); err == nil {
+				return true
+			}
+		}
+	}
+	_, err := exec.LookPath("ffmpeg")
+	return err == nil
+}
+
 // FFmpegAsyncInit 异步检测并（按需）下载 FFmpeg，期间通过状态回调通知进度。
 // 可在 WebUI 启动后立即调用，不会阻塞主流程。
 func FFmpegAsyncInit(ctx context.Context) {
 	setFFmpegStatus(FFmpegStatus{State: "checking"})
 	bilisentry.GoWithContext(ctx, func(ctx context.Context) {
-		// 先检查系统 PATH / 配置文件中的 FFmpeg，不需要 remotetools
-		if utils.IsFFmpegExist(ctx) {
+		// 先仅检查配置路径与系统 PATH，不触碰 remotetools（此时 Init() 尚未完成）
+		if isFFmpegAvailableWithoutRemotetools() {
 			blog.GetLogger().Info("FFmpeg found in system PATH or config")
 			setFFmpegStatus(FFmpegStatus{State: "ready", Source: "system"})
 			return
@@ -122,16 +141,17 @@ func FFmpegAsyncInit(ctx context.Context) {
 		// 触发 remotetools 初始化（可能是 no-op，但确保 goroutine 在跑）
 		_ = Init()
 
-		// 等待 Init() 真正完成
+		// 等待 Init() 真正完成。WaitForToolsInit 在 Init() 失败时返回该错误，
+		// 在 ctx 取消时返回 ctx.Err()，需分别处理。
 		if err := WaitForToolsInit(ctx); err != nil {
-			// ctx 已取消（程序退出）
-			return
-		}
-		if toolsInitError != nil {
-			blog.GetLogger().WithError(toolsInitError).Warn("remotetools init failed, FFmpeg not available")
+			if ctx.Err() != nil {
+				return // 程序退出，不更新状态
+			}
+			// Init() 本身失败（如配置读取错误或 remotetools WebUI 启动失败）
+			blog.GetLogger().WithError(err).Warn("remotetools init failed, FFmpeg not available")
 			setFFmpegStatus(FFmpegStatus{
 				State:   "not_found",
-				Message: "FFmpeg 未找到，且 remotetools 初始化失败: " + toolsInitError.Error(),
+				Message: "FFmpeg 未找到，且 remotetools 初始化失败: " + err.Error(),
 			})
 			return
 		}
