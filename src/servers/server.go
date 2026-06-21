@@ -140,6 +140,9 @@ func initMux(ctx context.Context) *mux.Router {
 	// 内存监控 API 路由
 	apiRoute.HandleFunc("/memory/snapshots", getMemorySnapshots).Methods("GET") // 获取内存快照
 
+	// FFmpeg 状态 API 路由
+	apiRoute.HandleFunc("/ffmpeg/status", getFFmpegStatusHandler).Methods("GET")
+
 	// OpenList (云上传) API 路由
 	apiRoute.HandleFunc("/openlist/status", getOpenListStatus).Methods("GET")
 	apiRoute.HandleFunc("/openlist/check-storage", checkOpenListStorageHealth).Methods("GET")

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -32,6 +33,149 @@ const (
 )
 
 var currentToolStatus atomic.Int32
+
+// toolsInitDone 在 Init() 真正完成（成功或首次失败）时被关闭
+var (
+	toolsInitDone  = make(chan struct{})
+	toolsInitOnce  sync.Once
+	toolsInitError error
+)
+
+func signalToolsReady(err error) {
+	toolsInitOnce.Do(func() {
+		toolsInitError = err
+		close(toolsInitDone)
+	})
+}
+
+// WaitForToolsInit 等待 Init() 完成，ctx 取消时返回错误
+func WaitForToolsInit(ctx context.Context) error {
+	select {
+	case <-toolsInitDone:
+		return toolsInitError
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// FFmpegStatus FFmpeg 就绪状态
+type FFmpegStatus struct {
+	State   string `json:"state"`             // checking / downloading / ready / not_found / error
+	Message string `json:"message,omitempty"` // 人读消息
+	Source  string `json:"source,omitempty"`  // system / remotetools
+}
+
+var (
+	ffmpegStatusVal atomic.Value // stores FFmpegStatus
+	ffmpegCbMu      sync.RWMutex
+	ffmpegCallbacks []func(FFmpegStatus)
+)
+
+func init() {
+	ffmpegStatusVal.Store(FFmpegStatus{State: "checking"})
+}
+
+func setFFmpegStatus(s FFmpegStatus) {
+	ffmpegStatusVal.Store(s)
+	ffmpegCbMu.RLock()
+	cbs := make([]func(FFmpegStatus), len(ffmpegCallbacks))
+	copy(cbs, ffmpegCallbacks)
+	ffmpegCbMu.RUnlock()
+	for _, cb := range cbs {
+		cb(s)
+	}
+}
+
+// GetFFmpegStatus 返回当前 FFmpeg 状态
+func GetFFmpegStatus() FFmpegStatus {
+	v := ffmpegStatusVal.Load()
+	if v == nil {
+		return FFmpegStatus{State: "checking"}
+	}
+	return v.(FFmpegStatus)
+}
+
+// IsFFmpegReady 返回 FFmpeg 是否已就绪
+func IsFFmpegReady() bool {
+	return GetFFmpegStatus().State == "ready"
+}
+
+// OnFFmpegStatusChange 注册 FFmpeg 状态变化回调，在状态改变时被调用
+func OnFFmpegStatusChange(fn func(FFmpegStatus)) {
+	ffmpegCbMu.Lock()
+	ffmpegCallbacks = append(ffmpegCallbacks, fn)
+	ffmpegCbMu.Unlock()
+}
+
+// FFmpegAsyncInit 异步检测并（按需）下载 FFmpeg，期间通过状态回调通知进度。
+// 可在 WebUI 启动后立即调用，不会阻塞主流程。
+func FFmpegAsyncInit(ctx context.Context) {
+	setFFmpegStatus(FFmpegStatus{State: "checking"})
+	bilisentry.GoWithContext(ctx, func(ctx context.Context) {
+		// 先检查系统 PATH / 配置文件中的 FFmpeg，不需要 remotetools
+		if utils.IsFFmpegExist(ctx) {
+			blog.GetLogger().Info("FFmpeg found in system PATH or config")
+			setFFmpegStatus(FFmpegStatus{State: "ready", Source: "system"})
+			return
+		}
+
+		// 触发 remotetools 初始化（可能是 no-op，但确保 goroutine 在跑）
+		_ = Init()
+
+		// 等待 Init() 真正完成
+		if err := WaitForToolsInit(ctx); err != nil {
+			// ctx 已取消（程序退出）
+			return
+		}
+		if toolsInitError != nil {
+			blog.GetLogger().WithError(toolsInitError).Warn("remotetools init failed, FFmpeg not available")
+			setFFmpegStatus(FFmpegStatus{
+				State:   "not_found",
+				Message: "FFmpeg 未找到，且 remotetools 初始化失败: " + toolsInitError.Error(),
+			})
+			return
+		}
+
+		api := tools.Get()
+		if api == nil {
+			setFFmpegStatus(FFmpegStatus{State: "not_found", Message: "未找到 FFmpeg"})
+			return
+		}
+
+		tool, err := api.GetTool("ffmpeg")
+		if err != nil {
+			setFFmpegStatus(FFmpegStatus{State: "not_found", Message: "无法获取 FFmpeg 工具信息: " + err.Error()})
+			return
+		}
+
+		if tool.DoesToolExist() {
+			blog.GetLogger().Infof("FFmpeg found from remotetools: %s", tool.GetToolPath())
+			setFFmpegStatus(FFmpegStatus{State: "ready", Source: "remotetools"})
+			return
+		}
+
+		// 需要下载
+		source := tool.GetInstallSource()
+		blog.GetLogger().Infof("FFmpeg not found locally, downloading from %s...", source)
+		setFFmpegStatus(FFmpegStatus{
+			State:   "downloading",
+			Message: "正在下载 FFmpeg...",
+			Source:  source,
+		})
+
+		if err := tool.Install(); err != nil {
+			blog.GetLogger().WithError(err).Error("FFmpeg download failed")
+			setFFmpegStatus(FFmpegStatus{
+				State:   "error",
+				Message: "FFmpeg 下载失败: " + err.Error(),
+			})
+			return
+		}
+
+		blog.GetLogger().Infof("FFmpeg downloaded successfully: %s", tool.GetToolPath())
+		setFFmpegStatus(FFmpegStatus{State: "ready", Source: "remotetools"})
+	})
+}
 
 // bililive-tools 状态跟踪
 type btoolsStatusValue int32
@@ -194,6 +338,7 @@ func Init() (err error) {
 		} else {
 			currentToolStatus.Store(int32(toolStatusValueInitialized))
 		}
+		signalToolsReady(err)
 	}()
 
 	api := tools.Get()
@@ -245,7 +390,6 @@ func Init() (err error) {
 	blog.GetLogger().Infoln("RemoteTools Web UI started")
 
 	for _, toolName := range []string{
-		"ffmpeg",
 		"dotnet",
 		"bililive-recorder",
 	} {
