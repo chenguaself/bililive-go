@@ -44,6 +44,10 @@ const (
 	SSEEventMemoryWarning SSEEventType = "memory_warning"
 	// SSEEventDanmaku 弹幕实时推送
 	SSEEventDanmaku SSEEventType = "danmaku"
+	// SSEEventBatchProgress 批量添加进度
+	SSEEventBatchProgress SSEEventType = "batch_progress"
+	// SSEEventBatchComplete 批量添加完成
+	SSEEventBatchComplete SSEEventType = "batch_complete"
 )
 
 // SSEMessage SSE 消息结构
@@ -225,6 +229,24 @@ func (h *SSEHub) BroadcastDanmaku(roomID types.LiveID, data interface{}) {
 	h.Broadcast(SSEMessage{
 		Type:   SSEEventDanmaku,
 		RoomID: string(roomID),
+		Data:   data,
+	})
+}
+
+// BroadcastBatchProgress 广播批量添加进度
+func (h *SSEHub) BroadcastBatchProgress(batchID string, data interface{}) {
+	h.Broadcast(SSEMessage{
+		Type:   SSEEventBatchProgress,
+		RoomID: batchID,
+		Data:   data,
+	})
+}
+
+// BroadcastBatchComplete 广播批量添加完成
+func (h *SSEHub) BroadcastBatchComplete(batchID string, data interface{}) {
+	h.Broadcast(SSEMessage{
+		Type:   SSEEventBatchComplete,
+		RoomID: batchID,
 		Data:   data,
 	})
 }

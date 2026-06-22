@@ -19,6 +19,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/hr3lxphr6j/requests"
 	"github.com/tidwall/gjson"
@@ -678,8 +679,9 @@ func addLives(writer http.ResponseWriter, r *http.Request) {
 	inst := instance.GetInstance(r.Context())
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeJSON(writer, map[string]any{
-			"error": err.Error(),
+		writeJsonWithStatusCode(writer, http.StatusBadRequest, commonResp{
+			ErrNo:  http.StatusBadRequest,
+			ErrMsg: err.Error(),
 		})
 		return
 	}
@@ -688,7 +690,7 @@ func addLives(writer http.ResponseWriter, r *http.Request) {
 	gjson.ParseBytes(b).ForEach(func(key, value gjson.Result) bool {
 		isListen := value.Get("listen").Bool()
 		urlStr := strings.Trim(value.Get("url").String(), " ")
-		if retInfo, err := addLiveImpl(inst.Ctx, urlStr, isListen); err != nil {
+		if retInfo, err := addLiveImpl(inst.Ctx, urlStr, isListen, true); err != nil {
 			msg := urlStr + ": " + err.Error()
 			applog.GetLogger().Error(msg)
 			errorMessages = append(errorMessages, msg)
@@ -699,11 +701,10 @@ func addLives(writer http.ResponseWriter, r *http.Request) {
 		return true
 	})
 	sort.Sort(info)
-	// TODO return error messages too
 	writeJSON(writer, info)
 }
 
-func addLiveImpl(ctx context.Context, urlStr string, isListen bool) (info *live.Info, err error) {
+func addLiveImpl(ctx context.Context, urlStr string, isListen bool, persist bool) (info *live.Info, err error) {
 	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
 		urlStr = "https://" + urlStr
 	}
@@ -737,9 +738,14 @@ func addLiveImpl(ctx context.Context, urlStr string, isListen bool) (info *live.
 			if liveRoom == nil {
 				return nil, errors.New("liveRoom is nil, cannot append to LiveRooms")
 			}
-			// 使用统一的 Update 接口做 COW 并原子替换
-			if _, err := configs.AppendLiveRoom(*liveRoom); err != nil {
-				return nil, err
+			if persist {
+				if _, err := configs.AppendLiveRoom(*liveRoom); err != nil {
+					return nil, err
+				}
+			} else {
+				if _, err := configs.AppendLiveRoomTransient(*liveRoom); err != nil {
+					return nil, err
+				}
 			}
 		}
 		// 广播直播间列表变更事件
@@ -748,8 +754,101 @@ func addLiveImpl(ctx context.Context, urlStr string, isListen bool) (info *live.
 			"url":       urlStr,
 			"listening": isListen,
 		})
+	} else {
+		return nil, errors.New("直播间已存在")
 	}
 	return info, nil
+}
+
+func batchAddLives(writer http.ResponseWriter, r *http.Request) {
+	inst := instance.GetInstance(r.Context())
+	b, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJsonWithStatusCode(writer, http.StatusBadRequest, commonResp{
+			ErrNo:  http.StatusBadRequest,
+			ErrMsg: "failed to read request body",
+		})
+		return
+	}
+
+	var req batchAddRequest
+	if err := json.Unmarshal(b, &req); err != nil {
+		writeJsonWithStatusCode(writer, http.StatusBadRequest, commonResp{
+			ErrNo:  http.StatusBadRequest,
+			ErrMsg: "invalid request body",
+		})
+		return
+	}
+
+	// 过滤空 URL，只保留有效条目
+	validURLs := make([]string, 0, len(req.URLs))
+	for _, u := range req.URLs {
+		if s := strings.TrimSpace(u); s != "" {
+			validURLs = append(validURLs, s)
+		}
+	}
+
+	if len(validURLs) == 0 {
+		writeJsonWithStatusCode(writer, http.StatusBadRequest, commonResp{
+			ErrNo:  http.StatusBadRequest,
+			ErrMsg: "urls is empty",
+		})
+		return
+	}
+
+	// 使用客户端提供的 batch_id，或生成新的
+	batchID := req.BatchID
+	if batchID == "" {
+		batchID = "batch_" + uuid.New().String()
+	}
+
+	// 立即返回 batch_id 和有效总数
+	writeJSON(writer, batchAddResponse{
+		BatchID: batchID,
+		Total:   len(validURLs),
+	})
+
+	// 异步处理批量添加
+	go func() {
+		hub := GetSSEHub()
+		successCount := 0
+		failCount := 0
+
+		for i, urlStr := range validURLs {
+			retInfo, err := addLiveImpl(inst.Ctx, urlStr, req.Listen, false)
+			event := batchProgressEvent{
+				Index:   i,
+				Total:   len(validURLs),
+				URL:     urlStr,
+				Success: err == nil,
+			}
+			if err != nil {
+				event.Error = err.Error()
+				failCount++
+			} else {
+				event.Info = retInfo
+				successCount++
+			}
+
+			hub.BroadcastBatchProgress(batchID, event)
+		}
+
+		// 批量完成后统一持久化一次配置（通过 CAS 确保不覆盖并发更新）
+		if successCount > 0 {
+			if _, err := configs.UpdateWithRetry(func(c *configs.Config) error {
+				return nil // 无操作，仅触发持久化
+			}, 3, 10*time.Millisecond); err != nil {
+				applog.GetLogger().Errorf("batch add: failed to persist config: %v", err)
+			}
+		}
+
+		hub.BroadcastBatchComplete(batchID, batchCompleteEvent{
+			Total:        len(validURLs),
+			SuccessCount: successCount,
+			FailCount:    failCount,
+			Timestamp:    time.Now(),
+		})
+	}()
 }
 
 func removeLive(writer http.ResponseWriter, r *http.Request) {
@@ -888,7 +987,7 @@ func applyLiveRoomsByConfig(ctx context.Context, oldConfig *configs.Config, newC
 		newUrlMap[newRoom.Url] = newRoom
 		if room, err := oldConfig.GetLiveRoomByUrl(newRoom.Url); err != nil {
 			// add live
-			if _, err := addLiveImpl(ctx, newRoom.Url, newRoom.IsListening); err != nil {
+			if _, err := addLiveImpl(ctx, newRoom.Url, newRoom.IsListening, true); err != nil {
 				return err
 			}
 		} else {

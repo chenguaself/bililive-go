@@ -649,38 +649,47 @@ func UpdateTransient(mutator func(c *Config) error) (*Config, error) {
 }
 
 func updateImpl(mutator func(c *Config) error, persist bool) (*Config, error) {
-	updateMu.Lock()
-	defer updateMu.Unlock()
-	old := GetCurrentConfig()
-	// 若当前尚未设置配置，则以默认配置为基础
-	var base *Config
-	if old == nil {
-		base = NewConfig()
-	} else {
-		base = CloneConfigShallow(old)
-	}
-	if err := mutator(base); err != nil {
-		return nil, err
-	}
-	// 维护派生字段
-	base.RefreshLiveRoomIndexCache()
-	// 版本号自增
-	if old == nil {
-		base.Version = 1
-	} else {
-		base.Version = old.Version + 1
-	}
-	newCfg := base
+	var newCfg *Config
+	var file string
 
-	if persist && newCfg.File != "" {
+	func() {
+		updateMu.Lock()
+		defer updateMu.Unlock()
+		old := GetCurrentConfig()
+		// 若当前尚未设置配置，则以默认配置为基础
+		var base *Config
+		if old == nil {
+			base = NewConfig()
+		} else {
+			base = CloneConfigShallow(old)
+		}
+		if err := mutator(base); err != nil {
+			return
+		}
+		// 维护派生字段
+		base.RefreshLiveRoomIndexCache()
+		// 版本号自增
+		if old == nil {
+			base.Version = 1
+		} else {
+			base.Version = old.Version + 1
+		}
+		newCfg = base
+		file = base.File
+		SetCurrentConfig(newCfg)
+	}()
+
+	if newCfg == nil {
+		return nil, errors.New("config update failed")
+	}
+
+	// 持久化在锁外执行，避免阻塞其他配置更新
+	if persist && file != "" {
 		if err := newCfg.Marshal(); err != nil {
-			// 如果持久化失败，我们选择记录错误但不阻止内存更新
-			// 或者返回错误？这里选择返回错误，因为用户期望保存成功。
-			return nil, fmt.Errorf("failed to save config: %w", err)
+			return newCfg, fmt.Errorf("failed to save config (in-memory updated): %w", err)
 		}
 	}
 
-	SetCurrentConfig(newCfg)
 	return newCfg, nil
 }
 
@@ -691,38 +700,53 @@ func UpdateCAS(expectedVersion int64, mutator func(c *Config) error) (*Config, e
 }
 
 func updateCASImpl(expectedVersion int64, mutator func(c *Config) error, persist bool) (*Config, error) {
-	updateMu.Lock()
-	defer updateMu.Unlock()
-	cur := GetCurrentConfig()
-	// 校验版本
-	var curVersion int64
-	if cur != nil {
-		curVersion = cur.Version
-	}
-	if curVersion != expectedVersion {
-		return nil, ErrConfigVersionConflict
-	}
-	// 克隆并修改
-	var base *Config
-	if cur == nil {
-		base = NewConfig()
-	} else {
-		base = CloneConfigShallow(cur)
-	}
-	if err := mutator(base); err != nil {
-		return nil, err
-	}
-	base.RefreshLiveRoomIndexCache()
-	base.Version = expectedVersion + 1
+	var newCfg *Config
+	var file string
+	var updateErr error
 
-	if persist && base.File != "" {
-		if err := base.Marshal(); err != nil {
-			return nil, fmt.Errorf("failed to save config: %w", err)
+	func() {
+		updateMu.Lock()
+		defer updateMu.Unlock()
+		cur := GetCurrentConfig()
+		// 校验版本
+		var curVersion int64
+		if cur != nil {
+			curVersion = cur.Version
+		}
+		if curVersion != expectedVersion {
+			updateErr = ErrConfigVersionConflict
+			return
+		}
+		// 克隆并修改
+		var base *Config
+		if cur == nil {
+			base = NewConfig()
+		} else {
+			base = CloneConfigShallow(cur)
+		}
+		if err := mutator(base); err != nil {
+			updateErr = err
+			return
+		}
+		base.RefreshLiveRoomIndexCache()
+		base.Version = expectedVersion + 1
+		newCfg = base
+		file = base.File
+		SetCurrentConfig(newCfg)
+	}()
+
+	if updateErr != nil {
+		return nil, updateErr
+	}
+
+	// 持久化在锁外执行，避免阻塞其他配置更新
+	if persist && file != "" {
+		if err := newCfg.Marshal(); err != nil {
+			return newCfg, fmt.Errorf("failed to save config (in-memory updated): %w", err)
 		}
 	}
 
-	SetCurrentConfig(base)
-	return base, nil
+	return newCfg, nil
 }
 
 // UpdateWithRetry 在读取-修改-提交之间做乐观锁重试，避免调用方自行实现重试逻辑
@@ -806,6 +830,14 @@ func SetCookies(hostCookies map[string]string) (*Config, error) {
 // AppendLiveRoom 追加一个 LiveRoom。
 func AppendLiveRoom(room LiveRoom) (*Config, error) {
 	return UpdateWithRetry(func(c *Config) error {
+		c.LiveRooms = append(c.LiveRooms, room)
+		return nil
+	}, 3, 10*time.Millisecond)
+}
+
+// AppendLiveRoomTransient 追加一个 LiveRoom（仅更新内存，不持久化）。
+func AppendLiveRoomTransient(room LiveRoom) (*Config, error) {
+	return UpdateWithRetryTransient(func(c *Config) error {
 		c.LiveRooms = append(c.LiveRooms, room)
 		return nil
 	}, 3, 10*time.Millisecond)
