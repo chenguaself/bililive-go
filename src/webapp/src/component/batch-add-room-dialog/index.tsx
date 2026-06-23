@@ -59,6 +59,7 @@ const AddRoomDialog: React.FC<Props> = ({ visible, onClose, onSuccess }) => {
   const [failCount, setFailCount] = useState(0);
 
   const sseSubRef = useRef<string[]>([]);
+  const sseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const parseUrls = useCallback((text: string): string[] => {
     return text
@@ -90,6 +91,10 @@ const AddRoomDialog: React.FC<Props> = ({ visible, onClose, onSuccess }) => {
   const cleanupSSE = useCallback(() => {
     sseSubRef.current.forEach(id => sseManager.unsubscribe(id));
     sseSubRef.current = [];
+    if (sseTimeoutRef.current) {
+      clearTimeout(sseTimeoutRef.current);
+      sseTimeoutRef.current = null;
+    }
   }, []);
 
   const subscribeSSE = useCallback((batchId: string) => {
@@ -130,6 +135,14 @@ const AddRoomDialog: React.FC<Props> = ({ visible, onClose, onSuccess }) => {
     );
 
     sseSubRef.current = [progressSubId, completeSubId];
+
+    // 5 分钟超时保护：后端异常时避免 UI 永久卡住
+    sseTimeoutRef.current = setTimeout(() => {
+      antdMessage.error('批量添加超时，请刷新页面查看结果');
+      setProcessing(false);
+      setCompleted(true);
+      cleanupSSE();
+    }, 5 * 60 * 1000);
   }, [cleanupSSE, onSuccess]);
 
   useEffect(() => {

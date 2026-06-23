@@ -754,8 +754,6 @@ func addLiveImpl(ctx context.Context, urlStr string, isListen bool, persist bool
 			"url":       urlStr,
 			"listening": isListen,
 		})
-	} else {
-		return nil, errors.New("直播间已存在")
 	}
 	return info, nil
 }
@@ -815,6 +813,26 @@ func batchAddLives(writer http.ResponseWriter, r *http.Request) {
 		failCount := 0
 
 		for i, urlStr := range validURLs {
+			// 检查重复房间，避免调用 addLiveImpl 做无用的网络请求
+			checkURL := urlStr
+			if !strings.HasPrefix(checkURL, "http://") && !strings.HasPrefix(checkURL, "https://") {
+				checkURL = "https://" + checkURL
+			}
+			if u, err := url.Parse(checkURL); err == nil {
+				if _, err := configs.GetCurrentConfig().GetLiveRoomByUrl(u.String()); err == nil {
+					event := batchProgressEvent{
+						Index:   i,
+						Total:   len(validURLs),
+						URL:     urlStr,
+						Success: false,
+						Error:   "直播间已存在",
+					}
+					failCount++
+					hub.BroadcastBatchProgress(batchID, event)
+					continue
+				}
+			}
+
 			retInfo, err := addLiveImpl(inst.Ctx, urlStr, req.Listen, false)
 			event := batchProgressEvent{
 				Index:   i,
@@ -833,11 +851,9 @@ func batchAddLives(writer http.ResponseWriter, r *http.Request) {
 			hub.BroadcastBatchProgress(batchID, event)
 		}
 
-		// 批量完成后统一持久化一次配置（通过 CAS 确保不覆盖并发更新）
+		// 批量完成后统一持久化一次配置
 		if successCount > 0 {
-			if _, err := configs.UpdateWithRetry(func(c *configs.Config) error {
-				return nil // 无操作，仅触发持久化
-			}, 3, 10*time.Millisecond); err != nil {
+			if err := configs.Persist(); err != nil {
 				applog.GetLogger().Errorf("batch add: failed to persist config: %v", err)
 			}
 		}

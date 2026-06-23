@@ -111,8 +111,8 @@ test.describe('添加直播间对话框测试', () => {
       // 验证对话框标题
       await expect(page.getByText('添加直播间')).toBeVisible();
 
-      // 验证输入框存在
-      const input = modal.locator('input');
+      // 验证输入框存在（单个添加模式下有文本输入框）
+      const input = modal.locator('input[type="text"]');
       await expect(input).toBeVisible();
 
       // 关闭对话框
@@ -126,14 +126,17 @@ test.describe('添加直播间对话框测试', () => {
 
     if (await addButton.isVisible()) {
       await addButton.click();
-      await page.waitForTimeout(500);
 
-      // 点击取消按钮
-      await page.getByRole('button', { name: /取消|Cancel/i }).click();
+      // 等待对话框出现
+      const modal = page.locator('.ant-modal');
+      await expect(modal).toBeVisible();
+
+      // 点击对话框内的取消按钮
+      await modal.getByRole('button', { name: /取消|Cancel/i }).click();
       await page.waitForTimeout(300);
 
       // 验证对话框关闭
-      await expect(page.locator('.ant-modal')).not.toBeVisible();
+      await expect(modal).not.toBeVisible();
     }
   });
 
@@ -144,7 +147,7 @@ test.describe('添加直播间对话框测试', () => {
       await addButton.click();
       await page.waitForTimeout(500);
 
-      const input = page.locator('.ant-modal input');
+      const input = page.locator('.ant-modal input[type="text"]');
       await input.fill('https://live.bilibili.com/123456');
 
       // 验证输入值

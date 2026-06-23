@@ -651,6 +651,7 @@ func UpdateTransient(mutator func(c *Config) error) (*Config, error) {
 func updateImpl(mutator func(c *Config) error, persist bool) (*Config, error) {
 	var newCfg *Config
 	var file string
+	var mutatorErr error
 
 	func() {
 		updateMu.Lock()
@@ -664,6 +665,7 @@ func updateImpl(mutator func(c *Config) error, persist bool) (*Config, error) {
 			base = CloneConfigShallow(old)
 		}
 		if err := mutator(base); err != nil {
+			mutatorErr = err
 			return
 		}
 		// 维护派生字段
@@ -679,6 +681,9 @@ func updateImpl(mutator func(c *Config) error, persist bool) (*Config, error) {
 		SetCurrentConfig(newCfg)
 	}()
 
+	if mutatorErr != nil {
+		return nil, mutatorErr
+	}
 	if newCfg == nil {
 		return nil, errors.New("config update failed")
 	}
@@ -879,6 +884,16 @@ func SetLiveRoomId(url string, id types.LiveID) (*Config, error) {
 		}
 		return nil
 	}, 3, 10*time.Millisecond)
+}
+
+// Persist 将当前内存中的配置持久化到磁盘。
+// 用于批量 Transient 更新后统一刷盘的场景。
+func Persist() error {
+	cfg := GetCurrentConfig()
+	if cfg == nil {
+		return errors.New("config not initialized")
+	}
+	return cfg.Marshal()
 }
 
 type LiveRoom struct {
