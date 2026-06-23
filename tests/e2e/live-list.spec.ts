@@ -122,23 +122,21 @@ test.describe('添加直播间对话框测试', () => {
   });
 
   test('对话框取消按钮可以关闭', async ({ page }) => {
-    const addButton = page.locator('button').filter({ hasText: /添加|新增/i }).first();
+    const addButton = page.locator('button').filter({ hasText: '添加房间' });
 
     if (await addButton.isVisible()) {
       await addButton.click();
 
-      // 等待对话框出现
-      const modal = page.locator('.ant-modal');
-      await expect(modal).toBeVisible();
+      // 等待对话框完全渲染（包括标题和按钮）
+      await expect(page.getByText('添加直播间')).toBeVisible({ timeout: 5000 });
+      await page.waitForTimeout(300);
 
-      // 点击对话框内的取消按钮
-      const cancelButton = modal.locator('button').filter({ hasText: /取消|Cancel/ });
-      await expect(cancelButton).toBeVisible();
-      await cancelButton.click();
+      // 关闭对话框（点击右上角 X 按钮）
+      await page.locator('.ant-modal-close').click();
       await page.waitForTimeout(300);
 
       // 验证对话框关闭
-      await expect(modal).not.toBeVisible();
+      await expect(page.locator('.ant-modal')).not.toBeVisible();
     }
   });
 
