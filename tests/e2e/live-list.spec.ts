@@ -132,7 +132,9 @@ test.describe('添加直播间对话框测试', () => {
       await expect(modal).toBeVisible();
 
       // 点击对话框内的取消按钮
-      await modal.getByRole('button', { name: /取消|Cancel/i }).click();
+      const cancelButton = modal.locator('button').filter({ hasText: /取消|Cancel/ });
+      await expect(cancelButton).toBeVisible();
+      await cancelButton.click();
       await page.waitForTimeout(300);
 
       // 验证对话框关闭
