@@ -726,35 +726,36 @@ func addLiveImpl(ctx context.Context, urlStr string, isListen bool, persist bool
 	if err != nil {
 		return nil, err
 	}
+	if !inst.Lives.SetIfAbsent(newLive.GetLiveId(), newLive) {
+		return nil, errors.New("直播间已存在")
+	}
 	// 记录 LiveId 到全局配置（并发安全）
 	configs.SetLiveRoomId(u.String(), newLive.GetLiveId())
-	if inst.Lives.SetIfAbsent(newLive.GetLiveId(), newLive) {
-		if isListen {
-			inst.ListenerManager.(listeners.Manager).AddListener(ctx, newLive)
-		}
-		info = parseInfo(ctx, newLive)
-
-		if needAppend {
-			if liveRoom == nil {
-				return nil, errors.New("liveRoom is nil, cannot append to LiveRooms")
-			}
-			if persist {
-				if _, err := configs.AppendLiveRoom(*liveRoom); err != nil {
-					return nil, err
-				}
-			} else {
-				if _, err := configs.AppendLiveRoomTransient(*liveRoom); err != nil {
-					return nil, err
-				}
-			}
-		}
-		// 广播直播间列表变更事件
-		GetSSEHub().BroadcastListChange(newLive.GetLiveId(), "room_added", map[string]interface{}{
-			"live_id":   string(newLive.GetLiveId()),
-			"url":       urlStr,
-			"listening": isListen,
-		})
+	if isListen {
+		inst.ListenerManager.(listeners.Manager).AddListener(ctx, newLive)
 	}
+	info = parseInfo(ctx, newLive)
+
+	if needAppend {
+		if liveRoom == nil {
+			return nil, errors.New("liveRoom is nil, cannot append to LiveRooms")
+		}
+		if persist {
+			if _, err := configs.AppendLiveRoom(*liveRoom); err != nil {
+				return nil, err
+			}
+		} else {
+			if _, err := configs.AppendLiveRoomTransient(*liveRoom); err != nil {
+				return nil, err
+			}
+		}
+	}
+	// 广播直播间列表变更事件
+	GetSSEHub().BroadcastListChange(newLive.GetLiveId(), "room_added", map[string]interface{}{
+		"live_id":   string(newLive.GetLiveId()),
+		"url":       urlStr,
+		"listening": isListen,
+	})
 	return info, nil
 }
 
@@ -808,6 +809,17 @@ func batchAddLives(writer http.ResponseWriter, r *http.Request) {
 
 	// 异步处理批量添加
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				applog.GetLogger().Errorf("batch add: panic recovered: %v", r)
+				GetSSEHub().BroadcastBatchComplete(batchID, batchCompleteEvent{
+					Total:        len(validURLs),
+					SuccessCount: 0,
+					FailCount:    len(validURLs),
+					Timestamp:    time.Now(),
+				})
+			}
+		}()
 		hub := GetSSEHub()
 		successCount := 0
 		failCount := 0
