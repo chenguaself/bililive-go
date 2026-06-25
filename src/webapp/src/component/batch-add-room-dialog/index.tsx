@@ -44,6 +44,8 @@ function generateBatchId(): string {
   return 'batch_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
 }
 
+const MAX_BATCH_URLS = 50;
+
 const AddRoomDialog: React.FC<Props> = ({ visible, onClose, onSuccess }) => {
   const [inputMode, setInputMode] = useState<InputMode>('single');
   const [importMode, setImportMode] = useState<ImportMode>('text');
@@ -165,6 +167,10 @@ const AddRoomDialog: React.FC<Props> = ({ visible, onClose, onSuccess }) => {
       urls = importMode === 'text' ? parseUrls(textInput) : parsedUrls;
       if (urls.length === 0) {
         antdMessage.warning('请输入至少一个直播间地址');
+        return;
+      }
+      if (urls.length > MAX_BATCH_URLS) {
+        antdMessage.warning(`单次最多添加 ${MAX_BATCH_URLS} 个直播间，当前 ${urls.length} 个`);
         return;
       }
     }
@@ -310,7 +316,7 @@ const AddRoomDialog: React.FC<Props> = ({ visible, onClose, onSuccess }) => {
               <Alert
                 type="info"
                 showIcon
-                message="每行输入一个直播间地址，支持 # 开头的注释行"
+                message={`每行输入一个直播间地址，支持 # 开头的注释行，单次最多 ${MAX_BATCH_URLS} 个`}
                 style={{ marginBottom: 8 }}
               />
               <TextArea

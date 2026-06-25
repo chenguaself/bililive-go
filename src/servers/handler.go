@@ -795,6 +795,15 @@ func batchAddLives(writer http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	const maxBatchSize = 50
+	if len(validURLs) > maxBatchSize {
+		writeJsonWithStatusCode(writer, http.StatusBadRequest, commonResp{
+			ErrNo:  http.StatusBadRequest,
+			ErrMsg: fmt.Sprintf("too many urls: %d (max %d)", len(validURLs), maxBatchSize),
+		})
+		return
+	}
+
 	// 使用客户端提供的 batch_id，或生成新的
 	batchID := req.BatchID
 	if batchID == "" {
