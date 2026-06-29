@@ -26,9 +26,10 @@ func (c liveSlice) Less(i, j int) bool {
 
 // batchAddRequest 批量添加直播间请求
 type batchAddRequest struct {
-	URLs    []string `json:"urls"`
-	Listen  bool     `json:"listen"`
-	BatchID string   `json:"batch_id,omitempty"`
+	URLs       []string `json:"urls"`
+	Listen     bool     `json:"listen"`
+	NotifyOnly bool     `json:"notify_only,omitempty"`
+	BatchID    string   `json:"batch_id,omitempty"`
 }
 
 // batchAddResponse 批量添加直播间响应（立即返回）

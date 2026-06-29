@@ -689,8 +689,9 @@ func addLives(writer http.ResponseWriter, r *http.Request) {
 	errorMessages := make([]string, 0, 4)
 	gjson.ParseBytes(b).ForEach(func(key, value gjson.Result) bool {
 		isListen := value.Get("listen").Bool()
+		notifyOnly := value.Get("notify_only").Bool()
 		urlStr := strings.Trim(value.Get("url").String(), " ")
-		if retInfo, err := addLiveImpl(inst.Ctx, urlStr, isListen, true); err != nil {
+		if retInfo, err := addLiveImpl(inst.Ctx, urlStr, isListen, notifyOnly, true); err != nil {
 			msg := urlStr + ": " + err.Error()
 			applog.GetLogger().Error(msg)
 			errorMessages = append(errorMessages, msg)
@@ -704,7 +705,7 @@ func addLives(writer http.ResponseWriter, r *http.Request) {
 	writeJSON(writer, info)
 }
 
-func addLiveImpl(ctx context.Context, urlStr string, isListen bool, persist bool) (info *live.Info, err error) {
+func addLiveImpl(ctx context.Context, urlStr string, isListen bool, notifyOnly bool, persist bool) (info *live.Info, err error) {
 	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
 		urlStr = "https://" + urlStr
 	}
@@ -719,6 +720,7 @@ func addLiveImpl(ctx context.Context, urlStr string, isListen bool, persist bool
 		liveRoom = &configs.LiveRoom{
 			Url:         u.String(),
 			IsListening: isListen,
+			NotifyOnly:  notifyOnly,
 		}
 		needAppend = true
 	}
@@ -854,7 +856,7 @@ func batchAddLives(writer http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			retInfo, err := addLiveImpl(inst.Ctx, urlStr, req.Listen, false)
+			retInfo, err := addLiveImpl(inst.Ctx, urlStr, req.Listen, req.NotifyOnly, false)
 			event := batchProgressEvent{
 				Index:   i,
 				Total:   len(validURLs),
@@ -1027,7 +1029,7 @@ func applyLiveRoomsByConfig(ctx context.Context, oldConfig *configs.Config, newC
 		newUrlMap[newRoom.Url] = newRoom
 		if room, err := oldConfig.GetLiveRoomByUrl(newRoom.Url); err != nil {
 			// add live
-			if _, err := addLiveImpl(ctx, newRoom.Url, newRoom.IsListening, true); err != nil {
+			if _, err := addLiveImpl(ctx, newRoom.Url, newRoom.IsListening, newRoom.NotifyOnly, true); err != nil {
 				return err
 			}
 		} else {

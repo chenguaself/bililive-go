@@ -9,6 +9,7 @@ import {
   Typography,
   Radio,
   Alert,
+  Switch,
   message as antdMessage,
 } from 'antd';
 import {
@@ -51,6 +52,8 @@ const AddRoomDialog: React.FC<Props> = ({ visible, onClose, onSuccess }) => {
   const [importMode, setImportMode] = useState<ImportMode>('text');
   const [singleUrl, setSingleUrl] = useState('');
   const [textInput, setTextInput] = useState('');
+  const [listen, setListen] = useState(true);
+  const [notifyOnly, setNotifyOnly] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [current, setCurrent] = useState(0);
   const [total, setTotal] = useState(0);
@@ -185,7 +188,7 @@ const AddRoomDialog: React.FC<Props> = ({ visible, onClose, onSuccess }) => {
     subscribeSSE(batchId);
 
     try {
-      await api.batchAddRooms(urls, true, batchId);
+      await api.batchAddRooms(urls, listen, notifyOnly, batchId);
     } catch (err: any) {
       antdMessage.error('请求失败: ' + (err?.message || err));
       cleanupSSE();
@@ -216,6 +219,8 @@ const AddRoomDialog: React.FC<Props> = ({ visible, onClose, onSuccess }) => {
     setImportMode('text');
     setSingleUrl('');
     setTextInput('');
+    setListen(true);
+    setNotifyOnly(false);
     setProcessing(false);
     setCurrent(0);
     setTotal(0);
@@ -326,6 +331,32 @@ const AddRoomDialog: React.FC<Props> = ({ visible, onClose, onSuccess }) => {
               />
             </>
           )}
+
+          {/* 立即监听开关 */}
+          <div style={{ marginTop: 8 }}>
+            <Switch
+              checked={listen}
+              onChange={(checked) => {
+                setListen(checked);
+                if (!checked) setNotifyOnly(false);
+              }}
+              size="small"
+            />
+            <Text style={{ marginLeft: 8 }}>添加后立即监听</Text>
+          </div>
+
+          {/* 仅开播提醒开关 */}
+          <div style={{ marginTop: 8 }}>
+            <Switch
+              checked={notifyOnly}
+              onChange={(checked) => {
+                setNotifyOnly(checked);
+                if (checked) setListen(true);
+              }}
+              size="small"
+            />
+            <Text style={{ marginLeft: 8 }}>仅开播提醒（不自动录制）</Text>
+          </div>
 
           {/* 批量模式下的解析统计 */}
           {inputMode === 'batch' && validUrlCount > 0 && (

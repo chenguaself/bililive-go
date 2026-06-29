@@ -46,8 +46,8 @@ class API {
      * @param listen 是否立即监听
      * @param batchId 客户端生成的批次ID（可选，用于SSE进度追踪）
      */
-    batchAddRooms(urls: string[], listen: boolean = true, batchId?: string) {
-        return utils.requestPost(`${BASE_URL}/lives/batch`, { urls, listen, batch_id: batchId });
+    batchAddRooms(urls: string[], listen: boolean = true, notifyOnly: boolean = false, batchId?: string) {
+        return utils.requestPost(`${BASE_URL}/lives/batch`, { urls, listen, notify_only: notifyOnly, batch_id: batchId });
     }
 
     /**

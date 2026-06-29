@@ -260,7 +260,7 @@ func osrpAddTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 添加直播间
-	info, err := addLiveImpl(ctx, req.URL, req.AutoStart, true)
+	info, err := addLiveImpl(ctx, req.URL, req.AutoStart, false, true)
 	if err != nil {
 		osrpWriteError(w, http.StatusBadRequest, "ADD_FAILED", err.Error())
 		return
