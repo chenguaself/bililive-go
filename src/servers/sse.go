@@ -44,6 +44,10 @@ const (
 	SSEEventMemoryWarning SSEEventType = "memory_warning"
 	// SSEEventDanmaku 弹幕实时推送
 	SSEEventDanmaku SSEEventType = "danmaku"
+	// SSEEventBatchProgress 批量添加进度
+	SSEEventBatchProgress SSEEventType = "batch_progress"
+	// SSEEventBatchComplete 批量添加完成
+	SSEEventBatchComplete SSEEventType = "batch_complete"
 )
 
 // SSEMessage SSE 消息结构
@@ -103,6 +107,28 @@ func (h *SSEHub) Broadcast(msg SSEMessage) {
 		case ch <- msg:
 		default:
 			// 如果 channel 满了，跳过这条消息（避免阻塞）
+		}
+	}
+}
+
+// BroadcastCritical 广播关键消息，channel 满时丢弃最旧消息腾出位置，保证送达。
+func (h *SSEHub) BroadcastCritical(msg SSEMessage) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for ch := range h.clients {
+		select {
+		case ch <- msg:
+		default:
+			// channel 满，丢弃最旧的消息为关键事件腾出位置
+			select {
+			case <-ch:
+			default:
+			}
+			select {
+			case ch <- msg:
+			default:
+				// 仍然满（极端情况），放弃
+			}
 		}
 	}
 }
@@ -225,6 +251,24 @@ func (h *SSEHub) BroadcastDanmaku(roomID types.LiveID, data interface{}) {
 	h.Broadcast(SSEMessage{
 		Type:   SSEEventDanmaku,
 		RoomID: string(roomID),
+		Data:   data,
+	})
+}
+
+// BroadcastBatchProgress 广播批量添加进度
+func (h *SSEHub) BroadcastBatchProgress(batchID string, data interface{}) {
+	h.Broadcast(SSEMessage{
+		Type:   SSEEventBatchProgress,
+		RoomID: batchID,
+		Data:   data,
+	})
+}
+
+// BroadcastBatchComplete 广播批量添加完成（关键事件，保证送达）
+func (h *SSEHub) BroadcastBatchComplete(batchID string, data interface{}) {
+	h.BroadcastCritical(SSEMessage{
+		Type:   SSEEventBatchComplete,
+		RoomID: batchID,
 		Data:   data,
 	})
 }

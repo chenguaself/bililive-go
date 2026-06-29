@@ -649,38 +649,51 @@ func UpdateTransient(mutator func(c *Config) error) (*Config, error) {
 }
 
 func updateImpl(mutator func(c *Config) error, persist bool) (*Config, error) {
-	updateMu.Lock()
-	defer updateMu.Unlock()
-	old := GetCurrentConfig()
-	// 若当前尚未设置配置，则以默认配置为基础
-	var base *Config
-	if old == nil {
-		base = NewConfig()
-	} else {
-		base = CloneConfigShallow(old)
-	}
-	if err := mutator(base); err != nil {
-		return nil, err
-	}
-	// 维护派生字段
-	base.RefreshLiveRoomIndexCache()
-	// 版本号自增
-	if old == nil {
-		base.Version = 1
-	} else {
-		base.Version = old.Version + 1
-	}
-	newCfg := base
+	var newCfg *Config
+	var updateErr error
 
-	if persist && newCfg.File != "" {
-		if err := newCfg.Marshal(); err != nil {
-			// 如果持久化失败，我们选择记录错误但不阻止内存更新
-			// 或者返回错误？这里选择返回错误，因为用户期望保存成功。
-			return nil, fmt.Errorf("failed to save config: %w", err)
+	func() {
+		updateMu.Lock()
+		defer updateMu.Unlock()
+		old := GetCurrentConfig()
+		// 若当前尚未设置配置，则以默认配置为基础
+		var base *Config
+		if old == nil {
+			base = NewConfig()
+		} else {
+			base = CloneConfigShallow(old)
 		}
+		if err := mutator(base); err != nil {
+			updateErr = err
+			return
+		}
+		// 维护派生字段
+		base.RefreshLiveRoomIndexCache()
+		// 版本号自增
+		if old == nil {
+			base.Version = 1
+		} else {
+			base.Version = old.Version + 1
+		}
+		newCfg = base
+
+		// 持久化在锁内执行，保证内存与磁盘一致性
+		if persist && newCfg.File != "" {
+			if err := newCfg.Marshal(); err != nil {
+				updateErr = fmt.Errorf("failed to save config: %w", err)
+				return
+			}
+		}
+		SetCurrentConfig(newCfg)
+	}()
+
+	if updateErr != nil {
+		return nil, updateErr
+	}
+	if newCfg == nil {
+		return nil, errors.New("config update failed")
 	}
 
-	SetCurrentConfig(newCfg)
 	return newCfg, nil
 }
 
@@ -691,38 +704,52 @@ func UpdateCAS(expectedVersion int64, mutator func(c *Config) error) (*Config, e
 }
 
 func updateCASImpl(expectedVersion int64, mutator func(c *Config) error, persist bool) (*Config, error) {
-	updateMu.Lock()
-	defer updateMu.Unlock()
-	cur := GetCurrentConfig()
-	// 校验版本
-	var curVersion int64
-	if cur != nil {
-		curVersion = cur.Version
-	}
-	if curVersion != expectedVersion {
-		return nil, ErrConfigVersionConflict
-	}
-	// 克隆并修改
-	var base *Config
-	if cur == nil {
-		base = NewConfig()
-	} else {
-		base = CloneConfigShallow(cur)
-	}
-	if err := mutator(base); err != nil {
-		return nil, err
-	}
-	base.RefreshLiveRoomIndexCache()
-	base.Version = expectedVersion + 1
+	var newCfg *Config
+	var updateErr error
 
-	if persist && base.File != "" {
-		if err := base.Marshal(); err != nil {
-			return nil, fmt.Errorf("failed to save config: %w", err)
+	func() {
+		updateMu.Lock()
+		defer updateMu.Unlock()
+		cur := GetCurrentConfig()
+		// 校验版本
+		var curVersion int64
+		if cur != nil {
+			curVersion = cur.Version
 		}
+		if curVersion != expectedVersion {
+			updateErr = ErrConfigVersionConflict
+			return
+		}
+		// 克隆并修改
+		var base *Config
+		if cur == nil {
+			base = NewConfig()
+		} else {
+			base = CloneConfigShallow(cur)
+		}
+		if err := mutator(base); err != nil {
+			updateErr = err
+			return
+		}
+		base.RefreshLiveRoomIndexCache()
+		base.Version = expectedVersion + 1
+		newCfg = base
+
+		// 持久化在锁内执行，保证内存与磁盘一致性
+		if persist && newCfg.File != "" {
+			if err := newCfg.Marshal(); err != nil {
+				updateErr = fmt.Errorf("failed to save config: %w", err)
+				return
+			}
+		}
+		SetCurrentConfig(newCfg)
+	}()
+
+	if updateErr != nil {
+		return nil, updateErr
 	}
 
-	SetCurrentConfig(base)
-	return base, nil
+	return newCfg, nil
 }
 
 // UpdateWithRetry 在读取-修改-提交之间做乐观锁重试，避免调用方自行实现重试逻辑
@@ -811,6 +838,14 @@ func AppendLiveRoom(room LiveRoom) (*Config, error) {
 	}, 3, 10*time.Millisecond)
 }
 
+// AppendLiveRoomTransient 追加一个 LiveRoom（仅更新内存，不持久化）。
+func AppendLiveRoomTransient(room LiveRoom) (*Config, error) {
+	return UpdateWithRetryTransient(func(c *Config) error {
+		c.LiveRooms = append(c.LiveRooms, room)
+		return nil
+	}, 3, 10*time.Millisecond)
+}
+
 // RemoveLiveRoomByUrl 从配置中移除指定 URL 的房间
 func RemoveLiveRoomByUrl(url string) (*Config, error) {
 	return UpdateWithRetry(func(c *Config) error {
@@ -847,6 +882,18 @@ func SetLiveRoomId(url string, id types.LiveID) (*Config, error) {
 		}
 		return nil
 	}, 3, 10*time.Millisecond)
+}
+
+// Persist 将当前内存中的配置持久化到磁盘。
+// 用于批量 Transient 更新后统一刷盘的场景。
+func Persist() error {
+	updateMu.Lock()
+	defer updateMu.Unlock()
+	cfg := GetCurrentConfig()
+	if cfg == nil {
+		return errors.New("config not initialized")
+	}
+	return cfg.Marshal()
 }
 
 type LiveRoom struct {

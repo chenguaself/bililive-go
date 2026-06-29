@@ -2,7 +2,7 @@ import React from "react";
 import { Button, Divider, Table, Tag, Tabs, Row, Col, Tooltip, message, List, Typography, Switch, Space, Popconfirm, Select, Spin } from 'antd';
 import { EditOutlined, SyncOutlined, CloudSyncOutlined, ReloadOutlined, SwapOutlined, CheckCircleOutlined, ExclamationCircleOutlined, CommentOutlined } from '@ant-design/icons';
 import PopDialog from '../pop-dialog/index';
-import AddRoomDialog from '../add-room-dialog/index';
+import BatchAddRoomDialog from '../batch-add-room-dialog/index';
 import LogPanel from '../log-panel/index';
 import HistoryPanel from '../history-panel/index';
 import DanmakuPanel, { DanmakuMessage } from '../danmaku-panel/index';
@@ -302,7 +302,7 @@ type RefreshStatus = 'idle' | 'waiting_interval' | 'waiting_rate_limit' | 'refre
 interface IState {
     list: ItemData[],
     cookieList: CookieItemData[],
-    addRoomDialogVisible: boolean,
+    batchAddDialogVisible: boolean,
     window: any,
     expandedRowKeys: string[],  // 展开的行
     expandedDetails: { [key: string]: any }, // 直播间详细信息缓存
@@ -344,9 +344,6 @@ interface Room {
 }
 
 class LiveList extends React.Component<Props, IState> {
-    //子控件
-    child!: AddRoomDialog;
-
     //弹幕批量缓冲（高频场景优化）
     private danmakuBuffer: { [roomId: string]: DanmakuMessage[] } = {};
     private danmakuFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -614,7 +611,7 @@ class LiveList extends React.Component<Props, IState> {
         this.state = {
             list: [],
             cookieList: [],
-            addRoomDialogVisible: false,
+            batchAddDialogVisible: false,
             window: window,
             expandedRowKeys: [],
             expandedDetails: {},
@@ -891,19 +888,8 @@ class LiveList extends React.Component<Props, IState> {
         });
     }
 
-    onRef = (ref: AddRoomDialog) => {
-        this.child = ref
-    }
-
     onCookieRef = (ref: EditCookieDialog) => {
         this.cookieChild = ref
-    }
-
-    /**
-     * 当添加房间按钮点击，弹出Dialog
-     */
-    onAddRoomClick = () => {
-        this.child.showModal()
     }
 
     onEditCookitClick = (data: any) => {
@@ -2102,10 +2088,14 @@ class LiveList extends React.Component<Props, IState> {
                                     </Space>
                                 </Tooltip>
                                 <Button key="2" type="default" onClick={this.onSettingSave}>保存设置</Button>
-                                <Button key="1" type="primary" onClick={this.onAddRoomClick}>
+                                <Button key="1" type="primary" onClick={() => this.setState({ batchAddDialogVisible: true })}>
                                     添加房间
                                 </Button>
-                                <AddRoomDialog key="0" ref={this.onRef} refresh={this.refresh} />
+                                <BatchAddRoomDialog
+                                    visible={this.state.batchAddDialogVisible}
+                                    onClose={() => this.setState({ batchAddDialogVisible: false })}
+                                    onSuccess={this.refresh}
+                                />
                             </div>
                         </div>
                         <Table
