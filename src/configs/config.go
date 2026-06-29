@@ -650,8 +650,7 @@ func UpdateTransient(mutator func(c *Config) error) (*Config, error) {
 
 func updateImpl(mutator func(c *Config) error, persist bool) (*Config, error) {
 	var newCfg *Config
-	var file string
-	var mutatorErr error
+	var updateErr error
 
 	func() {
 		updateMu.Lock()
@@ -665,7 +664,7 @@ func updateImpl(mutator func(c *Config) error, persist bool) (*Config, error) {
 			base = CloneConfigShallow(old)
 		}
 		if err := mutator(base); err != nil {
-			mutatorErr = err
+			updateErr = err
 			return
 		}
 		// 维护派生字段
@@ -677,22 +676,22 @@ func updateImpl(mutator func(c *Config) error, persist bool) (*Config, error) {
 			base.Version = old.Version + 1
 		}
 		newCfg = base
-		file = base.File
+
+		// 持久化在锁内执行，保证内存与磁盘一致性
+		if persist && newCfg.File != "" {
+			if err := newCfg.Marshal(); err != nil {
+				updateErr = fmt.Errorf("failed to save config: %w", err)
+				return
+			}
+		}
 		SetCurrentConfig(newCfg)
 	}()
 
-	if mutatorErr != nil {
-		return nil, mutatorErr
+	if updateErr != nil {
+		return nil, updateErr
 	}
 	if newCfg == nil {
 		return nil, errors.New("config update failed")
-	}
-
-	// 持久化在锁外执行，避免阻塞其他配置更新
-	if persist && file != "" {
-		if err := newCfg.Marshal(); err != nil {
-			return newCfg, fmt.Errorf("failed to save config (in-memory updated): %w", err)
-		}
 	}
 
 	return newCfg, nil
@@ -706,7 +705,6 @@ func UpdateCAS(expectedVersion int64, mutator func(c *Config) error) (*Config, e
 
 func updateCASImpl(expectedVersion int64, mutator func(c *Config) error, persist bool) (*Config, error) {
 	var newCfg *Config
-	var file string
 	var updateErr error
 
 	func() {
@@ -736,19 +734,19 @@ func updateCASImpl(expectedVersion int64, mutator func(c *Config) error, persist
 		base.RefreshLiveRoomIndexCache()
 		base.Version = expectedVersion + 1
 		newCfg = base
-		file = base.File
+
+		// 持久化在锁内执行，保证内存与磁盘一致性
+		if persist && newCfg.File != "" {
+			if err := newCfg.Marshal(); err != nil {
+				updateErr = fmt.Errorf("failed to save config: %w", err)
+				return
+			}
+		}
 		SetCurrentConfig(newCfg)
 	}()
 
 	if updateErr != nil {
 		return nil, updateErr
-	}
-
-	// 持久化在锁外执行，避免阻塞其他配置更新
-	if persist && file != "" {
-		if err := newCfg.Marshal(); err != nil {
-			return newCfg, fmt.Errorf("failed to save config (in-memory updated): %w", err)
-		}
 	}
 
 	return newCfg, nil
@@ -889,6 +887,8 @@ func SetLiveRoomId(url string, id types.LiveID) (*Config, error) {
 // Persist 将当前内存中的配置持久化到磁盘。
 // 用于批量 Transient 更新后统一刷盘的场景。
 func Persist() error {
+	updateMu.Lock()
+	defer updateMu.Unlock()
 	cfg := GetCurrentConfig()
 	if cfg == nil {
 		return errors.New("config not initialized")

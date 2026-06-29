@@ -873,8 +873,10 @@ func batchAddLives(writer http.ResponseWriter, r *http.Request) {
 		}
 
 		// 批量完成后统一持久化一次配置
+		var persistErr string
 		if successCount > 0 {
 			if err := configs.Persist(); err != nil {
+				persistErr = err.Error()
 				applog.GetLogger().Errorf("batch add: failed to persist config: %v", err)
 			}
 		}
@@ -883,6 +885,7 @@ func batchAddLives(writer http.ResponseWriter, r *http.Request) {
 			Total:        len(validURLs),
 			SuccessCount: successCount,
 			FailCount:    failCount,
+			PersistError: persistErr,
 			Timestamp:    time.Now(),
 		})
 	}()

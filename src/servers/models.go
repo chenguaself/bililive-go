@@ -52,5 +52,6 @@ type batchCompleteEvent struct {
 	Total        int       `json:"total"`
 	SuccessCount int       `json:"success_count"`
 	FailCount    int       `json:"fail_count"`
+	PersistError string    `json:"persist_error,omitempty"`
 	Timestamp    time.Time `json:"timestamp"`
 }

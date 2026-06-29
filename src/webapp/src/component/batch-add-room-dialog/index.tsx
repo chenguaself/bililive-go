@@ -51,7 +51,6 @@ const AddRoomDialog: React.FC<Props> = ({ visible, onClose, onSuccess }) => {
   const [importMode, setImportMode] = useState<ImportMode>('text');
   const [singleUrl, setSingleUrl] = useState('');
   const [textInput, setTextInput] = useState('');
-  const [parsedUrls, setParsedUrls] = useState<string[]>([]);
   const [processing, setProcessing] = useState(false);
   const [current, setCurrent] = useState(0);
   const [total, setTotal] = useState(0);
@@ -69,12 +68,6 @@ const AddRoomDialog: React.FC<Props> = ({ visible, onClose, onSuccess }) => {
       .map(line => line.trim())
       .filter(line => line.length > 0 && !line.startsWith('#') && !line.startsWith('＃'));
   }, []);
-
-  useEffect(() => {
-    if (inputMode === 'batch' && importMode === 'text') {
-      setParsedUrls(parseUrls(textInput));
-    }
-  }, [textInput, inputMode, importMode, parseUrls]);
 
   const handleFileImport = useCallback((file: File) => {
     const reader = new FileReader();
@@ -126,7 +119,11 @@ const AddRoomDialog: React.FC<Props> = ({ visible, onClose, onSuccess }) => {
         cleanupSSE();
 
         if (data.fail_count === 0) {
-          antdMessage.success(`添加成功`);
+          if (data.persist_error) {
+            antdMessage.warning('添加成功，但配置保存失败，重启后可能丢失');
+          } else {
+            antdMessage.success(`添加成功`);
+          }
         } else if (data.success_count === 0) {
           antdMessage.error(`添加失败`);
         } else {
@@ -164,7 +161,7 @@ const AddRoomDialog: React.FC<Props> = ({ visible, onClose, onSuccess }) => {
       }
       urls = [trimmed];
     } else {
-      urls = importMode === 'text' ? parseUrls(textInput) : parsedUrls;
+      urls = parseUrls(textInput);
       if (urls.length === 0) {
         antdMessage.warning('请输入至少一个直播间地址');
         return;
@@ -219,7 +216,6 @@ const AddRoomDialog: React.FC<Props> = ({ visible, onClose, onSuccess }) => {
     setImportMode('text');
     setSingleUrl('');
     setTextInput('');
-    setParsedUrls([]);
     setProcessing(false);
     setCurrent(0);
     setTotal(0);
@@ -232,7 +228,7 @@ const AddRoomDialog: React.FC<Props> = ({ visible, onClose, onSuccess }) => {
   const progressPercent = total > 0 && current >= 0 ? Math.round(((current + 1) / total) * 100) : 0;
   const validUrlCount = inputMode === 'single'
     ? (singleUrl.trim() ? 1 : 0)
-    : parsedUrls.length;
+    : parseUrls(textInput).length;
 
   // 单个模式下，成功/失败后显示简要结果而非进度列表
   const isSingleMode = inputMode === 'single' || total === 1;

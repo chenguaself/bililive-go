@@ -111,6 +111,28 @@ func (h *SSEHub) Broadcast(msg SSEMessage) {
 	}
 }
 
+// BroadcastCritical 广播关键消息，channel 满时丢弃最旧消息腾出位置，保证送达。
+func (h *SSEHub) BroadcastCritical(msg SSEMessage) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for ch := range h.clients {
+		select {
+		case ch <- msg:
+		default:
+			// channel 满，丢弃最旧的消息为关键事件腾出位置
+			select {
+			case <-ch:
+			default:
+			}
+			select {
+			case ch <- msg:
+			default:
+				// 仍然满（极端情况），放弃
+			}
+		}
+	}
+}
+
 // BroadcastLiveUpdate 广播直播间状态更新
 func (h *SSEHub) BroadcastLiveUpdate(roomID types.LiveID, data interface{}) {
 	h.Broadcast(SSEMessage{
@@ -242,9 +264,9 @@ func (h *SSEHub) BroadcastBatchProgress(batchID string, data interface{}) {
 	})
 }
 
-// BroadcastBatchComplete 广播批量添加完成
+// BroadcastBatchComplete 广播批量添加完成（关键事件，保证送达）
 func (h *SSEHub) BroadcastBatchComplete(batchID string, data interface{}) {
-	h.Broadcast(SSEMessage{
+	h.BroadcastCritical(SSEMessage{
 		Type:   SSEEventBatchComplete,
 		RoomID: batchID,
 		Data:   data,
