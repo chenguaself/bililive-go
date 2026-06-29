@@ -733,11 +733,7 @@ func addLiveImpl(ctx context.Context, urlStr string, isListen bool, notifyOnly b
 	}
 	// 记录 LiveId 到全局配置（并发安全）
 	configs.SetLiveRoomId(u.String(), newLive.GetLiveId())
-	if isListen {
-		inst.ListenerManager.(listeners.Manager).AddListener(ctx, newLive)
-	}
-	info = parseInfo(ctx, newLive)
-
+	// 先将房间写入配置，再启动 Listener，确保 sendLiveNotification 能读到 NotifyOnly 等字段
 	if needAppend {
 		if liveRoom == nil {
 			return nil, errors.New("liveRoom is nil, cannot append to LiveRooms")
@@ -752,6 +748,10 @@ func addLiveImpl(ctx context.Context, urlStr string, isListen bool, notifyOnly b
 			}
 		}
 	}
+	if isListen {
+		inst.ListenerManager.(listeners.Manager).AddListener(ctx, newLive)
+	}
+	info = parseInfo(ctx, newLive)
 	// 广播直播间列表变更事件
 	GetSSEHub().BroadcastListChange(newLive.GetLiveId(), "room_added", map[string]interface{}{
 		"live_id":   string(newLive.GetLiveId()),
