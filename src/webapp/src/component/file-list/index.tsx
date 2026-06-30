@@ -77,7 +77,7 @@ function parseAss(content: string): { items: DanmakuEntry[]; scrollTime: number;
                 const name = sp[0].trim();
                 styleColors[name] = parseAssColor(sp[3].trim());
                 styleBackColors[name] = parseAssColor(sp[6].trim());
-                styleMarginV[name] = parseInt(sp[22].trim()) || 0;
+                styleMarginV[name] = parseInt(sp[21].trim()) || 0;
             }
             continue;
         }
@@ -101,7 +101,8 @@ function parseAss(content: string): { items: DanmakuEntry[]; scrollTime: number;
         const start = parseAssTime(parts[1]);
         const end = parseAssTime(parts[2]);
         // MarginV: Dialogue 行的第 8 个字段（0-indexed: 7）
-        const marginV = parseInt(parts[7].trim()) || styleMarginV[style] || 0;
+        const mv = parseInt(parts[7].trim(), 10);
+        const marginV = Number.isNaN(mv) ? (styleMarginV[style] ?? 0) : mv;
         const raw = parts.slice(9).join(',');
         // 优先使用 Dialogue 行中的 {\c} 覆盖色，否则回退到样式定义的 PrimaryColour
         let color = styleColors[style] || 'rgba(255,255,255,1)';
@@ -157,7 +158,6 @@ class DanmakuRenderer {
     private overlay: HTMLDivElement;
     private video: HTMLVideoElement;
     private items: DanmakuEntry[];
-    private scrollTime: number;
     private filter: DanmakuFilter;
     private settings: DanmakuSettings;
     private rafId = 0;
@@ -172,11 +172,10 @@ class DanmakuRenderer {
     // ASS 原始分辨率（用于 marginV 缩放）
     private resY = 1080;
 
-    constructor(overlay: HTMLDivElement, video: HTMLVideoElement, items: DanmakuEntry[], scrollTime: number, filter: DanmakuFilter, resY: number, settings: DanmakuSettings) {
+    constructor(overlay: HTMLDivElement, video: HTMLVideoElement, items: DanmakuEntry[], filter: DanmakuFilter, resY: number, settings: DanmakuSettings) {
         this.overlay = overlay;
         this.video = video;
         this.items = items.slice().sort((a, b) => a.start - b.start);
-        this.scrollTime = scrollTime;
         this.filter = filter;
         this.resY = resY > 0 ? resY : 1080;
         this.settings = settings;
@@ -263,9 +262,15 @@ class DanmakuRenderer {
     /** 动态更新设置，无需销毁重建 */
     update(filter: DanmakuFilter, settings: DanmakuSettings) {
         this.filter = filter;
+        // 检测是否需要重绘：区域、字体大小、滚动时间变化会影响已上屏弹幕
+        const needReset = settings.area !== this.settings.area
+            || settings.fontSize !== this.settings.fontSize
+            || settings.scrollTime !== this.settings.scrollTime;
         this.settings = settings;
         // 透明度直接应用到 overlay
         this.overlay.style.opacity = String(settings.opacity);
+        // 属性变化时重绘，避免新旧弹幕视觉不一致
+        if (needReset) this.seek(this.video.currentTime);
     }
 
     private tick = () => {
@@ -277,13 +282,13 @@ class DanmakuRenderer {
         const cw = this.overlay.clientWidth || 1;
         const ch = this.overlay.clientHeight || 1;
 
-        // 1. 清理已结束的滚动弹幕
-        for (let i = this.scrollEls.length - 1; i >= 0; i--) {
-            if (this.scrollEls[i].endTime <= t) {
-                this.scrollEls[i].el.remove();
-                this.scrollEls.splice(i, 1);
-            }
+        // 1. 清理已结束的滚动弹幕（endTime 大致递增，从队头移除）
+        let scrollRemoved = 0;
+        while (scrollRemoved < this.scrollEls.length && this.scrollEls[scrollRemoved].endTime <= t) {
+            this.scrollEls[scrollRemoved].el.remove();
+            scrollRemoved++;
         }
+        if (scrollRemoved > 0) this.scrollEls.splice(0, scrollRemoved);
 
         // 2. 清理过期的固定位置消息 + 淡出动画
         let fixedChanged = false;
@@ -357,8 +362,8 @@ class DanmakuRenderer {
         const textPx = this.estimateTextWidth(item.text);
         const twPct = (textPx / cw) * 100;
 
-        // 计算结束时间（使用 settings 中的 scrollTime）
-        const endTime = item.start + scrollTime + (textPx / cw) * scrollTime;
+        // 计算结束时间：基于实际 spawn 时间 t，确保弹幕完整滚出屏幕
+        const endTime = t + scrollTime + (textPx / cw) * scrollTime;
 
         // 创建 DOM
         const el = document.createElement('div');
@@ -555,6 +560,7 @@ const FileList: React.FC = () => {
             danmakuRef.current.stop();
             danmakuRef.current = null;
         }
+        parsedItemsRef.current = null;
         if (artRef.current) {
             artRef.current.destroy(true);
             artRef.current = null;
@@ -674,7 +680,10 @@ const FileList: React.FC = () => {
                 overlay.className = 'danmaku-overlay';
                 artInner.appendChild(overlay);
 
-                const renderer = new DanmakuRenderer(overlay, artRef.current!.video, items, scrollTime, { danmaku: filterDanmaku, gift: filterGift, guard: filterGuard, sc: filterSC }, resY, danmakuSettings);
+                // 使用 ASS 解析的 scrollTime 作为初始值
+                const initialSettings = { ...danmakuSettings, scrollTime };
+                setDanmakuSettings(initialSettings);
+                const renderer = new DanmakuRenderer(overlay, artRef.current!.video, items, { danmaku: filterDanmaku, gift: filterGift, guard: filterGuard, sc: filterSC }, resY, initialSettings);
                 danmakuRef.current = renderer;
                 renderer.start();
                 if (artRef.current!.video.currentTime > 0) {
@@ -682,7 +691,7 @@ const FileList: React.FC = () => {
                 }
             })
             .catch(() => { /* 没有 ASS 文件或加载失败，静默忽略 */ });
-    }, [filterDanmaku, filterGift, filterGuard, filterSC]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [filterDanmaku, filterGift, filterGuard, filterSC, danmakuSettings]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // 过滤开关或设置变化时更新弹幕渲染器
     useEffect(() => {
@@ -703,8 +712,8 @@ const FileList: React.FC = () => {
         overlay.className = 'danmaku-overlay';
         artInner.appendChild(overlay);
 
-        const { items, scrollTime, resY } = parsedItemsRef.current;
-        const renderer = new DanmakuRenderer(overlay, artRef.current.video, items, scrollTime, filter, resY, danmakuSettings);
+        const { items, resY } = parsedItemsRef.current;
+        const renderer = new DanmakuRenderer(overlay, artRef.current.video, items, filter, resY, danmakuSettings);
         danmakuRef.current = renderer;
         renderer.start();
         if (artRef.current.video.currentTime > 0) {
@@ -950,6 +959,7 @@ const FileList: React.FC = () => {
                     danmakuRef.current.stop();
                     danmakuRef.current = null;
                 }
+                parsedItemsRef.current = null;
                 if (artRef.current) {
                     artRef.current.destroy(true);
                 }
@@ -1057,7 +1067,10 @@ const FileList: React.FC = () => {
                                 overlay.className = 'danmaku-overlay';
                                 artInner.appendChild(overlay);
 
-                                const renderer = new DanmakuRenderer(overlay, art.video, items, scrollTime, { danmaku: filterDanmaku, gift: filterGift, guard: filterGuard, sc: filterSC }, resY, danmakuSettings);
+                                // 使用 ASS 解析的 scrollTime 作为初始值
+                                const initialSettings = { ...danmakuSettings, scrollTime };
+                                setDanmakuSettings(initialSettings);
+                                const renderer = new DanmakuRenderer(overlay, art.video, items, { danmaku: filterDanmaku, gift: filterGift, guard: filterGuard, sc: filterSC }, resY, initialSettings);
                                 danmakuRef.current = renderer;
                                 renderer.start();
                                 // 如果浏览器恢复了播放位置，跳转到当前时间
