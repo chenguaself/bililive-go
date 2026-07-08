@@ -46,9 +46,24 @@ func GetFFmpegPath(ctx context.Context) (string, error) {
 		}
 	}
 
+	return LookupSystemFFmpeg()
+}
+
+// EnvIgnoreSystemFFmpeg 设置该环境变量后跳过系统 PATH 中的 FFmpeg 查找，
+// 强制走 remotetools 下载流程。仅用于 e2e 测试模拟"无 FFmpeg"环境
+// （CI 机器普遍预装 ffmpeg，无法用真实 PATH 构造该场景）。
+const EnvIgnoreSystemFFmpeg = "BILILIVE_IGNORE_SYSTEM_FFMPEG"
+
+// LookupSystemFFmpeg 在系统 PATH 中查找 ffmpeg，找不到时回退查找工作目录下的 ./ffmpeg
+// （允许把 ffmpeg 和主程序放在同一目录）。
+// 注意不能只处理 exec.ErrDot：Unix 下当前目录不在 PATH 中，
+// LookPath 返回 ErrNotFound 而非 ErrDot，因此任何失败都应尝试 ./ffmpeg。
+func LookupSystemFFmpeg() (string, error) {
+	if os.Getenv(EnvIgnoreSystemFFmpeg) != "" {
+		return "", errors.New("system ffmpeg lookup disabled by " + EnvIgnoreSystemFFmpeg)
+	}
 	path, err := exec.LookPath("ffmpeg")
-	if errors.Is(err, exec.ErrDot) {
-		// put ffmpeg.exe and binary like bililive-windows-amd64.exe to the same folder is allowed
+	if err != nil {
 		path, err = exec.LookPath("./ffmpeg")
 	}
 	return path, err

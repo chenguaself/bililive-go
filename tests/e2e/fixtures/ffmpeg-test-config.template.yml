@@ -1,12 +1,14 @@
 # bililive-go 配置 — FFmpeg e2e 测试专用
-# ffmpeg_path 指向一个不存在的路径，以确保程序走 remotetools 下载路径
+# ffmpeg_path 留空 + 环境变量 BILILIVE_IGNORE_SYSTEM_FFMPEG=1（由 playwright 配置注入），
+# 确保程序走 remotetools 下载路径（CI 机器普遍预装 ffmpeg，无法用真实 PATH 模拟无 FFmpeg 环境；
+# 配置无效路径也不行——该场景下程序会直接报 not_found 提示修正配置，不会去下载）
 rpc:
   enable: true
   bind: 127.0.0.1:8085
 debug: false
 interval: 5
 out_put_path: ./test-output
-ffmpeg_path: "./test-output/nonexistent-ffmpeg-for-e2e-test"
+ffmpeg_path: ""
 log:
   out_put_folder: ./
   save_last_log: true

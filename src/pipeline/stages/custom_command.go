@@ -12,6 +12,7 @@ import (
 
 	"github.com/bililive-go/bililive-go/src/pipeline"
 	"github.com/bililive-go/bililive-go/src/pkg/utils"
+	"github.com/bililive-go/bililive-go/src/tools"
 )
 
 // CustomCommandStage 自定义命令阶段
@@ -99,8 +100,9 @@ func (s *CustomCommandStage) renderCommand(ctx *pipeline.PipelineContext, file p
 		FFmpeg:    ctx.FFmpegPath,
 	}
 
-	// 如果 FFmpeg 路径为空，尝试获取
+	// 如果 FFmpeg 路径为空，尝试获取（FFmpeg 可能仍在后台异步下载，先等待其就绪）
 	if data.FFmpeg == "" {
+		_ = tools.WaitFFmpegAsyncInitDone(ctx.Ctx, nil)
 		if ffmpegPath, err := utils.GetFFmpegPath(ctx.Ctx); err == nil {
 			data.FFmpeg = ffmpegPath
 		}

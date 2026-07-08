@@ -173,7 +173,7 @@ func (p *Parser) ParseLiveStream(ctx context.Context, streamUrlInfo *live.Stream
 		// 找不到 FFmpeg 且后台异步初始化（tools.FFmpegAsyncInit）仍在检测/下载时，
 		// 挂起等待其进入终态后重查一次，避免开播瞬间陷入"找不到 FFmpeg → 5 秒重试"
 		// 的失败循环；下载一完成录制立即开始。等待可被 ctx 取消或 Stop() 中断。
-		if waitErr := p.waitFFmpegAsyncInit(ctx); waitErr != nil {
+		if waitErr := tools.WaitFFmpegAsyncInitDone(ctx, p.stopped); waitErr != nil {
 			return waitErr
 		}
 		if ffmpegPath, err = utils.GetFFmpegPathForLive(ctx, live); err != nil {
@@ -317,32 +317,6 @@ func (p *Parser) ParseLiveStream(ctx context.Context, streamUrlInfo *live.Stream
 		return err
 	}
 	return nil
-}
-
-// waitFFmpegAsyncInit 在 FFmpeg 异步初始化处于 checking/downloading 状态时阻塞，
-// 直到其进入终态（ready/not_found/error）、ctx 取消或 Stop() 被调用。
-// 终态时返回 nil，由调用方重新查找 FFmpeg 路径并给出与原有逻辑一致的错误。
-func (p *Parser) waitFFmpegAsyncInit(ctx context.Context) error {
-	logged := false
-	for {
-		// 先取变化通知 channel 再读状态，避免漏掉两步之间的状态变化
-		changed := tools.FFmpegStatusChanged()
-		state := tools.GetFFmpegStatus().State
-		if state != "checking" && state != "downloading" {
-			return nil
-		}
-		if !logged {
-			p.logger.Infof("FFmpeg 尚未就绪（%s），等待后台下载完成后开始录制...", state)
-			logged = true
-		}
-		select {
-		case <-changed:
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-p.stopped:
-			return fmt.Errorf("录制在等待 FFmpeg 就绪时被停止")
-		}
-	}
 }
 
 // isFlvStream 判断 URL 是否指向 FLV 流

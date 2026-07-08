@@ -68,11 +68,13 @@ func WaitForToolsInit(ctx context.Context) error {
 	// 进入 initializing），此时轮询等待本轮结束，确保读到的是最新一轮的结果。
 	// Init() 的 defer 中先调用 signalToolsReady 更新 toolsInitError、再更新
 	// currentToolStatus，因此观察到状态离开 initializing 时错误值一定已是本轮的。
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
 	for toolStatusValue(currentToolStatus.Load()) == toolStatusValueInitializing {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(50 * time.Millisecond):
+		case <-ticker.C:
 		}
 	}
 	toolsInitMu.Lock()
@@ -90,12 +92,19 @@ type FFmpegStatus struct {
 
 var (
 	ffmpegStatusVal atomic.Value // stores FFmpegStatus
+	// ffmpegStatusMu 串行化 setFFmpegStatus 的整个流程（存储、变化通知、回调执行），
+	// 保证并发更新时订阅者（如 SSE 广播）看到的状态顺序与实际更新顺序一致
+	ffmpegStatusMu  sync.Mutex
 	ffmpegCbMu      sync.RWMutex
 	ffmpegCallbacks []func(FFmpegStatus)
 
 	// ffmpegStatusChangedCh 在每次状态变化时被关闭并重建，供等待方感知状态变化
 	ffmpegStatusChangedMu sync.Mutex
 	ffmpegStatusChangedCh = make(chan struct{})
+
+	// ffmpegInitRunning 确保同一时间只有一个 FFmpegAsyncInit 流程在运行，
+	// 避免并发调用（如 e2e 测试多次触发 reinit）导致并发 tool.Install()
+	ffmpegInitRunning atomic.Bool
 )
 
 func init() {
@@ -103,6 +112,9 @@ func init() {
 }
 
 func setFFmpegStatus(s FFmpegStatus) {
+	ffmpegStatusMu.Lock()
+	defer ffmpegStatusMu.Unlock()
+
 	ffmpegStatusVal.Store(s)
 	ffmpegStatusChangedMu.Lock()
 	close(ffmpegStatusChangedCh)
@@ -139,6 +151,35 @@ func FFmpegStatusChanged() <-chan struct{} {
 	return ffmpegStatusChangedCh
 }
 
+// WaitFFmpegAsyncInitDone 在 FFmpeg 异步初始化仍在进行（checking/downloading）时阻塞，
+// 直到其进入终态（ready/not_found/error）。用于录制、后处理等依赖 FFmpeg 的路径
+// 在后台下载完成后立即继续，而非陷入失败重试循环。
+// stop 可为 nil，用于额外的中断信号（如 parser 的 Stop()）。
+// 到达终态返回 nil（是否可用由调用方随后的路径查找决定，错误语义与原有逻辑一致）；
+// 因 ctx 取消或 stop 关闭而中断时返回相应错误。
+func WaitFFmpegAsyncInitDone(ctx context.Context, stop <-chan struct{}) error {
+	logged := false
+	for {
+		// 先取变化通知 channel 再读状态，避免漏掉两步之间的状态变化
+		changed := FFmpegStatusChanged()
+		state := GetFFmpegStatus().State
+		if state != "checking" && state != "downloading" {
+			return nil
+		}
+		if !logged {
+			blog.GetLogger().Infof("FFmpeg 尚未就绪（%s），等待后台初始化完成...", state)
+			logged = true
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-stop: // stop 为 nil 时此分支永远不会触发
+			return errors.New("等待 FFmpeg 就绪时被中断")
+		}
+	}
+}
+
 // OnFFmpegStatusChange 注册 FFmpeg 状态变化回调，在状态改变时被调用
 func OnFFmpegStatusChange(fn func(FFmpegStatus)) {
 	ffmpegCbMu.Lock()
@@ -151,33 +192,37 @@ func ForceFFmpegStatus(s FFmpegStatus) {
 	setFFmpegStatus(s)
 }
 
-// isFFmpegAvailableWithoutRemotetools 仅检查配置路径和系统 PATH，
-// 不访问 remotetools（避免在 Init() 完成前触及未配置好的 remotetools 状态）。
-// 语义与 utils.GetFFmpegPath 保持一致：配置了 ffmpeg_path 时以该路径为准，
-// 路径无效时不回退到系统 PATH（应走 remotetools 下载流程）。
-func isFFmpegAvailableWithoutRemotetools() bool {
-	if cfg := configs.GetCurrentConfig(); cfg != nil {
-		if path := strings.TrimSpace(cfg.FfmpegPath); path != "" {
-			_, err := os.Stat(path)
-			return err == nil
-		}
-	}
-	_, err := exec.LookPath("ffmpeg")
-	if errors.Is(err, exec.ErrDot) {
-		// 允许把 ffmpeg 和主程序放在同一目录（与 utils.GetFFmpegPath 行为一致）
-		_, err = exec.LookPath("./ffmpeg")
-	}
-	return err == nil
-}
-
 // FFmpegAsyncInit 异步检测并（按需）下载 FFmpeg，期间通过状态回调通知进度。
 // 可在 WebUI 启动后立即调用，不会阻塞主流程。
+// 并发调用时只有第一个调用生效，其余直接返回（避免并发 Install）。
 func FFmpegAsyncInit(ctx context.Context) {
+	if !ffmpegInitRunning.CompareAndSwap(false, true) {
+		return
+	}
 	setFFmpegStatus(FFmpegStatus{State: "checking"})
 	bilisentry.GoWithContext(ctx, func(ctx context.Context) {
-		// 先仅检查配置路径与系统 PATH，不触碰 remotetools（此时 Init() 尚未完成）
-		if isFFmpegAvailableWithoutRemotetools() {
-			blog.GetLogger().Info("FFmpeg found in system PATH or config")
+		defer ffmpegInitRunning.Store(false)
+
+		// 配置显式指定了 ffmpeg_path 时以其为准：实际录制查找（utils.GetFFmpegPath）
+		// 对非空配置路径只做存在性检查、不回退 remotetools/PATH，
+		// 因此路径无效时下载也无济于事，直接提示用户修正配置
+		if cfg := configs.GetCurrentConfig(); cfg != nil && cfg.FfmpegPath != "" {
+			if _, err := os.Stat(cfg.FfmpegPath); err == nil {
+				blog.GetLogger().Infof("FFmpeg found at configured path: %s", cfg.FfmpegPath)
+				setFFmpegStatus(FFmpegStatus{State: "ready", Source: "system"})
+			} else {
+				blog.GetLogger().Warnf("configured ffmpeg_path does not exist: %s", cfg.FfmpegPath)
+				setFFmpegStatus(FFmpegStatus{
+					State:   "not_found",
+					Message: "配置的 ffmpeg_path 不存在: " + cfg.FfmpegPath,
+				})
+			}
+			return
+		}
+
+		// 检查系统 PATH（含 ./ffmpeg 兜底），不触碰 remotetools（此时 Init() 尚未完成）
+		if _, err := utils.LookupSystemFFmpeg(); err == nil {
+			blog.GetLogger().Info("FFmpeg found in system PATH")
 			setFFmpegStatus(FFmpegStatus{State: "ready", Source: "system"})
 			return
 		}
@@ -218,7 +263,10 @@ func FFmpegAsyncInit(ctx context.Context) {
 			return
 		}
 
-		// 需要下载
+		// 需要下载；程序若已在退出流程中则不再发起耗时下载
+		if ctx.Err() != nil {
+			return
+		}
 		source := tool.GetInstallSource()
 		blog.GetLogger().Infof("FFmpeg not found locally, downloading from %s...", source)
 		setFFmpegStatus(FFmpegStatus{

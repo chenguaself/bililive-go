@@ -130,7 +130,8 @@ func handleDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.Itoa(len(zipData)))
 	w.WriteHeader(http.StatusOK)
 
-	// 限速发送（speed <= 0 时一次性发送剩余数据）
+	// 限速发送（speed <= 0 时一次性发送剩余数据）。
+	// 写入失败说明客户端已断开，立即返回以免继续空转 sleep
 	const chunkSize = 4096
 	data := zipData
 	for len(data) > 0 {
@@ -143,7 +144,10 @@ func handleDownload(w http.ResponseWriter, r *http.Request) {
 		if n > len(data) {
 			n = len(data)
 		}
-		w.Write(data[:n])
+		if _, err := w.Write(data[:n]); err != nil {
+			log.Printf("[ffmpeg-mock] 客户端中断下载: %v", err)
+			return
+		}
 		data = data[n:]
 		if flusher, ok2 := w.(http.Flusher); ok2 {
 			flusher.Flush()

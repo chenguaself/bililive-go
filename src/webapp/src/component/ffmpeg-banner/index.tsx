@@ -39,7 +39,10 @@ const FFmpegBanner: React.FC = () => {
       if (active && !sseReceived && res?.state) {
         setStatus(res as FFmpegStatus);
       }
-    }).catch(() => {});
+    }).catch((err) => {
+      // 初始查询失败时依赖 SSE 推送兜底；打印日志便于定位"横幅一直不出现"类问题
+      console.warn('[FFmpegBanner] 获取 FFmpeg 状态失败:', err);
+    });
 
     return () => {
       active = false;

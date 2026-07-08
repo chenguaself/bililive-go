@@ -41,18 +41,25 @@ if (!process.env.TEST_WORKER_INDEX) {
   }
 }
 
-// 构建启动 bgo 的命令（需设置 REMOTETOOLS_CONFIG 环境变量）
+// 构建启动 bgo 的命令。
+// REMOTETOOLS_CONFIG：将 remotetools 下载源重定向到本地 mock server；
+// BILILIVE_IGNORE_SYSTEM_FFMPEG：跳过系统 PATH 中的 FFmpeg 查找（CI 机器预装了 ffmpeg），
+// 强制走 remotetools 下载流程。
 function makeBgoCommand(): string {
   const configArg = `test-output/ffmpeg-test-config.yml`;
   if (process.platform === 'win32') {
     // PowerShell 语法设置环境变量
     return (
       `powershell -Command "$env:REMOTETOOLS_CONFIG='${toolsConfigPath}'; ` +
+      `$env:BILILIVE_IGNORE_SYSTEM_FFMPEG='1'; ` +
       `go run -tags dev ./src/cmd/bililive --config ${configArg}"`
     );
   }
   // bash/sh 语法
-  return `REMOTETOOLS_CONFIG='${toolsConfigPath}' go run -tags dev ./src/cmd/bililive --config ${configArg}`;
+  return (
+    `REMOTETOOLS_CONFIG='${toolsConfigPath}' BILILIVE_IGNORE_SYSTEM_FFMPEG=1 ` +
+    `go run -tags dev ./src/cmd/bililive --config ${configArg}`
+  );
 }
 
 export default defineConfig({

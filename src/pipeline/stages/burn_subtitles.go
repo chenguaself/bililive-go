@@ -15,6 +15,7 @@ import (
 	"github.com/bililive-go/bililive-go/src/pipeline"
 	bilisentry "github.com/bililive-go/bililive-go/src/pkg/sentry"
 	"github.com/bililive-go/bililive-go/src/pkg/utils"
+	"github.com/bililive-go/bililive-go/src/tools"
 	"github.com/sirupsen/logrus"
 )
 
@@ -59,6 +60,9 @@ func (s *BurnSubtitlesStage) Execute(ctx *pipeline.PipelineContext, input []pipe
 
 	ffmpegPath := ctx.FFmpegPath
 	if ffmpegPath == "" {
+		// FFmpeg 可能仍在后台异步下载（首次启动场景），等待其就绪后再查找，
+		// 避免短直播录制结束时后处理任务因 FFmpeg 未下载完成而失败
+		_ = tools.WaitFFmpegAsyncInitDone(ctx.Ctx, nil)
 		var err error
 		ffmpegPath, err = utils.GetFFmpegPath(ctx.Ctx)
 		if err != nil {

@@ -39,6 +39,7 @@ import (
 	"github.com/bililive-go/bililive-go/src/pkg/streamprobe"
 	"github.com/bililive-go/bililive-go/src/pkg/utils"
 	"github.com/bililive-go/bililive-go/src/recorders/danmaku"
+	"github.com/bililive-go/bililive-go/src/tools"
 )
 
 const (
@@ -626,6 +627,9 @@ func (r *recorder) tryRecord(ctx context.Context) {
 		// 累积录制文件信息（legacy 路径），待录制结束后统一推送摘要
 		r.accumulateRecordedFiles(fileName)
 
+		// FFmpeg 可能仍在后台异步下载（如 native 下载器录制的短直播刚结束时），
+		// 等待其就绪后再查找，避免后处理命令因 FFmpeg 未下载完成而失败
+		_ = tools.WaitFFmpegAsyncInitDone(ctx, nil)
 		ffmpegPath, ffmpegErr := utils.GetFFmpegPathForLive(ctx, r.Live)
 		if ffmpegErr != nil {
 			r.getLogger().WithError(ffmpegErr).Error("failed to find ffmpeg")
