@@ -18,7 +18,9 @@ export type SSEEventType =
   | 'update_error'
   | 'danmaku'
   | 'ffmpeg_status'
-  | 'memory_warning';
+  | 'memory_warning'
+  | 'batch_progress'
+  | 'batch_complete';
 
 // SSE 消息结构
 export interface SSEMessage {
@@ -155,6 +157,16 @@ class SSEManager {
       // 监听 memory_warning 事件（内存占用警告）
       this.eventSource.addEventListener('memory_warning', (event: MessageEvent) => {
         this.handleMessage('memory_warning', event.data);
+      });
+
+      // 监听 batch_progress 事件（批量添加进度）
+      this.eventSource.addEventListener('batch_progress', (event: MessageEvent) => {
+        this.handleMessage('batch_progress', event.data);
+      });
+
+      // 监听 batch_complete 事件（批量添加完成）
+      this.eventSource.addEventListener('batch_complete', (event: MessageEvent) => {
+        this.handleMessage('batch_complete', event.data);
       });
 
     } catch (error) {

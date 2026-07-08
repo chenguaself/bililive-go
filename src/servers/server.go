@@ -84,6 +84,7 @@ func initMux(ctx context.Context) *mux.Router {
 	apiRoute.HandleFunc("/raw-config", putRawConfig).Methods("PUT")
 	apiRoute.HandleFunc("/lives", getAllLives).Methods("GET")
 	apiRoute.HandleFunc("/lives", addLives).Methods("POST")
+	apiRoute.HandleFunc("/lives/batch", batchAddLives).Methods("POST")
 	apiRoute.HandleFunc("/lives/{id}", getLive).Methods("GET")
 	apiRoute.HandleFunc("/lives/{id}", removeLive).Methods("DELETE")
 	apiRoute.HandleFunc("/lives/{id}/logs", getLiveLogs).Methods("GET")
