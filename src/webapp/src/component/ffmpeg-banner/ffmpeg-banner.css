@@ -1,9 +1,6 @@
+/* 置于普通文档流中，与 update-banner 自然向下堆叠并把页面内容推开，
+   避免 fixed 定位导致的横幅互相重叠或遮挡页面顶部内容 */
 .ffmpeg-banner {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 1001;
   border-radius: 0;
 }
 

@@ -17,7 +17,8 @@ export type SSEEventType =
   | 'update_ready'
   | 'update_error'
   | 'danmaku'
-  | 'ffmpeg_status';
+  | 'ffmpeg_status'
+  | 'memory_warning';
 
 // SSE 消息结构
 export interface SSEMessage {
@@ -149,6 +150,11 @@ class SSEManager {
       // 监听 ffmpeg_status 事件（FFmpeg 就绪状态）
       this.eventSource.addEventListener('ffmpeg_status', (event: MessageEvent) => {
         this.handleMessage('ffmpeg_status', event.data);
+      });
+
+      // 监听 memory_warning 事件（内存占用警告）
+      this.eventSource.addEventListener('memory_warning', (event: MessageEvent) => {
+        this.handleMessage('memory_warning', event.data);
       });
 
     } catch (error) {

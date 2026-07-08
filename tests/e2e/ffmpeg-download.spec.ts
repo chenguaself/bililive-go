@@ -12,12 +12,29 @@
  * - 测试验证 Banner 在 downloading → ready 整个流程中的正确行为
  */
 import { test, expect, Page } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const BGO_BASE = 'http://127.0.0.1:8085';
 const MOCK_SERVER = 'http://127.0.0.1:8890';
 
+// 与 tests/e2e/fixtures/ffmpeg-test-config.template.yml 中 app_data_path 对应
+const FFMPEG_TOOL_CACHE = path.join(
+  __dirname,
+  '../../test-output/.appdata-ffmpeg-e2e/external_tools',
+);
+
 function ffmpegBanner(page: Page) {
   return page.locator('.ffmpeg-banner');
+}
+
+/**
+ * 等待 WebUI 主界面渲染完成。
+ * 不能用 waitForLoadState('networkidle')：页面挂载后 SSE 长连接一直保持打开，
+ * networkidle 状态可能永远不会到来。
+ */
+async function waitForAppReady(page: Page) {
+  await expect(page.locator('.ant-layout').first()).toBeVisible({ timeout: 15_000 });
 }
 
 /** 设置 mock server 的行为 */
@@ -61,11 +78,12 @@ test.describe('FFmpeg 异步下载流程', () => {
     page,
     request,
   }) => {
-    // 设置 mock server 为慢速（1KB/s），让下载过程持续足够长以供观察
-    await setMockServerControl(request, { speed: 1024, fail: false });
+    // mock server 启动参数已设置初始限速 1KB/s（见 playwright.ffmpeg.config.ts），
+    // 确保 bgo 启动后立即开始的下载不会在测试执行前完成；这里仅确认失败模式关闭
+    await setMockServerControl(request, { fail: false });
 
     await page.goto(BGO_BASE + '/');
-    await page.waitForLoadState('networkidle');
+    await waitForAppReady(page);
 
     // 等待出现 downloading 状态（下载启动后 UI 应显示进度横幅）
     await expect(ffmpegBanner(page)).toBeVisible({ timeout: 30_000 });
@@ -87,11 +105,19 @@ test.describe('FFmpeg 异步下载流程', () => {
   });
 
   test('下载失败时 Banner 显示 error 状态', async ({ page, request }) => {
+    // 上一个用例已把 fake-ffmpeg 下载进缓存且状态为 ready；
+    // 删除工具缓存并重新触发异步初始化，让下载流程真正重新走一遍
+    fs.rmSync(FFMPEG_TOOL_CACHE, { recursive: true, force: true });
+
     // 设置 mock server 为失败模式
     await setMockServerControl(request, { fail: true, speed: 0 });
 
+    // 重新触发 FFmpeg 异步初始化（dev 构建专有 debug 端点）
+    const reinitResp = await request.post(`${BGO_BASE}/api/debug/ffmpeg/reinit`);
+    expect(reinitResp.status()).toBe(200);
+
     await page.goto(BGO_BASE + '/');
-    await page.waitForLoadState('networkidle');
+    await waitForAppReady(page);
 
     // 等待 error 状态出现
     await expect(ffmpegBanner(page)).toBeVisible({ timeout: 30_000 });
@@ -111,7 +137,7 @@ test.describe('FFmpeg 异步下载流程', () => {
 
     // 刷新页面
     await page.goto(BGO_BASE + '/');
-    await page.waitForLoadState('networkidle');
+    await waitForAppReady(page);
 
     if (status.state === 'ready') {
       // ready 状态：Banner 不应显示

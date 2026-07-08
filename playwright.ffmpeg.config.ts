@@ -24,16 +24,21 @@ const toolsConfigPath = path.join(
   'tests/e2e/fixtures/test-tools-config.json',
 ).replace(/\\/g, '/');
 
-// 确保 test-output 目录存在并准备配置文件
-fs.mkdirSync(path.dirname(configRuntime), { recursive: true });
-fs.copyFileSync(configTemplate, configRuntime);
+// 以下带副作用的准备工作只能在 Playwright 主进程执行一次。
+// worker 进程也会重新加载本配置文件（此时 TEST_WORKER_INDEX 已设置），
+// 若在 worker 中再次执行 rmSync，会把 bgo 正在下载写入的工具目录删掉，导致下载报错。
+if (!process.env.TEST_WORKER_INDEX) {
+  // 确保 test-output 目录存在并准备配置文件
+  fs.mkdirSync(path.dirname(configRuntime), { recursive: true });
+  fs.copyFileSync(configTemplate, configRuntime);
 
-// 清空 FFmpeg e2e 测试专用的 appdata 目录，避免上次测试缓存的 fake-ffmpeg 影响结果
-const ffmpegAppData = path.join(__dirname, 'test-output/.appdata-ffmpeg-e2e/external_tools');
-try {
-  fs.rmSync(ffmpegAppData, { recursive: true, force: true });
-} catch (_) {
-  // 目录不存在时忽略
+  // 清空 FFmpeg e2e 测试专用的 appdata 目录，避免上次测试缓存的 fake-ffmpeg 影响结果
+  const ffmpegAppData = path.join(__dirname, 'test-output/.appdata-ffmpeg-e2e/external_tools');
+  try {
+    fs.rmSync(ffmpegAppData, { recursive: true, force: true });
+  } catch (_) {
+    // 目录不存在时忽略
+  }
 }
 
 // 构建启动 bgo 的命令（需设置 REMOTETOOLS_CONFIG 环境变量）
@@ -85,8 +90,10 @@ export default defineConfig({
 
   webServer: [
     // ffmpeg-mock-server — 提供可控的 FFmpeg zip 下载
+    // 初始限速 1KB/s：必须在 bgo 启动前生效，否则 bgo 的 FFmpegAsyncInit 可能在
+    // 测试用例执行前就完成不限速下载，导致 downloading 状态断言失败
     {
-      command: 'go run ./test/ffmpeg-mock-server -port 8890',
+      command: 'go run ./test/ffmpeg-mock-server -port 8890 -speed 1024',
       url: 'http://127.0.0.1:8890/health',
       reuseExistingServer: false,
       timeout: 120 * 1000, // 等待 fake-ffmpeg 编译完成

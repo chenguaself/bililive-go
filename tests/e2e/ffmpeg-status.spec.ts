@@ -40,8 +40,8 @@ test.describe('FFmpeg 状态 Banner', () => {
     // 先将状态重置为 ready，确保页面初始加载时 Banner 不可见
     await forceFFmpegState(request, 'ready');
     await page.goto('/');
-    // 等待页面基本加载完成
-    await page.waitForLoadState('networkidle');
+    // 等待主界面渲染完成。不能用 networkidle：SSE 长连接会让 networkidle 永远等不到
+    await expect(page.locator('.ant-layout').first()).toBeVisible({ timeout: 15_000 });
     // Banner 应为隐藏
     await expect(ffmpegBanner(page)).not.toBeVisible();
   });

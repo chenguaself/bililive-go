@@ -29,6 +29,9 @@ import (
 
 var (
 	port = flag.Int("port", 8890, "监听端口")
+	// 初始限速通过启动参数指定，确保在 bgo 启动前就已生效
+	// （若依赖测试用例运行时才调用 /control 设置，bgo 可能已经不限速地完成下载）
+	initialSpeed = flag.Int64("speed", 0, "初始全局限速（字节/秒），0 = 不限速")
 
 	// 全局控制状态
 	globalSpeedBytesPerSec atomic.Int64 // 0 = 不限速
@@ -41,6 +44,7 @@ var (
 
 func main() {
 	flag.Parse()
+	globalSpeedBytesPerSec.Store(*initialSpeed)
 
 	go buildZip()
 
@@ -94,14 +98,23 @@ func handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	speed := globalSpeedBytesPerSec.Load()
-	fail := globalFail.Load()
-
+	// 查询参数中的 speed 覆盖全局限速（仅对本次请求生效）
+	var querySpeed *int64
 	if s := r.URL.Query().Get("speed"); s != "" {
 		if v, err := strconv.ParseInt(s, 10, 64); err == nil {
-			speed = v
+			querySpeed = &v
 		}
 	}
+	// 每次发送 chunk 前重新求值，让 /control 的运行时调速对进行中的下载立即生效
+	// （例如测试先以 1KB/s 观察 downloading 状态，再调为 0 让下载迅速完成）
+	currentSpeed := func() int64 {
+		if querySpeed != nil {
+			return *querySpeed
+		}
+		return globalSpeedBytesPerSec.Load()
+	}
+
+	fail := globalFail.Load()
 	if r.URL.Query().Get("fail") == "true" {
 		fail = true
 	}
@@ -117,15 +130,15 @@ func handleDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.Itoa(len(zipData)))
 	w.WriteHeader(http.StatusOK)
 
-	if speed <= 0 {
-		w.Write(zipData)
-		return
-	}
-
-	// 限速发送
+	// 限速发送（speed <= 0 时一次性发送剩余数据）
 	const chunkSize = 4096
 	data := zipData
 	for len(data) > 0 {
+		speed := currentSpeed()
+		if speed <= 0 {
+			w.Write(data)
+			return
+		}
 		n := chunkSize
 		if n > len(data) {
 			n = len(data)
@@ -164,8 +177,8 @@ func handleControl(w http.ResponseWriter, r *http.Request) {
 		globalFail.Store(*req.Fail)
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(fmt.Sprintf(`{"speed":%d,"fail":%v}`,
-		globalSpeedBytesPerSec.Load(), globalFail.Load())))
+	fmt.Fprintf(w, `{"speed":%d,"fail":%v}`,
+		globalSpeedBytesPerSec.Load(), globalFail.Load())
 }
 
 // buildFakeFfmpegZip 编译 test/fake-ffmpeg 并打包成 zip
@@ -202,10 +215,12 @@ func buildFakeFfmpegZip() ([]byte, error) {
 		return nil, fmt.Errorf("读取编译产物失败: %w", err)
 	}
 
-	// zip 中的路径和 remotetools config 中的 pathToEntry 保持一致
-	entryPath := "bin/ffmpeg"
+	// 模拟真实 FFmpeg 发布包结构：单一顶层目录 + bin/ 子目录。
+	// remotetools 解压时会把单一顶层目录视为冗余目录剥掉，
+	// 剥掉后剩余的 bin/ffmpeg 需与 config 中的 pathToEntry 一致。
+	entryPath := "ffmpeg-fake-build/bin/ffmpeg"
 	if runtime.GOOS == "windows" {
-		entryPath = "bin/ffmpeg.exe"
+		entryPath = "ffmpeg-fake-build/bin/ffmpeg.exe"
 	}
 
 	var buf bytes.Buffer

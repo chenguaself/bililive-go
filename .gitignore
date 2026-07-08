@@ -181,7 +181,9 @@ test/launcher-config-local.json
 
 # Playwright E2E 测试
 /test-results/
+/test-results-ffmpeg/
 /playwright-report/
+/playwright-report-ffmpeg/
 /blob-report/
 /playwright/.cache/
 /playwright/.auth/

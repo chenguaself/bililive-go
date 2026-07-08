@@ -56,17 +56,29 @@ func signalToolsReady(err error) {
 }
 
 // WaitForToolsInit 等待 Init() 完成，ctx 取消时返回错误。
-// 若 Init() 曾失败后又被重试并成功，此函数在重试成功后首次被调用时返回 nil。
+// 若 Init() 曾失败后又被重试，此函数会等待当前这一轮重试结束后再返回其结果，
+// 避免在重试进行中读到上一轮的旧错误。
 func WaitForToolsInit(ctx context.Context) error {
 	select {
 	case <-toolsInitDone:
-		toolsInitMu.Lock()
-		err := toolsInitError
-		toolsInitMu.Unlock()
-		return err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	// toolsInitDone 关闭后可能有新一轮 Init() 重试正在进行（currentToolStatus 重新
+	// 进入 initializing），此时轮询等待本轮结束，确保读到的是最新一轮的结果。
+	// Init() 的 defer 中先调用 signalToolsReady 更新 toolsInitError、再更新
+	// currentToolStatus，因此观察到状态离开 initializing 时错误值一定已是本轮的。
+	for toolStatusValue(currentToolStatus.Load()) == toolStatusValueInitializing {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	toolsInitMu.Lock()
+	err := toolsInitError
+	toolsInitMu.Unlock()
+	return err
 }
 
 // FFmpegStatus FFmpeg 就绪状态
@@ -80,6 +92,10 @@ var (
 	ffmpegStatusVal atomic.Value // stores FFmpegStatus
 	ffmpegCbMu      sync.RWMutex
 	ffmpegCallbacks []func(FFmpegStatus)
+
+	// ffmpegStatusChangedCh 在每次状态变化时被关闭并重建，供等待方感知状态变化
+	ffmpegStatusChangedMu sync.Mutex
+	ffmpegStatusChangedCh = make(chan struct{})
 )
 
 func init() {
@@ -88,6 +104,10 @@ func init() {
 
 func setFFmpegStatus(s FFmpegStatus) {
 	ffmpegStatusVal.Store(s)
+	ffmpegStatusChangedMu.Lock()
+	close(ffmpegStatusChangedCh)
+	ffmpegStatusChangedCh = make(chan struct{})
+	ffmpegStatusChangedMu.Unlock()
 	ffmpegCbMu.RLock()
 	cbs := make([]func(FFmpegStatus), len(ffmpegCallbacks))
 	copy(cbs, ffmpegCallbacks)
@@ -111,6 +131,14 @@ func IsFFmpegReady() bool {
 	return GetFFmpegStatus().State == "ready"
 }
 
+// FFmpegStatusChanged 返回一个在下一次 FFmpeg 状态变化时关闭的 channel。
+// 配合 GetFFmpegStatus 使用时应先取 channel 再读状态，以避免漏掉两步之间的变化。
+func FFmpegStatusChanged() <-chan struct{} {
+	ffmpegStatusChangedMu.Lock()
+	defer ffmpegStatusChangedMu.Unlock()
+	return ffmpegStatusChangedCh
+}
+
 // OnFFmpegStatusChange 注册 FFmpeg 状态变化回调，在状态改变时被调用
 func OnFFmpegStatusChange(fn func(FFmpegStatus)) {
 	ffmpegCbMu.Lock()
@@ -125,15 +153,20 @@ func ForceFFmpegStatus(s FFmpegStatus) {
 
 // isFFmpegAvailableWithoutRemotetools 仅检查配置路径和系统 PATH，
 // 不访问 remotetools（避免在 Init() 完成前触及未配置好的 remotetools 状态）。
+// 语义与 utils.GetFFmpegPath 保持一致：配置了 ffmpeg_path 时以该路径为准，
+// 路径无效时不回退到系统 PATH（应走 remotetools 下载流程）。
 func isFFmpegAvailableWithoutRemotetools() bool {
 	if cfg := configs.GetCurrentConfig(); cfg != nil {
 		if path := strings.TrimSpace(cfg.FfmpegPath); path != "" {
-			if _, err := os.Stat(path); err == nil {
-				return true
-			}
+			_, err := os.Stat(path)
+			return err == nil
 		}
 	}
 	_, err := exec.LookPath("ffmpeg")
+	if errors.Is(err, exec.ErrDot) {
+		// 允许把 ffmpeg 和主程序放在同一目录（与 utils.GetFFmpegPath 行为一致）
+		_, err = exec.LookPath("./ffmpeg")
+	}
 	return err == nil
 }
 
@@ -364,12 +397,14 @@ func Init() (err error) {
 	}
 
 	defer func() {
+		// 先发布本轮结果再更新状态机，保证 WaitForToolsInit 观察到
+		// currentToolStatus 离开 initializing 时 toolsInitError 已是本轮的值
+		signalToolsReady(err)
 		if err != nil {
 			currentToolStatus.Store(int32(toolStatusValueNotInitialized))
 		} else {
 			currentToolStatus.Store(int32(toolStatusValueInitialized))
 		}
-		signalToolsReady(err)
 	}()
 
 	api := tools.Get()
