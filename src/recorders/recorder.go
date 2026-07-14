@@ -425,13 +425,22 @@ func (r *recorder) tryRecord(ctx context.Context) {
 		parserCfg["use_flv_proxy"] = "true"
 	}
 
-	// 使用 FFmpeg 下载器且 FFmpeg 仍在后台下载时，先等待其就绪再连接上游。
-	// 下方 StreamProbe / ParseLiveStream 会立即连上直播源，若在等待下载期间不再读取
-	// 上游数据，直播源常因空闲/背压断开，FFmpeg 就绪后只能读到陈旧缓冲或 EOF，导致
-	// 开播片段漏录。故把等待提前到连接上游之前；等待可被 ctx 或 r.stop 中断。
-	if downloaderType == configs.DownloaderFFmpeg && !tools.IsFFmpegReady() {
+	// 预测本次录制最终使用的 parser：除显式选择 ffmpeg 外，bililive-recorder（工具不可用
+	// 或非 FLV 流）与 native（非 FLV 流）在回退后同样会使用 ffmpeg。传 nil logger 避免与
+	// 后续 newParser 内部的回退日志重复。
+	// 若最终会用 ffmpeg 且其仍在后台下载，则先等待就绪再连接上游：下方 StreamProbe /
+	// ParseLiveStream 会立即连上直播源，若等待下载期间不再读取上游，直播源常因空闲/背压
+	// 断开，就绪后只能读到陈旧缓冲或 EOF，导致开播片段漏录。等待可被 ctx 或 r.stop 中断。
+	if resolveParserName(downloaderType, strings.Contains(url.Path, ".flv"), nil) == ffmpeg.Name &&
+		!tools.IsFFmpegReady() {
 		if waitErr := tools.WaitFFmpegAsyncInitDone(ctx, r.stop); waitErr != nil {
 			r.getLogger().WithError(waitErr).Warn("等待 FFmpeg 就绪被中断，放弃本次录制")
+			return
+		}
+		// 等待结束后 FFmpeg 仍不可用（not_found/error）时直接返回，不再连接上游 / 启动
+		// StreamProbe，避免 FFmpeg 缺失或下载失败时每 5 秒重试都触碰直播源、触发平台限流
+		if !tools.IsFFmpegReady() {
+			r.getLogger().Warn("FFmpeg 不可用，本次录制跳过，等待下次重试")
 			return
 		}
 	}
@@ -640,8 +649,9 @@ func (r *recorder) tryRecord(ctx context.Context) {
 
 		// FFmpeg 可能仍在后台异步下载（如 native 下载器录制的短直播刚结束时），
 		// 等待其就绪后再查找，避免后处理命令因 FFmpeg 未下载完成而失败。
-		// 等待被中断（如 ctx 取消/程序退出）时直接返回，不再触发后处理命令
-		if waitErr := tools.WaitFFmpegAsyncInitDone(ctx, nil); waitErr != nil {
+		// tryRecord 的 ctx 继承自应用全局 Context，单个录制器被停止时不会取消，只有
+		// r.stop 会关闭；故传入 r.stop 作为中断信号，避免下载卡住时协程无法优雅退出
+		if waitErr := tools.WaitFFmpegAsyncInitDone(ctx, r.stop); waitErr != nil {
 			r.getLogger().WithError(waitErr).Warn("等待 FFmpeg 就绪被中断，跳过后处理命令")
 			return
 		}

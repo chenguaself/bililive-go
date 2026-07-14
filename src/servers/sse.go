@@ -11,6 +11,7 @@ import (
 	"github.com/bililive-go/bililive-go/src/live"
 	"github.com/bililive-go/bililive-go/src/pipeline"
 	"github.com/bililive-go/bililive-go/src/pkg/events"
+	"github.com/bililive-go/bililive-go/src/tools"
 	"github.com/bililive-go/bililive-go/src/types"
 )
 
@@ -335,6 +336,14 @@ func sseHandler(w http.ResponseWriter, r *http.Request) {
 	// 发送初始连接成功消息
 	fmt.Fprintf(w, "event: connected\ndata: {\"message\":\"SSE connected\",\"clients\":%d}\n\n", hub.ClientCount())
 	flusher.Flush()
+
+	// 连接建立时立即补发一次当前 FFmpeg 状态快照：SSE 断线重连、或状态事件因客户端缓冲
+	// 满被丢弃时，仅靠后续增量事件会让前端横幅停留在旧的 checking/downloading/error 状态，
+	// 这里兜底同步最新状态，避免必须刷新页面才能恢复
+	if data, err := json.Marshal(SSEMessage{Type: SSEEventFFmpegStatus, Data: tools.GetFFmpegStatus()}); err == nil {
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", SSEEventFFmpegStatus, data)
+		flusher.Flush()
+	}
 
 	// 启动心跳 goroutine
 	heartbeatTicker := time.NewTicker(30 * time.Second)
