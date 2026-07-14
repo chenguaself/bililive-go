@@ -428,19 +428,27 @@ func (r *recorder) tryRecord(ctx context.Context) {
 	// 预测本次录制最终使用的 parser：除显式选择 ffmpeg 外，bililive-recorder（工具不可用
 	// 或非 FLV 流）与 native（非 FLV 流）在回退后同样会使用 ffmpeg。传 nil logger 避免与
 	// 后续 newParser 内部的回退日志重复。
-	// 若最终会用 ffmpeg 且其仍在后台下载，则先等待就绪再连接上游：下方 StreamProbe /
-	// ParseLiveStream 会立即连上直播源，若等待下载期间不再读取上游，直播源常因空闲/背压
-	// 断开，就绪后只能读到陈旧缓冲或 EOF，导致开播片段漏录。等待可被 ctx 或 r.stop 中断。
-	if resolveParserName(downloaderType, strings.Contains(url.Path, ".flv"), nil) == ffmpeg.Name &&
-		!tools.IsFFmpegReady() {
-		if waitErr := tools.WaitFFmpegAsyncInitDone(ctx, r.stop); waitErr != nil {
-			r.getLogger().WithError(waitErr).Warn("等待 FFmpeg 就绪被中断，放弃本次录制")
+	// 若最终会用 ffmpeg，则先按当前直播间的层级配置验证路径；房间/平台级
+	// ffmpeg_path 可能在全局 FFmpeg 状态为 not_found 时仍然可用，不能用全局状态
+	// 直接否决。只有当前直播间实际取不到 FFmpeg 且后台仍在 checking/downloading
+	// 时才等待；终态后仍取不到则直接返回，不再连接上游 / 启动 StreamProbe，避免
+	// FFmpeg 缺失或下载失败时每 5 秒重试都触碰直播源、触发平台限流。
+	if resolveParserName(downloaderType, strings.Contains(url.Path, ".flv"), nil) == ffmpeg.Name {
+		_, ffmpegPathErr := utils.GetFFmpegPathForLive(ctx, r.Live)
+		ffmpegState := tools.GetFFmpegStatus().State
+		if ffmpegPathErr != nil && resolvedConfig.FfmpegPath != "" {
+			r.getLogger().WithError(ffmpegPathErr).Warn("配置的 FFmpeg 路径不可用，本次录制跳过")
 			return
 		}
-		// 等待结束后 FFmpeg 仍不可用（not_found/error）时直接返回，不再连接上游 / 启动
-		// StreamProbe，避免 FFmpeg 缺失或下载失败时每 5 秒重试都触碰直播源、触发平台限流
-		if !tools.IsFFmpegReady() {
-			r.getLogger().Warn("FFmpeg 不可用，本次录制跳过，等待下次重试")
+		if ffmpegPathErr != nil && (ffmpegState == "checking" || ffmpegState == "downloading") {
+			if waitErr := tools.WaitFFmpegAsyncInitDone(ctx, r.stop); waitErr != nil {
+				r.getLogger().WithError(waitErr).Warn("等待 FFmpeg 就绪被中断，放弃本次录制")
+				return
+			}
+			_, ffmpegPathErr = utils.GetFFmpegPathForLive(ctx, r.Live)
+		}
+		if ffmpegPathErr != nil {
+			r.getLogger().WithError(ffmpegPathErr).Warn("FFmpeg 不可用，本次录制跳过，等待下次重试")
 			return
 		}
 	}
@@ -647,18 +655,24 @@ func (r *recorder) tryRecord(ctx context.Context) {
 		// 累积录制文件信息（legacy 路径），待录制结束后统一推送摘要
 		r.accumulateRecordedFiles(fileName)
 
-		// FFmpeg 可能仍在后台异步下载（如 native 下载器录制的短直播刚结束时），
-		// 等待其就绪后再查找，避免后处理命令因 FFmpeg 未下载完成而失败。
-		// tryRecord 的 ctx 继承自应用全局 Context，单个录制器被停止时不会取消，只有
-		// r.stop 会关闭；故传入 r.stop 作为中断信号，避免下载卡住时协程无法优雅退出
-		if waitErr := tools.WaitFFmpegAsyncInitDone(ctx, r.stop); waitErr != nil {
-			r.getLogger().WithError(waitErr).Warn("等待 FFmpeg 就绪被中断，跳过后处理命令")
-			return
-		}
-		ffmpegPath, ffmpegErr := utils.GetFFmpegPathForLive(ctx, r.Live)
-		if ffmpegErr != nil {
-			r.getLogger().WithError(ffmpegErr).Error("failed to find ffmpeg")
-			return
+		ffmpegPath := ""
+		// legacy custom_commandline 只有在模板确实引用 .Ffmpeg 时才需要等待 / 查找
+		// FFmpeg；纯上传、通知等无关命令不应被首次启动的 FFmpeg 下载阻塞。
+		if strings.Contains(cmdStr, ".Ffmpeg") {
+			// FFmpeg 可能仍在后台异步下载（如 native 下载器录制的短直播刚结束时），
+			// 等待其就绪后再查找，避免后处理命令因 FFmpeg 未下载完成而失败。
+			// tryRecord 的 ctx 继承自应用全局 Context，单个录制器被停止时不会取消，
+			// 只有 r.stop 会关闭；故传入 r.stop 作为中断信号，避免下载卡住时协程无法优雅退出
+			if waitErr := tools.WaitFFmpegAsyncInitDone(ctx, r.stop); waitErr != nil {
+				r.getLogger().WithError(waitErr).Warn("等待 FFmpeg 就绪被中断，跳过后处理命令")
+				return
+			}
+			var ffmpegErr error
+			ffmpegPath, ffmpegErr = utils.GetFFmpegPathForLive(ctx, r.Live)
+			if ffmpegErr != nil {
+				r.getLogger().WithError(ffmpegErr).Error("failed to find ffmpeg")
+				return
+			}
 		}
 		customTmpl, errCmdTmpl := template.New("custom_commandline").Funcs(utils.GetFuncMap(cfg)).Parse(cmdStr)
 		if errCmdTmpl != nil {

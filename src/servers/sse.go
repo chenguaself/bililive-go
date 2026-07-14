@@ -251,7 +251,9 @@ func (h *SSEHub) BroadcastMemoryWarning(data interface{}) {
 
 // BroadcastFFmpegStatus 广播 FFmpeg 就绪状态变更
 func (h *SSEHub) BroadcastFFmpegStatus(data interface{}) {
-	h.Broadcast(SSEMessage{
+	// FFmpeg 状态是前端横幅的单一增量更新来源之一；若 ready/error 转换在客户端
+	// 缓冲满时被丢弃，横幅会停留在旧状态直到刷新或重连，因此按关键事件投递。
+	h.BroadcastCritical(SSEMessage{
 		Type: SSEEventFFmpegStatus,
 		Data: data,
 	})

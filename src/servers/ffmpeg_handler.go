@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/bililive-go/bililive-go/src/instance"
 	"github.com/bililive-go/bililive-go/src/tools"
 )
 
@@ -22,8 +23,13 @@ func getFFmpegStatusHandler(w http.ResponseWriter, r *http.Request) {
 // FFmpegAsyncInit 自带并发守卫：若检测/下载已在进行，本次调用为无操作。
 // POST /api/ffmpeg/retry
 func retryFFmpegHandler(w http.ResponseWriter, r *http.Request) {
-	// 不使用 r.Context()：异步初始化的生命周期应跟随进程而非本次请求
-	tools.FFmpegAsyncInit(context.Background())
+	// 不直接使用 r.Context()：异步初始化的生命周期应跟随进程而非本次请求。
+	// 但也不能直接用 context.Background()，否则进程退出时无法取消下载/写文件流程。
+	appCtx := context.Background()
+	if inst := instance.GetInstance(r.Context()); inst != nil && inst.Ctx != nil {
+		appCtx = inst.Ctx
+	}
+	tools.FFmpegAsyncInit(appCtx)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"ok":true}`))
