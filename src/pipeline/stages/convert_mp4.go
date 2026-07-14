@@ -49,8 +49,12 @@ func (s *ConvertMp4Stage) Execute(ctx *pipeline.PipelineContext, input []pipelin
 	ffmpegPath := ctx.FFmpegPath
 	if ffmpegPath == "" {
 		// FFmpeg 可能仍在后台异步下载（首次启动场景），等待其就绪后再查找，
-		// 避免短直播录制结束时后处理任务因 FFmpeg 未下载完成而失败
-		_ = tools.WaitFFmpegAsyncInitDone(ctx.Ctx, nil)
+		// 避免短直播录制结束时后处理任务因 FFmpeg 未下载完成而失败。
+		// 等待被中断（如 pipeline ctx 取消）时立即退出，不再启动转码子进程
+		if waitErr := tools.WaitFFmpegAsyncInitDone(ctx.Ctx, nil); waitErr != nil {
+			s.logs = fmt.Sprintf("等待 FFmpeg 就绪被中断: %s", waitErr.Error())
+			return nil, waitErr
+		}
 		var err error
 		ffmpegPath, err = utils.GetFFmpegPath(ctx.Ctx)
 		if err != nil {

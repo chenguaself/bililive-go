@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Alert, Space, Typography } from 'antd';
+import { Alert, Button, Space, Typography } from 'antd';
 import {
   SyncOutlined,
   ExclamationCircleOutlined,
@@ -20,6 +20,17 @@ interface FFmpegStatus {
 
 const FFmpegBanner: React.FC = () => {
   const [status, setStatus] = useState<FFmpegStatus | null>(null);
+  const [retrying, setRetrying] = useState(false);
+
+  // 重新触发后端 FFmpeg 检测/下载；真实进度由后端通过 SSE 推送覆盖横幅状态
+  const handleRetry = () => {
+    setRetrying(true);
+    api.retryFFmpeg().catch((err) => {
+      console.warn('[FFmpegBanner] 重试 FFmpeg 失败:', err);
+    }).finally(() => {
+      setRetrying(false);
+    });
+  };
 
   useEffect(() => {
     let active = true;
@@ -78,6 +89,9 @@ const FFmpegBanner: React.FC = () => {
             <ExclamationCircleOutlined />
             <Text>未找到 FFmpeg，录制功能不可用。</Text>
             {status.message && <Text type="secondary">{status.message}</Text>}
+            <Button size="small" loading={retrying} onClick={handleRetry}>
+              重试
+            </Button>
           </Space>
         );
       case 'error':
@@ -86,6 +100,9 @@ const FFmpegBanner: React.FC = () => {
             <CloseCircleOutlined />
             <Text>FFmpeg 下载失败，录制功能不可用。</Text>
             {status.message && <Text type="secondary">{status.message}</Text>}
+            <Button size="small" loading={retrying} onClick={handleRetry}>
+              重试
+            </Button>
           </Space>
         );
       default:

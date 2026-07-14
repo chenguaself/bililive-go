@@ -143,6 +143,8 @@ func initMux(ctx context.Context) *mux.Router {
 
 	// FFmpeg 状态 API 路由
 	apiRoute.HandleFunc("/ffmpeg/status", getFFmpegStatusHandler).Methods("GET")
+	// 重试 FFmpeg 检测/下载（下载失败或未找到后由用户手动触发）
+	apiRoute.HandleFunc("/ffmpeg/retry", retryFFmpegHandler).Methods("POST")
 
 	// 测试专用调试路由（dev 构建标签时注册，生产构建为空操作）
 	registerDevDebugRoutes(apiRoute)

@@ -425,6 +425,17 @@ func (r *recorder) tryRecord(ctx context.Context) {
 		parserCfg["use_flv_proxy"] = "true"
 	}
 
+	// 使用 FFmpeg 下载器且 FFmpeg 仍在后台下载时，先等待其就绪再连接上游。
+	// 下方 StreamProbe / ParseLiveStream 会立即连上直播源，若在等待下载期间不再读取
+	// 上游数据，直播源常因空闲/背压断开，FFmpeg 就绪后只能读到陈旧缓冲或 EOF，导致
+	// 开播片段漏录。故把等待提前到连接上游之前；等待可被 ctx 或 r.stop 中断。
+	if downloaderType == configs.DownloaderFFmpeg && !tools.IsFFmpegReady() {
+		if waitErr := tools.WaitFFmpegAsyncInitDone(ctx, r.stop); waitErr != nil {
+			r.getLogger().WithError(waitErr).Warn("等待 FFmpeg 就绪被中断，放弃本次录制")
+			return
+		}
+	}
+
 	// StreamProbe 探测：仅对 FLV 流使用代理探测
 	// HLS 是分段 HTTP 请求协议，无法通过单一 HTTP 代理转发
 	//
@@ -628,8 +639,12 @@ func (r *recorder) tryRecord(ctx context.Context) {
 		r.accumulateRecordedFiles(fileName)
 
 		// FFmpeg 可能仍在后台异步下载（如 native 下载器录制的短直播刚结束时），
-		// 等待其就绪后再查找，避免后处理命令因 FFmpeg 未下载完成而失败
-		_ = tools.WaitFFmpegAsyncInitDone(ctx, nil)
+		// 等待其就绪后再查找，避免后处理命令因 FFmpeg 未下载完成而失败。
+		// 等待被中断（如 ctx 取消/程序退出）时直接返回，不再触发后处理命令
+		if waitErr := tools.WaitFFmpegAsyncInitDone(ctx, nil); waitErr != nil {
+			r.getLogger().WithError(waitErr).Warn("等待 FFmpeg 就绪被中断，跳过后处理命令")
+			return
+		}
 		ffmpegPath, ffmpegErr := utils.GetFFmpegPathForLive(ctx, r.Live)
 		if ffmpegErr != nil {
 			r.getLogger().WithError(ffmpegErr).Error("failed to find ffmpeg")

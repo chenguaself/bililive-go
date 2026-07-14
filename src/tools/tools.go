@@ -125,7 +125,12 @@ func setFFmpegStatus(s FFmpegStatus) {
 	copy(cbs, ffmpegCallbacks)
 	ffmpegCbMu.RUnlock()
 	for _, cb := range cbs {
-		cb(s)
+		// 逐个回调隔离 panic：回调是对外暴露的扩展点（OnFFmpegStatusChange），
+		// 单个订阅者（如 SSE 广播）panic 不应打崩整个进程或阻断其余订阅者
+		func(cb func(FFmpegStatus)) {
+			defer bilisentry.Recover()
+			cb(s)
+		}(cb)
 	}
 }
 
@@ -207,14 +212,16 @@ func FFmpegAsyncInit(ctx context.Context) {
 		// 对非空配置路径只做存在性检查、不回退 remotetools/PATH，
 		// 因此路径无效时下载也无济于事，直接提示用户修正配置
 		if cfg := configs.GetCurrentConfig(); cfg != nil && cfg.FfmpegPath != "" {
-			if _, err := os.Stat(cfg.FfmpegPath); err == nil {
+			// 需为存在且非目录的文件：目录无法执行，os.Stat 成功也不代表可用，
+			// 否则会误报 ready，实际录制时才失败
+			if fi, err := os.Stat(cfg.FfmpegPath); err == nil && !fi.IsDir() {
 				blog.GetLogger().Infof("FFmpeg found at configured path: %s", cfg.FfmpegPath)
 				setFFmpegStatus(FFmpegStatus{State: "ready", Source: "system"})
 			} else {
-				blog.GetLogger().Warnf("configured ffmpeg_path does not exist: %s", cfg.FfmpegPath)
+				blog.GetLogger().Warnf("configured ffmpeg_path does not exist or is a directory: %s", cfg.FfmpegPath)
 				setFFmpegStatus(FFmpegStatus{
 					State:   "not_found",
-					Message: "配置的 ffmpeg_path 不存在: " + cfg.FfmpegPath,
+					Message: "配置的 ffmpeg_path 不存在或不是文件: " + cfg.FfmpegPath,
 				})
 			}
 			return
