@@ -31,12 +31,7 @@ func GetFFmpegPath(ctx context.Context) (string, error) {
 		path = cfg.FfmpegPath
 	}
 	if path != "" {
-		_, err := os.Stat(path)
-		if err == nil {
-			return path, nil
-		} else {
-			return "", err
-		}
+		return validateConfiguredFFmpegPath(path)
 	}
 
 	// try to get from remotetools
@@ -69,6 +64,20 @@ func LookupSystemFFmpeg() (string, error) {
 	return path, err
 }
 
+// validateConfiguredFFmpegPath 校验用户显式配置的 ffmpeg_path。
+// 配置路径与自动查找不同：只要用户配置了该路径，实际录制就不会回退到
+// remotetools / 系统 PATH，因此这里必须保证它是可执行文件路径而不是目录。
+func validateConfiguredFFmpegPath(path string) (string, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if fi.IsDir() {
+		return "", fmt.Errorf("ffmpeg_path is a directory: %s", path)
+	}
+	return path, nil
+}
+
 // GetFFmpegPathForLive 获取特定直播间的FFmpeg路径（使用解析后的配置）
 func GetFFmpegPathForLive(ctx context.Context, liveInstance live.Live) (string, error) {
 	cfg := configs.GetCurrentConfig()
@@ -89,12 +98,7 @@ func GetFFmpegPathForLive(ctx context.Context, liveInstance live.Live) (string, 
 	}
 
 	if ffmpegPath != "" {
-		_, err := os.Stat(ffmpegPath)
-		if err == nil {
-			return ffmpegPath, nil
-		} else {
-			return "", err
-		}
+		return validateConfiguredFFmpegPath(ffmpegPath)
 	}
 
 	// 如果没有配置FFmpeg路径，尝试从环境变量或 remotetools 查找
