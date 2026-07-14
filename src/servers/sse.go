@@ -11,6 +11,7 @@ import (
 	"github.com/bililive-go/bililive-go/src/live"
 	"github.com/bililive-go/bililive-go/src/pipeline"
 	"github.com/bililive-go/bililive-go/src/pkg/events"
+	"github.com/bililive-go/bililive-go/src/tools"
 	"github.com/bililive-go/bililive-go/src/types"
 )
 
@@ -44,6 +45,8 @@ const (
 	SSEEventMemoryWarning SSEEventType = "memory_warning"
 	// SSEEventDanmaku 弹幕实时推送
 	SSEEventDanmaku SSEEventType = "danmaku"
+	// SSEEventFFmpegStatus FFmpeg 就绪状态变更
+	SSEEventFFmpegStatus SSEEventType = "ffmpeg_status"
 	// SSEEventBatchProgress 批量添加进度
 	SSEEventBatchProgress SSEEventType = "batch_progress"
 	// SSEEventBatchComplete 批量添加完成
@@ -246,6 +249,16 @@ func (h *SSEHub) BroadcastMemoryWarning(data interface{}) {
 	})
 }
 
+// BroadcastFFmpegStatus 广播 FFmpeg 就绪状态变更
+func (h *SSEHub) BroadcastFFmpegStatus(data interface{}) {
+	// FFmpeg 状态是前端横幅的单一增量更新来源之一；若 ready/error 转换在客户端
+	// 缓冲满时被丢弃，横幅会停留在旧状态直到刷新或重连，因此按关键事件投递。
+	h.BroadcastCritical(SSEMessage{
+		Type: SSEEventFFmpegStatus,
+		Data: data,
+	})
+}
+
 // BroadcastDanmaku 广播弹幕消息
 func (h *SSEHub) BroadcastDanmaku(roomID types.LiveID, data interface{}) {
 	h.Broadcast(SSEMessage{
@@ -325,6 +338,14 @@ func sseHandler(w http.ResponseWriter, r *http.Request) {
 	// 发送初始连接成功消息
 	fmt.Fprintf(w, "event: connected\ndata: {\"message\":\"SSE connected\",\"clients\":%d}\n\n", hub.ClientCount())
 	flusher.Flush()
+
+	// 连接建立时立即补发一次当前 FFmpeg 状态快照：SSE 断线重连、或状态事件因客户端缓冲
+	// 满被丢弃时，仅靠后续增量事件会让前端横幅停留在旧的 checking/downloading/error 状态，
+	// 这里兜底同步最新状态，避免必须刷新页面才能恢复
+	if data, err := json.Marshal(SSEMessage{Type: SSEEventFFmpegStatus, Data: tools.GetFFmpegStatus()}); err == nil {
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", SSEEventFFmpegStatus, data)
+		flusher.Flush()
+	}
 
 	// 启动心跳 goroutine
 	heartbeatTicker := time.NewTicker(30 * time.Second)

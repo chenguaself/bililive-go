@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -32,6 +33,268 @@ const (
 )
 
 var currentToolStatus atomic.Int32
+
+// toolsInitDone 在 Init() 首次完成（无论成功或失败）时关闭，之后永远可读。
+// toolsInitError 记录最新一次 Init() 的结果，在 Init() 重试成功后会被更新为 nil。
+// 读写 toolsInitError 以及关闭 toolsInitDone 均在 toolsInitMu 下进行，
+// 确保 WaitForToolsInit 始终读到对应调用时刻最新的结果。
+var (
+	toolsInitDone   = make(chan struct{})
+	toolsInitMu     sync.Mutex
+	toolsInitClosed bool
+	toolsInitError  error
+)
+
+func signalToolsReady(err error) {
+	toolsInitMu.Lock()
+	defer toolsInitMu.Unlock()
+	toolsInitError = err // 每次都更新，包括重试成功后覆盖旧的失败错误
+	if !toolsInitClosed {
+		toolsInitClosed = true
+		close(toolsInitDone)
+	}
+}
+
+// WaitForToolsInit 等待 Init() 完成，ctx 取消时返回错误。
+// 若 Init() 曾失败后又被重试，此函数会等待当前这一轮重试结束后再返回其结果，
+// 避免在重试进行中读到上一轮的旧错误。
+func WaitForToolsInit(ctx context.Context) error {
+	select {
+	case <-toolsInitDone:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	// toolsInitDone 关闭后可能有新一轮 Init() 重试正在进行（currentToolStatus 重新
+	// 进入 initializing），此时轮询等待本轮结束，确保读到的是最新一轮的结果。
+	// Init() 的 defer 中先调用 signalToolsReady 更新 toolsInitError、再更新
+	// currentToolStatus，因此观察到状态离开 initializing 时错误值一定已是本轮的。
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for toolStatusValue(currentToolStatus.Load()) == toolStatusValueInitializing {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+	toolsInitMu.Lock()
+	err := toolsInitError
+	toolsInitMu.Unlock()
+	return err
+}
+
+// FFmpegStatus FFmpeg 就绪状态
+type FFmpegStatus struct {
+	State   string `json:"state"`             // checking / downloading / ready / not_found / error
+	Message string `json:"message,omitempty"` // 人读消息
+	Source  string `json:"source,omitempty"`  // system / remotetools
+}
+
+var (
+	ffmpegStatusVal atomic.Value // stores FFmpegStatus
+	// ffmpegStatusMu 串行化 setFFmpegStatus 的整个流程（存储、变化通知、回调执行），
+	// 保证并发更新时订阅者（如 SSE 广播）看到的状态顺序与实际更新顺序一致
+	ffmpegStatusMu  sync.Mutex
+	ffmpegCbMu      sync.RWMutex
+	ffmpegCallbacks []func(FFmpegStatus)
+
+	// ffmpegStatusChangedCh 在每次状态变化时被关闭并重建，供等待方感知状态变化
+	ffmpegStatusChangedMu sync.Mutex
+	ffmpegStatusChangedCh = make(chan struct{})
+
+	// ffmpegInitRunning 确保同一时间只有一个 FFmpegAsyncInit 流程在运行，
+	// 避免并发调用（如 e2e 测试多次触发 reinit）导致并发 tool.Install()
+	ffmpegInitRunning atomic.Bool
+)
+
+func init() {
+	ffmpegStatusVal.Store(FFmpegStatus{State: "checking"})
+}
+
+func setFFmpegStatus(s FFmpegStatus) {
+	ffmpegStatusMu.Lock()
+	defer ffmpegStatusMu.Unlock()
+
+	ffmpegStatusVal.Store(s)
+	ffmpegStatusChangedMu.Lock()
+	close(ffmpegStatusChangedCh)
+	ffmpegStatusChangedCh = make(chan struct{})
+	ffmpegStatusChangedMu.Unlock()
+	ffmpegCbMu.RLock()
+	cbs := make([]func(FFmpegStatus), len(ffmpegCallbacks))
+	copy(cbs, ffmpegCallbacks)
+	ffmpegCbMu.RUnlock()
+	for _, cb := range cbs {
+		// 逐个回调隔离 panic：回调是对外暴露的扩展点（OnFFmpegStatusChange），
+		// 单个订阅者（如 SSE 广播）panic 不应打崩整个进程或阻断其余订阅者
+		func(cb func(FFmpegStatus)) {
+			defer bilisentry.Recover()
+			cb(s)
+		}(cb)
+	}
+}
+
+// GetFFmpegStatus 返回当前 FFmpeg 状态
+func GetFFmpegStatus() FFmpegStatus {
+	v := ffmpegStatusVal.Load()
+	if v == nil {
+		return FFmpegStatus{State: "checking"}
+	}
+	return v.(FFmpegStatus)
+}
+
+// IsFFmpegReady 返回 FFmpeg 是否已就绪
+func IsFFmpegReady() bool {
+	return GetFFmpegStatus().State == "ready"
+}
+
+// FFmpegStatusChanged 返回一个在下一次 FFmpeg 状态变化时关闭的 channel。
+// 配合 GetFFmpegStatus 使用时应先取 channel 再读状态，以避免漏掉两步之间的变化。
+func FFmpegStatusChanged() <-chan struct{} {
+	ffmpegStatusChangedMu.Lock()
+	defer ffmpegStatusChangedMu.Unlock()
+	return ffmpegStatusChangedCh
+}
+
+// WaitFFmpegAsyncInitDone 在 FFmpeg 异步初始化仍在进行（checking/downloading）时阻塞，
+// 直到其进入终态（ready/not_found/error）。用于录制、后处理等依赖 FFmpeg 的路径
+// 在后台下载完成后立即继续，而非陷入失败重试循环。
+// stop 可为 nil，用于额外的中断信号（如 parser 的 Stop()）。
+// 到达终态返回 nil（是否可用由调用方随后的路径查找决定，错误语义与原有逻辑一致）；
+// 因 ctx 取消或 stop 关闭而中断时返回相应错误。
+func WaitFFmpegAsyncInitDone(ctx context.Context, stop <-chan struct{}) error {
+	logged := false
+	for {
+		// 先取变化通知 channel 再读状态，避免漏掉两步之间的状态变化
+		changed := FFmpegStatusChanged()
+		state := GetFFmpegStatus().State
+		if state != "checking" && state != "downloading" {
+			return nil
+		}
+		if !logged {
+			blog.GetLogger().Infof("FFmpeg 尚未就绪（%s），等待后台初始化完成...", state)
+			logged = true
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-stop: // stop 为 nil 时此分支永远不会触发
+			return errors.New("等待 FFmpeg 就绪时被中断")
+		}
+	}
+}
+
+// OnFFmpegStatusChange 注册 FFmpeg 状态变化回调，在状态改变时被调用
+func OnFFmpegStatusChange(fn func(FFmpegStatus)) {
+	ffmpegCbMu.Lock()
+	ffmpegCallbacks = append(ffmpegCallbacks, fn)
+	ffmpegCbMu.Unlock()
+}
+
+// ForceFFmpegStatus 强制设置 FFmpeg 状态，仅用于测试目的。
+func ForceFFmpegStatus(s FFmpegStatus) {
+	setFFmpegStatus(s)
+}
+
+// FFmpegAsyncInit 异步检测并（按需）下载 FFmpeg，期间通过状态回调通知进度。
+// 可在 WebUI 启动后立即调用，不会阻塞主流程。
+// 并发调用时只有第一个调用生效，其余直接返回（避免并发 Install）。
+func FFmpegAsyncInit(ctx context.Context) {
+	if !ffmpegInitRunning.CompareAndSwap(false, true) {
+		return
+	}
+	setFFmpegStatus(FFmpegStatus{State: "checking"})
+	bilisentry.GoWithContext(ctx, func(ctx context.Context) {
+		defer ffmpegInitRunning.Store(false)
+
+		// 配置显式指定了 ffmpeg_path 时以其为准：实际录制查找（utils.GetFFmpegPath）
+		// 对非空配置路径只做存在性检查、不回退 remotetools/PATH，
+		// 因此路径无效时下载也无济于事，直接提示用户修正配置
+		if cfg := configs.GetCurrentConfig(); cfg != nil && cfg.FfmpegPath != "" {
+			// 需为存在且非目录的文件：目录无法执行，os.Stat 成功也不代表可用，
+			// 否则会误报 ready，实际录制时才失败
+			if fi, err := os.Stat(cfg.FfmpegPath); err == nil && !fi.IsDir() {
+				blog.GetLogger().Infof("FFmpeg found at configured path: %s", cfg.FfmpegPath)
+				setFFmpegStatus(FFmpegStatus{State: "ready", Source: "system"})
+			} else {
+				blog.GetLogger().Warnf("configured ffmpeg_path does not exist or is a directory: %s", cfg.FfmpegPath)
+				setFFmpegStatus(FFmpegStatus{
+					State:   "not_found",
+					Message: "配置的 ffmpeg_path 不存在或不是文件: " + cfg.FfmpegPath,
+				})
+			}
+			return
+		}
+
+		// 检查系统 PATH（含 ./ffmpeg 兜底），不触碰 remotetools（此时 Init() 尚未完成）
+		if _, err := utils.LookupSystemFFmpeg(); err == nil {
+			blog.GetLogger().Info("FFmpeg found in system PATH")
+			setFFmpegStatus(FFmpegStatus{State: "ready", Source: "system"})
+			return
+		}
+
+		// 触发 remotetools 初始化（可能是 no-op，但确保 goroutine 在跑）
+		_ = Init()
+
+		// 等待 Init() 真正完成。WaitForToolsInit 在 Init() 失败时返回该错误，
+		// 在 ctx 取消时返回 ctx.Err()，需分别处理。
+		if err := WaitForToolsInit(ctx); err != nil {
+			if ctx.Err() != nil {
+				return // 程序退出，不更新状态
+			}
+			// Init() 本身失败（如配置读取错误或 remotetools WebUI 启动失败）
+			blog.GetLogger().WithError(err).Warn("remotetools init failed, FFmpeg not available")
+			setFFmpegStatus(FFmpegStatus{
+				State:   "not_found",
+				Message: "FFmpeg 未找到，且 remotetools 初始化失败: " + err.Error(),
+			})
+			return
+		}
+
+		api := tools.Get()
+		if api == nil {
+			setFFmpegStatus(FFmpegStatus{State: "not_found", Message: "未找到 FFmpeg"})
+			return
+		}
+
+		tool, err := api.GetTool("ffmpeg")
+		if err != nil {
+			setFFmpegStatus(FFmpegStatus{State: "not_found", Message: "无法获取 FFmpeg 工具信息: " + err.Error()})
+			return
+		}
+
+		if tool.DoesToolExist() {
+			blog.GetLogger().Infof("FFmpeg found from remotetools: %s", tool.GetToolPath())
+			setFFmpegStatus(FFmpegStatus{State: "ready", Source: "remotetools"})
+			return
+		}
+
+		// 需要下载；程序若已在退出流程中则不再发起耗时下载
+		if ctx.Err() != nil {
+			return
+		}
+		source := tool.GetInstallSource()
+		blog.GetLogger().Infof("FFmpeg not found locally, downloading from %s...", source)
+		setFFmpegStatus(FFmpegStatus{
+			State:   "downloading",
+			Message: "正在下载 FFmpeg...",
+			Source:  source,
+		})
+
+		if err := tool.Install(); err != nil {
+			blog.GetLogger().WithError(err).Error("FFmpeg download failed")
+			setFFmpegStatus(FFmpegStatus{
+				State:   "error",
+				Message: "FFmpeg 下载失败: " + err.Error(),
+			})
+			return
+		}
+
+		blog.GetLogger().Infof("FFmpeg downloaded successfully: %s", tool.GetToolPath())
+		setFFmpegStatus(FFmpegStatus{State: "ready", Source: "remotetools"})
+	})
+}
 
 // bililive-tools 状态跟踪
 type btoolsStatusValue int32
@@ -189,6 +452,9 @@ func Init() (err error) {
 	}
 
 	defer func() {
+		// 先发布本轮结果再更新状态机，保证 WaitForToolsInit 观察到
+		// currentToolStatus 离开 initializing 时 toolsInitError 已是本轮的值
+		signalToolsReady(err)
 		if err != nil {
 			currentToolStatus.Store(int32(toolStatusValueNotInitialized))
 		} else {
@@ -245,7 +511,6 @@ func Init() (err error) {
 	blog.GetLogger().Infoln("RemoteTools Web UI started")
 
 	for _, toolName := range []string{
-		"ffmpeg",
 		"dotnet",
 		"bililive-recorder",
 	} {
