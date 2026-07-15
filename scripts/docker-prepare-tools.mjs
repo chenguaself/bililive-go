@@ -304,12 +304,12 @@ async function main() {
     process.exit(1);
   }
 
-  mkdirSync(outputDir, { recursive: true });
-
   // remotetools 会按 <root>/<goos>/<goarch>/<tool>/<version> 查找工具。
   // Docker 将 outputDir 复制为只读工具根目录，因此这里必须保留平台目录层级。
   const platformOutputDir = join(outputDir, 'linux', arch);
-  mkdirSync(platformOutputDir, { recursive: true });
+  if (!dryRun) {
+    mkdirSync(platformOutputDir, { recursive: true });
+  }
 
   console.log(`=== 为 linux/${arch} 预下载 Docker 内置工具${dryRun ? ' (dry-run)' : ''} ===`);
   console.log(`配置来源: ${configPath}`);
@@ -351,10 +351,10 @@ async function main() {
   console.log(`\n=== 所有工具下载完成 (下载: ${downloadCount}, 跳过: ${skipCount}) ===`);
 
   // 列出下载结果
-  if (existsSync(outputDir)) {
-    const toolDirs = readdirSync(outputDir);
+  if (existsSync(platformOutputDir)) {
+    const toolDirs = readdirSync(platformOutputDir);
     for (const dir of toolDirs) {
-      const dirPath = join(outputDir, dir);
+      const dirPath = join(platformOutputDir, dir);
       if (statSync(dirPath).isDirectory()) {
         console.log(`  ${dir}/`);
       }
