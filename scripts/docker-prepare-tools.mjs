@@ -11,7 +11,8 @@
  * 此脚本在 CI 的原生 x86/ARM runner 上运行，避免在 QEMU 中解压大文件
  *
  * 版本号和下载 URL 自动从 src/tools/remote-tools-config.json 读取，
- * 无需手动维护版本号的一致性。
+ * 无需手动维护版本号的一致性。输出目录遵循 remotetools 的
+ * <root>/<goos>/<goarch>/<tool>/<version> 布局。
  *
  * 重要: 解压逻辑必须与 remotetools 的 extractDownloadedFile() 行为一致：
  *   1. 先解压到临时目录
@@ -206,7 +207,7 @@ function downloadFile(url, destPath) {
  * 下载并解压工具到目标目录
  * 模拟 remotetools 的 extractDownloadedFile() 行为
  * @param {string} url
- * @param {string} dest - 最终目标目录（例如 tools/ffmpeg/n8.1-latest）
+ * @param {string} dest - 最终目标目录（例如 tools/linux/amd64/ffmpeg/n8.1-latest）
  */
 async function downloadAndExtract(url, dest) {
   const filename = basename(new URL(url).pathname);
@@ -305,6 +306,11 @@ async function main() {
 
   mkdirSync(outputDir, { recursive: true });
 
+  // remotetools 会按 <root>/<goos>/<goarch>/<tool>/<version> 查找工具。
+  // Docker 将 outputDir 复制为只读工具根目录，因此这里必须保留平台目录层级。
+  const platformOutputDir = join(outputDir, 'linux', arch);
+  mkdirSync(platformOutputDir, { recursive: true });
+
   console.log(`=== 为 linux/${arch} 预下载 Docker 内置工具${dryRun ? ' (dry-run)' : ''} ===`);
   console.log(`配置来源: ${configPath}`);
 
@@ -330,7 +336,7 @@ async function main() {
 
     console.log(`  版本: ${result.version}`);
     console.log(`  URL: ${result.url}`);
-    const destDir = join(outputDir, toolName, result.version);
+    const destDir = join(platformOutputDir, toolName, result.version);
     console.log(`  目标: ${destDir}`);
 
     if (dryRun) {
