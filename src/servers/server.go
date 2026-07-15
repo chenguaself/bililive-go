@@ -84,6 +84,7 @@ func initMux(ctx context.Context) *mux.Router {
 	apiRoute.HandleFunc("/raw-config", putRawConfig).Methods("PUT")
 	apiRoute.HandleFunc("/lives", getAllLives).Methods("GET")
 	apiRoute.HandleFunc("/lives", addLives).Methods("POST")
+	apiRoute.HandleFunc("/lives/batch", batchAddLives).Methods("POST")
 	apiRoute.HandleFunc("/lives/{id}", getLive).Methods("GET")
 	apiRoute.HandleFunc("/lives/{id}", removeLive).Methods("DELETE")
 	apiRoute.HandleFunc("/lives/{id}/logs", getLiveLogs).Methods("GET")
@@ -139,6 +140,14 @@ func initMux(ctx context.Context) *mux.Router {
 
 	// 内存监控 API 路由
 	apiRoute.HandleFunc("/memory/snapshots", getMemorySnapshots).Methods("GET") // 获取内存快照
+
+	// FFmpeg 状态 API 路由
+	apiRoute.HandleFunc("/ffmpeg/status", getFFmpegStatusHandler).Methods("GET")
+	// 重试 FFmpeg 检测/下载（下载失败或未找到后由用户手动触发）
+	apiRoute.HandleFunc("/ffmpeg/retry", retryFFmpegHandler).Methods("POST")
+
+	// 测试专用调试路由（dev 构建标签时注册，生产构建为空操作）
+	registerDevDebugRoutes(apiRoute)
 
 	// OpenList (云上传) API 路由
 	apiRoute.HandleFunc("/openlist/status", getOpenListStatus).Methods("GET")
@@ -355,6 +364,21 @@ func setupRecorderStatusBroadcast() {
 	// 设置回调函数，让 recorders 包能够调用 SSE 广播
 	recorders.SetBroadcastRecorderStatusFunc(func(liveId types.LiveID, status map[string]interface{}) {
 		GetSSEHub().BroadcastRecorderStatus(liveId, status)
+	})
+
+	// 设置弹幕广播回调，让 recorders 包能够将弹幕消息推送到 SSE
+	recorders.SetBroadcastDanmakuFunc(func(liveId types.LiveID, msgType, username, content string, extra map[string]interface{}) {
+		GetSSEHub().BroadcastDanmaku(liveId, map[string]interface{}{
+			"type":       msgType,
+			"username":   username,
+			"content":    content,
+			"color":      extra["color"],
+			"timestamp":  extra["timestamp"],
+			"gift_name":  extra["gift_name"],
+			"num":        extra["num"],
+			"price":      extra["price"],
+			"coin_type":  extra["coin_type"],
+		})
 	})
 
 	// 设置录制结束回调，用于触发优雅更新检查

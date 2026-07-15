@@ -5,11 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Akegarasu/blivedm-go/client"
-	"github.com/Akegarasu/blivedm-go/message"
 	"github.com/sirupsen/logrus"
 
 	"github.com/bililive-go/bililive-go/src/configs"
+	"github.com/bililive-go/bililive-go/src/recorders/danmaku/bilibili"
 )
 
 // DanmakuRecorder 哔哩哔哩弹幕录制器
@@ -17,7 +16,7 @@ type DanmakuRecorder struct {
 	baseRecorder
 	roomID  int
 	cookies string
-	client  *client.Client
+	client  *bilibili.Client
 }
 
 // NewDanmakuRecorder 创建哔哩哔哩弹幕录制器
@@ -50,56 +49,39 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 	}
 	d.assWriter = assWriter
 
-	c := client.NewClient(d.roomID)
-	if d.cookies != "" {
-		c.SetCookie(d.cookies)
-	}
-	d.client = c
+	c := bilibili.NewClient(d.roomID, d.cookies, d.logger)
 
-	c.OnDanmaku(func(msg *message.Danmaku) {
-		d.addDanmaku(time.Now(), msg.Sender.Uname, msg.Content, msg.Extra.Color)
+	c.OnDanmaku(func(msg bilibili.DanmakuMsg) {
+		d.addDanmaku(time.Now(), msg.Uname, msg.Content, msg.Color)
 	})
 
 	if d.cfg.RecordGift != nil && *d.cfg.RecordGift {
-		c.OnGift(func(msg *message.Gift) {
+		c.OnGift(func(msg bilibili.GiftMsg) {
 			if msg.Num > 0 {
-				d.addGift(time.Now(), msg.Uname, msg.GiftName, msg.Num)
+				d.addGift(time.Now(), msg.Uname, msg.GiftName, msg.Num, msg.Price, msg.CoinType)
 			}
 		})
 	}
 
 	if d.cfg.RecordGuard != nil && *d.cfg.RecordGuard {
-		c.OnGuardBuy(func(msg *message.GuardBuy) {
-			d.mu.Lock()
-			if !d.running || d.assWriter == nil {
-				d.mu.Unlock()
-				return
-			}
-			d.assWriter.AddGuard(time.Now(), msg.Username, msg.GiftName)
-			d.count++
-			d.mu.Unlock()
+		c.OnGuardBuy(func(msg bilibili.GuardBuyMsg) {
+			d.addGuard(time.Now(), msg.Username, msg.GiftName, msg.Price)
 		})
 	}
 
 	if d.cfg.RecordSuperChat != nil && *d.cfg.RecordSuperChat {
-		c.OnSuperChat(func(msg *message.SuperChat) {
-			d.mu.Lock()
-			if !d.running || d.assWriter == nil {
-				d.mu.Unlock()
-				return
-			}
-			d.assWriter.AddSuperChat(time.Now(), msg.UserInfo.Uname, msg.Message, msg.Price)
-			d.count++
-			d.mu.Unlock()
+		c.OnSuperChat(func(msg bilibili.SuperChatMsg) {
+			d.addSuperChat(time.Now(), msg.Uname, msg.Message, msg.Price)
 		})
 	}
 
 	if err := c.Start(); err != nil {
 		assWriter.Close()
 		d.assWriter = nil
-		return fmt.Errorf("failed to start danmaku client: %w", err)
+		return fmt.Errorf("failed to start bilibili danmaku client: %w", err)
 	}
 
+	d.client = c
 	d.running = true
 	d.logger.Info("弹幕录制已启动")
 
@@ -113,9 +95,18 @@ func (d *DanmakuRecorder) Start(ctx context.Context) error {
 
 // Stop 停止弹幕录制
 func (d *DanmakuRecorder) Stop() {
-	w := d.stopBase()
+	d.mu.Lock()
+	if !d.running {
+		d.mu.Unlock()
+		return
+	}
+	d.running = false
+	w := d.assWriter
+	d.assWriter = nil
 	c := d.client
 	d.client = nil
+	d.mu.Unlock()
+
 	if c != nil {
 		c.Stop()
 	}

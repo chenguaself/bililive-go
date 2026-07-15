@@ -24,8 +24,6 @@ const (
 
 	heartbeatInterval = 45 * time.Second
 	readTimeout       = 60 * time.Second
-
-	maxReconnect = 5
 )
 
 type DouyuClient struct {
@@ -231,26 +229,20 @@ func (c *DouyuClient) readLoopWithReconnect(ctx context.Context) {
 		}
 
 		reconnectCount++
-		if reconnectCount > maxReconnect {
-			c.logger.Errorf("重连 %d 次仍然失败，停止弹幕录制", maxReconnect)
-			c.mu.Lock()
-			c.running = false
-			c.closeOnce.Do(func() { close(c.done) })
-			if c.conn != nil {
-				c.conn.Close()
-			}
-			c.mu.Unlock()
-			return
-		}
 
-		c.logger.Warnf("连接断开，%d秒后第 %d 次重连...", 3*reconnectCount, reconnectCount)
+		// 线性退避，上限 60 秒
+		delay := 3 * reconnectCount
+		if delay > 60 {
+			delay = 60
+		}
+		c.logger.Warnf("连接断开，%d秒后第 %d 次重连...", delay, reconnectCount)
 
 		select {
 		case <-ctx.Done():
 			return
 		case <-c.done:
 			return
-		case <-time.After(time.Duration(3*reconnectCount) * time.Second):
+		case <-time.After(time.Duration(delay) * time.Second):
 		}
 
 		c.invalidateAddrCache()
@@ -353,7 +345,7 @@ func (c *DouyuClient) readLoop(ctx context.Context) error {
 			txt := fields["txt"]
 			if nn != "" && txt != "" && c.onDanmaku != nil {
 				col := parseDouyuColor(fields["col"])
-				c.onDanmaku(nn, txt, col)
+				c.handleDanmakuSafe(nn, txt, col)
 			}
 		case "dgb":
 			if c.onGift != nil {
@@ -365,7 +357,7 @@ func (c *DouyuClient) readLoop(ctx context.Context) error {
 					if n, err := strconv.Atoi(gfcnt); err == nil && n > 0 {
 						num = n
 					}
-					c.onGift(nn, gfn, num)
+					c.handleGiftSafe(nn, gfn, num)
 				}
 			}
 		case "pingreq":
@@ -547,4 +539,24 @@ func parseDouyuColor(col string) int {
 	default: // white  #FFFFFF
 		return 16777215
 	}
+}
+
+// handleDanmakuSafe 带 panic 恢复的弹幕处理
+func (c *DouyuClient) handleDanmakuSafe(username, content string, color int) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Errorf("弹幕处理 panic: %v", r)
+		}
+	}()
+	c.onDanmaku(username, content, color)
+}
+
+// handleGiftSafe 带 panic 恢复的礼物处理
+func (c *DouyuClient) handleGiftSafe(username, giftName string, num int) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Errorf("礼物处理 panic: %v", r)
+		}
+	}()
+	c.onGift(username, giftName, num)
 }

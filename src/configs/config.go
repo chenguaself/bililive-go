@@ -79,7 +79,7 @@ func (f *Feature) GetEffectiveDownloaderType() DownloaderType {
 type DanmakuConfig struct {
 	FontSize         int    `yaml:"font_size" json:"font_size"`               // 字体大小 (12~120)
 	FontName         string `yaml:"font_name" json:"font_name"`               // 字体名称
-	ScrollArea       string `yaml:"scroll_area" json:"scroll_area"`           // 滚动区域: full(全屏), top(顶部), bottom(底部)
+	ScrollArea       string `yaml:"scroll_area" json:"scroll_area"`           // 滚动区域: full(全屏), top(顶部半屏), bottom(底部半屏), quarter(1/4屏), three-quarter(3/4屏)
 	ScrollTime       int    `yaml:"scroll_time" json:"scroll_time"`           // 弹幕滚过屏幕的秒数 (5~20)
 	Resolution       string `yaml:"resolution" json:"resolution"`             // 播放分辨率
 	Outline          *int   `yaml:"outline,omitempty" json:"outline,omitempty"`   // 描边粗细 (0~4)，nil 表示使用默认值
@@ -115,9 +115,11 @@ var defaultDanmakuConfig = DanmakuConfig{
 
 // validScrollAreas 支持的滚动区域
 var validScrollAreas = map[string]bool{
-	"full":   true, // 全屏滚动
-	"top":    true, // 仅在屏幕上半部分滚动
-	"bottom": true, // 仅在屏幕下半部分滚动
+	"full":            true, // 全屏滚动
+	"top":             true, // 仅在屏幕上半部分滚动
+	"bottom":          true, // 仅在屏幕下半部分滚动
+	"quarter":         true, // 仅在屏幕上1/4部分滚动
+	"three-quarter":   true, // 仅在屏幕上3/4部分滚动
 }
 
 // validResolutions 支持的分辨率列表
@@ -221,7 +223,7 @@ func (d *DanmakuConfig) ValidateWithPlatform(platformKey string) error {
 		return fmt.Errorf("字体名称不能为空")
 	}
 	if !validScrollAreas[d.ScrollArea] {
-		return fmt.Errorf("不支持的滚动区域: %s，可选值: full, top, bottom", d.ScrollArea)
+		return fmt.Errorf("不支持的滚动区域: %s，可选值: full, top, bottom, quarter, three-quarter", d.ScrollArea)
 	}
 	if d.ScrollTime < 5 || d.ScrollTime > 20 {
 		return fmt.Errorf("滚动时间必须在 5~20 秒之间，当前值: %d", d.ScrollTime)
@@ -649,38 +651,51 @@ func UpdateTransient(mutator func(c *Config) error) (*Config, error) {
 }
 
 func updateImpl(mutator func(c *Config) error, persist bool) (*Config, error) {
-	updateMu.Lock()
-	defer updateMu.Unlock()
-	old := GetCurrentConfig()
-	// 若当前尚未设置配置，则以默认配置为基础
-	var base *Config
-	if old == nil {
-		base = NewConfig()
-	} else {
-		base = CloneConfigShallow(old)
-	}
-	if err := mutator(base); err != nil {
-		return nil, err
-	}
-	// 维护派生字段
-	base.RefreshLiveRoomIndexCache()
-	// 版本号自增
-	if old == nil {
-		base.Version = 1
-	} else {
-		base.Version = old.Version + 1
-	}
-	newCfg := base
+	var newCfg *Config
+	var updateErr error
 
-	if persist && newCfg.File != "" {
-		if err := newCfg.Marshal(); err != nil {
-			// 如果持久化失败，我们选择记录错误但不阻止内存更新
-			// 或者返回错误？这里选择返回错误，因为用户期望保存成功。
-			return nil, fmt.Errorf("failed to save config: %w", err)
+	func() {
+		updateMu.Lock()
+		defer updateMu.Unlock()
+		old := GetCurrentConfig()
+		// 若当前尚未设置配置，则以默认配置为基础
+		var base *Config
+		if old == nil {
+			base = NewConfig()
+		} else {
+			base = CloneConfigShallow(old)
 		}
+		if err := mutator(base); err != nil {
+			updateErr = err
+			return
+		}
+		// 维护派生字段
+		base.RefreshLiveRoomIndexCache()
+		// 版本号自增
+		if old == nil {
+			base.Version = 1
+		} else {
+			base.Version = old.Version + 1
+		}
+		newCfg = base
+
+		// 持久化在锁内执行，保证内存与磁盘一致性
+		if persist && newCfg.File != "" {
+			if err := newCfg.Marshal(); err != nil {
+				updateErr = fmt.Errorf("failed to save config: %w", err)
+				return
+			}
+		}
+		SetCurrentConfig(newCfg)
+	}()
+
+	if updateErr != nil {
+		return nil, updateErr
+	}
+	if newCfg == nil {
+		return nil, errors.New("config update failed")
 	}
 
-	SetCurrentConfig(newCfg)
 	return newCfg, nil
 }
 
@@ -691,38 +706,52 @@ func UpdateCAS(expectedVersion int64, mutator func(c *Config) error) (*Config, e
 }
 
 func updateCASImpl(expectedVersion int64, mutator func(c *Config) error, persist bool) (*Config, error) {
-	updateMu.Lock()
-	defer updateMu.Unlock()
-	cur := GetCurrentConfig()
-	// 校验版本
-	var curVersion int64
-	if cur != nil {
-		curVersion = cur.Version
-	}
-	if curVersion != expectedVersion {
-		return nil, ErrConfigVersionConflict
-	}
-	// 克隆并修改
-	var base *Config
-	if cur == nil {
-		base = NewConfig()
-	} else {
-		base = CloneConfigShallow(cur)
-	}
-	if err := mutator(base); err != nil {
-		return nil, err
-	}
-	base.RefreshLiveRoomIndexCache()
-	base.Version = expectedVersion + 1
+	var newCfg *Config
+	var updateErr error
 
-	if persist && base.File != "" {
-		if err := base.Marshal(); err != nil {
-			return nil, fmt.Errorf("failed to save config: %w", err)
+	func() {
+		updateMu.Lock()
+		defer updateMu.Unlock()
+		cur := GetCurrentConfig()
+		// 校验版本
+		var curVersion int64
+		if cur != nil {
+			curVersion = cur.Version
 		}
+		if curVersion != expectedVersion {
+			updateErr = ErrConfigVersionConflict
+			return
+		}
+		// 克隆并修改
+		var base *Config
+		if cur == nil {
+			base = NewConfig()
+		} else {
+			base = CloneConfigShallow(cur)
+		}
+		if err := mutator(base); err != nil {
+			updateErr = err
+			return
+		}
+		base.RefreshLiveRoomIndexCache()
+		base.Version = expectedVersion + 1
+		newCfg = base
+
+		// 持久化在锁内执行，保证内存与磁盘一致性
+		if persist && newCfg.File != "" {
+			if err := newCfg.Marshal(); err != nil {
+				updateErr = fmt.Errorf("failed to save config: %w", err)
+				return
+			}
+		}
+		SetCurrentConfig(newCfg)
+	}()
+
+	if updateErr != nil {
+		return nil, updateErr
 	}
 
-	SetCurrentConfig(base)
-	return base, nil
+	return newCfg, nil
 }
 
 // UpdateWithRetry 在读取-修改-提交之间做乐观锁重试，避免调用方自行实现重试逻辑
@@ -811,6 +840,14 @@ func AppendLiveRoom(room LiveRoom) (*Config, error) {
 	}, 3, 10*time.Millisecond)
 }
 
+// AppendLiveRoomTransient 追加一个 LiveRoom（仅更新内存，不持久化）。
+func AppendLiveRoomTransient(room LiveRoom) (*Config, error) {
+	return UpdateWithRetryTransient(func(c *Config) error {
+		c.LiveRooms = append(c.LiveRooms, room)
+		return nil
+	}, 3, 10*time.Millisecond)
+}
+
 // RemoveLiveRoomByUrl 从配置中移除指定 URL 的房间
 func RemoveLiveRoomByUrl(url string) (*Config, error) {
 	return UpdateWithRetry(func(c *Config) error {
@@ -847,6 +884,18 @@ func SetLiveRoomId(url string, id types.LiveID) (*Config, error) {
 		}
 		return nil
 	}, 3, 10*time.Millisecond)
+}
+
+// Persist 将当前内存中的配置持久化到磁盘。
+// 用于批量 Transient 更新后统一刷盘的场景。
+func Persist() error {
+	updateMu.Lock()
+	defer updateMu.Unlock()
+	cfg := GetCurrentConfig()
+	if cfg == nil {
+		return errors.New("config not initialized")
+	}
+	return cfg.Marshal()
 }
 
 type LiveRoom struct {

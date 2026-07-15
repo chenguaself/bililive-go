@@ -52,7 +52,7 @@ func (r *DouyuDanmakuRecorder) Start(ctx context.Context) error {
 	var onGift func(username, giftName string, num int)
 	if r.cfg.RecordDouyuGift != nil && *r.cfg.RecordDouyuGift {
 		onGift = func(username, giftName string, num int) {
-			r.addGift(time.Now(), username, giftName, num)
+			r.addGift(time.Now(), username, giftName, num, 0, "")
 		}
 	}
 
