@@ -94,7 +94,7 @@ func getConfigBesidesExecutable() (*configs.Config, error) {
 
 	// 回退：在当前 exe 旁边查找（用户直接双击运行的场景）
 	configPath := filepath.Join(filepath.Dir(exePath), "config.yml")
-	fmt.Fprintf(os.Stderr, "[Config] 使用当前 exe 目录的配置文件: %s\n", configPath)
+	fmt.Fprintf(os.Stderr, "[Config] 使用当前程序目录的配置文件: %s\n", configPath)
 	config, err := configs.NewConfigWithFile(configPath)
 	if err != nil {
 		return nil, err
