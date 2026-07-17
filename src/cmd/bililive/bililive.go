@@ -88,13 +88,13 @@ func getConfigBesidesExecutable() (*configs.Config, error) {
 			fmt.Fprintf(os.Stderr, "[Config] 使用 Launcher 目录的配置文件: %s\n", launcherConfigPath)
 			return config, nil
 		} else {
-			fmt.Fprintf(os.Stderr, "[Config] Launcher 配置文件加载失败 (%s): %v，回退到 exe 目录\n", launcherConfigPath, loadErr)
+			fmt.Fprintf(os.Stderr, "[Config] Launcher 配置文件加载失败 (%s): %v，回退到程序所在目录\n", launcherConfigPath, loadErr)
 		}
 	}
 
-	// 回退：在当前 exe 旁边查找（用户直接双击运行的场景）
+	// 回退：在当前程序所在目录查找（用户直接双击运行的场景）
 	configPath := filepath.Join(filepath.Dir(exePath), "config.yml")
-	fmt.Fprintf(os.Stderr, "[Config] 使用当前 exe 目录的配置文件: %s\n", configPath)
+	fmt.Fprintf(os.Stderr, "[Config] 使用当前程序所在目录的配置文件: %s\n", configPath)
 	config, err := configs.NewConfigWithFile(configPath)
 	if err != nil {
 		return nil, err
