@@ -448,6 +448,11 @@ func main() {
 	// 异步检测并（按需）下载 FFmpeg，不阻塞启动流程
 	tools.FFmpegAsyncInit(ctx)
 
+	// 工具链是异步初始化的，WebUI 会先于工具就绪启动。
+	// 注册就绪检查，让依赖外部工具的平台（抖音依赖 bililive-tools）在工具可用之前
+	// 不去请求直播间信息，从而也不会启动录制任务。
+	live.SetPlatformReadinessChecker(tools.PlatformDependenciesReady)
+
 	// 启动 manager
 	if err = lm.Start(ctx); err != nil {
 		logger.Fatalf("failed to init listener manager, error: %s", err)

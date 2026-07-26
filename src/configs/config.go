@@ -1391,6 +1391,10 @@ func (r *ResolvedConfig) applyOverrides(override *OverridableConfig) {
 	}
 }
 
+// PlatformKeyDouyin 抖音的平台键。抖音的直播间解析依赖本地 bililive-tools 服务，
+// 需要在若干处按平台键做就绪判断，因此单独导出常量避免散落的字符串字面量。
+const PlatformKeyDouyin = "douyin"
+
 // GetPlatformKeyFromUrl 从URL中提取平台键，用于配置查找
 func GetPlatformKeyFromUrl(urlStr string) string {
 	u, err := url.Parse(urlStr)

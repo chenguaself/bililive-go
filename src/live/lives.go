@@ -4,6 +4,7 @@ package live
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -25,11 +26,18 @@ type SchedulerRefreshCallback func(live Live, status SchedulerStatus)
 // RequestStatusCallback 请求状态追踪的回调函数类型
 type RequestStatusCallback func(liveID, platform string, success bool, errMsg string)
 
+// PlatformReadinessChecker 检查某个平台依赖的外部工具是否已就绪。
+// 返回 false 时调度器不会发起请求，reason 用于日志说明原因。
+type PlatformReadinessChecker func(platformKey string) (ready bool, reason string)
+
 // 全局调度器刷新回调（由外部包设置，避免循环依赖）
 var schedulerRefreshCallback SchedulerRefreshCallback
 
 // 全局请求状态追踪回调（由 iostats 包设置，避免循环依赖）
 var requestStatusCallback RequestStatusCallback
+
+// 全局平台工具就绪检查回调（由 tools 包设置，避免循环依赖）
+var platformReadinessChecker PlatformReadinessChecker
 
 // SetSchedulerRefreshCallback 设置调度器刷新完成的回调函数
 func SetSchedulerRefreshCallback(callback SchedulerRefreshCallback) {
@@ -39,6 +47,12 @@ func SetSchedulerRefreshCallback(callback SchedulerRefreshCallback) {
 // SetRequestStatusCallback 设置请求状态追踪的回调函数
 func SetRequestStatusCallback(callback RequestStatusCallback) {
 	requestStatusCallback = callback
+}
+
+// SetPlatformReadinessChecker 设置平台依赖工具的就绪检查函数。
+// 应在创建直播间之前调用；未设置时视为所有平台都已就绪。
+func SetPlatformReadinessChecker(checker PlatformReadinessChecker) {
+	platformReadinessChecker = checker
 }
 
 var (
@@ -212,12 +226,19 @@ type Live interface {
 	Close()
 }
 
+// ErrPlatformToolsNotReady 表示直播间所属平台依赖的外部工具还没就绪，
+// 此时不应该发起请求，也不应该按「获取失败」来对待（不是平台或网络的问题）。
+var ErrPlatformToolsNotReady = errors.New("平台依赖的工具尚未就绪")
+
 const (
 	// defaultInterval 没有配置轮询间隔时使用的默认值
 	defaultInterval = 30 * time.Second
 	// maxFailureBackoff 连续失败时退避间隔的上限。
 	// 取值需要兼顾两点：故障时不能把请求打成风暴，恢复后也不能太久才发现开播。
 	maxFailureBackoff = 5 * time.Minute
+	// toolReadinessPollInterval 依赖工具未就绪时重新检查的间隔。
+	// 这里只是读一个内存中的状态，不产生任何网络请求，因此可以查得比较勤。
+	toolReadinessPollInterval = 2 * time.Second
 )
 
 // infoResult 用于传递 GetInfo 的结果
@@ -266,6 +287,7 @@ type WrappedLive struct {
 	waiters             []waiter      // 等待下一次请求结果的调用方
 	lastRequestAt       time.Time     // 上次发送请求的时间（不论成功还是失败）
 	consecutiveFailures int           // 连续失败次数，用于计算退避间隔
+	waitingForTool      bool          // 是否正在等待平台依赖的外部工具就绪
 	schedulerOnce       sync.Once     // 确保调度器只启动一次
 	schedulerStarted    bool          // 调度器是否已启动
 	schedulerStop       chan struct{} // 停止调度器的信号
@@ -312,6 +334,11 @@ func (w *WrappedLive) GetRoomID() string {
 }
 
 func (w *WrappedLive) GetInfo() (*Info, error) {
+	// 依赖的外部工具还没就绪时不发请求（调度器之外还有 listener.refresh 等直接调用方）
+	if ready, reason := w.platformToolsReadyWithReason(); !ready {
+		return nil, fmt.Errorf("%w: %s", ErrPlatformToolsNotReady, reason)
+	}
+
 	// 在通用位置应用平台访问频率限制
 	// 如果被取消则直接返回
 	if !w.waitForPlatformRateLimit() {
@@ -503,6 +530,20 @@ func (w *WrappedLive) runScheduler() {
 			}
 		}
 
+		// 平台依赖的外部工具（如抖音需要的 bililive-tools）还没就绪时不发起请求。
+		// 此时请求必然失败，只会把还在启动中的本地服务打爆，并让直播间被误判为未开播；
+		// 等待期间调用方继续阻塞在 GetInfoWithInterval 上，也就不会触发录制。
+		if !w.platformToolsReady() {
+			select {
+			case <-w.schedulerStop:
+				return
+			case <-w.schedulerCtx.Done():
+				return
+			case <-time.After(toolReadinessPollInterval):
+				continue
+			}
+		}
+
 		// 有等待者，计算需要等待的时间（连续失败时会自动退避）
 		w.mu.Lock()
 		nextRequestAt := w.lastRequestAt.Add(w.nextRequestIntervalLocked())
@@ -590,6 +631,42 @@ func (w *WrappedLive) getConfiguredInterval() int {
 func randomJitter() int64 {
 	// 使用简单的方法生成随机数，避免导入额外的包
 	return (time.Now().UnixNano() % 6001) - 3000
+}
+
+// platformToolsReady 判断本直播间所属平台依赖的外部工具是否已就绪。
+func (w *WrappedLive) platformToolsReady() bool {
+	ready, _ := w.platformToolsReadyWithReason()
+	return ready
+}
+
+// platformToolsReadyWithReason 判断依赖的外部工具是否已就绪，并返回未就绪的原因。
+// 状态发生变化时输出一条日志，方便用户理解「为什么这个直播间还没开始轮询」。
+func (w *WrappedLive) platformToolsReadyWithReason() (bool, string) {
+	checker := platformReadinessChecker
+	if checker == nil {
+		return true, ""
+	}
+
+	platformKey := configs.GetPlatformKeyFromUrl(w.GetRawUrl())
+	if platformKey == "" {
+		return true, ""
+	}
+
+	ready, reason := checker(platformKey)
+
+	w.mu.Lock()
+	wasWaiting := w.waitingForTool
+	w.waitingForTool = !ready
+	w.mu.Unlock()
+
+	switch {
+	case !ready && !wasWaiting:
+		w.GetLogger().Debugf("依赖的工具尚未就绪，暂不请求直播间信息：%s", reason)
+	case ready && wasWaiting:
+		w.GetLogger().Debug("依赖的工具已就绪，恢复请求直播间信息")
+	}
+
+	return ready, reason
 }
 
 // waitForPlatformRateLimit 在通用位置等待平台访问频率限制

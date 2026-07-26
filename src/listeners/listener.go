@@ -3,6 +3,7 @@ package listeners
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"time"
 
@@ -95,13 +96,24 @@ func (l *listener) sendLiveNotification(hostName, status string) {
 func (l *listener) refresh() {
 	info, err := l.Live.GetInfo()
 	if err != nil {
-		l.Live.GetLogger().
-			WithError(err).
-			WithField("url", l.Live.GetRawUrl()).
-			Error("failed to load room info")
+		l.logGetInfoError(err)
 		return
 	}
 	l.processInfo(info)
+}
+
+// logGetInfoError 记录获取直播间信息失败的日志。
+// 依赖工具尚未就绪不是异常状况（工具还在下载/启动中，稍后调度器会自动恢复），
+// 几百个直播间同时报错只会淹没日志，因此降级为 debug。
+func (l *listener) logGetInfoError(err error) {
+	entry := l.Live.GetLogger().
+		WithError(err).
+		WithField("url", l.Live.GetRawUrl())
+	if errors.Is(err, live.ErrPlatformToolsNotReady) {
+		entry.Debug("skip loading room info")
+		return
+	}
+	entry.Error("failed to load room info")
 }
 
 func (l *listener) run() {
@@ -119,10 +131,7 @@ func (l *listener) run() {
 				if l.runCtx.Err() != nil {
 					return
 				}
-				l.Live.GetLogger().
-					WithError(err).
-					WithField("url", l.Live.GetRawUrl()).
-					Error("failed to load room info")
+				l.logGetInfoError(err)
 				continue
 			}
 			l.processInfo(info)
