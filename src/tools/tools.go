@@ -403,6 +403,9 @@ func IsBToolsStarting() bool {
 func Cleanup() {
 	logger := blog.GetLogger()
 
+	// 先置位关闭标记，避免守护逻辑把刚被杀掉的子进程又拉起来
+	btoolsShuttingDown.Store(true)
+
 	// 1. 终止所有已注册的子进程
 	KillAllProcesses()
 
@@ -593,12 +596,7 @@ func Init() (err error) {
 	} {
 		AsyncDownloadIfNecessary(toolName)
 	}
-	bilisentry.Go(func() {
-		err := startBTools()
-		if err != nil {
-			blog.GetLogger().WithError(err).Errorln("Failed to start bililive-tools")
-		}
-	})
+	bilisentry.Go(superviseBTools)
 	bilisentry.Go(func() {
 		if cfg := configs.GetCurrentConfig(); cfg != nil && cfg.RPC.Enable {
 			startScheduler()
@@ -606,6 +604,51 @@ func Init() (err error) {
 	})
 
 	return nil
+}
+
+// btoolsShuttingDown 标记程序正在退出，避免守护逻辑在关闭过程中重启子进程
+var btoolsShuttingDown atomic.Bool
+
+// superviseBTools 启动 bililive-tools 并在它意外退出后自动重启。
+//
+// 没有守护的话，Node 进程一旦崩溃（或被外部结束），抖音等依赖它的平台
+// 在本次运行的剩余时间里就再也无法恢复，只能靠用户重启整个程序。
+func superviseBTools() {
+	const (
+		minRestartDelay = 5 * time.Second
+		maxRestartDelay = 5 * time.Minute
+		// 运行超过这个时长才认为「曾经正常工作过」，可以把退避重置
+		healthyRunDuration = time.Minute
+	)
+
+	delay := minRestartDelay
+	for {
+		startedAt := time.Now()
+		if err := startBTools(); err != nil {
+			blog.GetLogger().WithError(err).Errorln("Failed to start bililive-tools")
+		}
+
+		if btoolsShuttingDown.Load() {
+			return
+		}
+
+		// 之前稳定运行过一段时间，说明不是启动就失败，重置退避
+		if time.Since(startedAt) >= healthyRunDuration {
+			delay = minRestartDelay
+		}
+
+		blog.GetLogger().Warnf("bililive-tools 将在 %s 后重启", delay)
+		time.Sleep(delay)
+
+		if btoolsShuttingDown.Load() {
+			return
+		}
+
+		delay *= 2
+		if delay > maxRestartDelay {
+			delay = maxRestartDelay
+		}
+	}
 }
 
 func startBTools() error {
@@ -687,6 +730,10 @@ func startBTools() error {
 		RegisterProcess("bililive-tools", pid, ProcessCategoryBTools)
 		blog.GetLogger().Infof("bililive-tools process started with PID: %d", pid)
 	})
+
+	// 进程已经退出，及时反注册，避免 KillAllProcesses 去操作一个已经失效
+	// （甚至可能被系统回收复用）的 PID
+	UnregisterProcess("bililive-tools")
 
 	// 子进程退出后服务不再可用，必须把状态改回去，
 	// 否则依赖它的平台会继续认为服务健康并不断发出必然失败的请求
