@@ -697,7 +697,9 @@ func main() {
 		default:
 		}
 	})
+	shutdownComplete := make(chan struct{})
 	bilisentryPkg.Go(func() {
+		defer close(shutdownComplete)
 		<-msgChan
 		logger.Info("Received shutdown signal, closing...")
 		// 取消根 context，这会导致所有派生的 context 被取消
@@ -737,6 +739,14 @@ func main() {
 	})
 
 	inst.WaitGroup.Wait()
+	// WaitGroup 只覆盖 Server、ListenerManager 和 RecorderManager。
+	// 收到关闭请求后还必须等待其余模块和 tools.Cleanup() 完成，避免主程序退出后
+	// Launcher 立即启动新版本，与尚未退出的 bililive-tools 等子进程争用端口。
+	select {
+	case <-rootCtx.Done():
+		<-shutdownComplete
+	default:
+	}
 
 	// 检查是否需要就地切换到 launcher 模式
 	// 如果用户在前端点击了"立即更新"，doApplyUpdate 会设置此标志并触发服务关闭
@@ -747,11 +757,6 @@ func main() {
 	// 这样进程不会退出，Docker 容器不会重启
 	if servers.PendingLauncherTransition() {
 		logger.Infof("====== 版本切换: 所有服务已关闭，正在进入 Launcher 模式 (AppDataPath=%s) ======", configs.GetCurrentConfig().AppDataPath)
-		// 取消根 context，确保日志文件句柄被关闭（避免新版本清理时文件冲突）
-		rootCancel()
-		// 在进入 launcher 模式前，终止所有子进程（btools、klive 等）并关闭 remotetools WebUI
-		// 确保端口被释放，否则新版本 bgo 启动时会遇到 EADDRINUSE
-		tools.Cleanup()
 
 		// 如果当前进程是由父 Launcher 启动的（BILILIVE_LAUNCHER=1），
 		// 不能自己再变成 launcher——否则两个 launcher 会争抢同一个 Named Pipe。

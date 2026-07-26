@@ -3,6 +3,7 @@
 package launcher
 
 import (
+	"errors"
 	"os/exec"
 	"syscall"
 )
@@ -13,8 +14,15 @@ func setProcAttr(cmd *exec.Cmd) {
 }
 
 // killProcessGroup 杀掉整个进程组（包含 bililive-tools 等子进程），避免端口残留
-func killProcessGroup(pid int) {
-	if pid > 0 {
-		syscall.Kill(-pid, syscall.SIGKILL)
+func killProcessGroup(pid int) error {
+	if pid <= 0 {
+		return nil
 	}
+
+	err := syscall.Kill(-pid, syscall.SIGKILL)
+	// 主程序及其所有后代均已退出时，进程组不存在是正常状态。
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
 }

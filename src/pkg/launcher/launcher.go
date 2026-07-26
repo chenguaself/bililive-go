@@ -5,6 +5,7 @@ package launcher
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -281,6 +282,9 @@ func (r *Runner) Run(ctx context.Context, args []string) error {
 		case <-r.processDone:
 			// 子进程在发送 startup_success 之前就退出了（如 Fatal 错误）
 			startupTimer.Stop()
+			// 主程序可能已经退出，但它启动的 bililive-tools 等后代进程仍然存活。
+			// 重试前必须清理整个进程组，否则新进程会因端口占用再次启动失败。
+			r.cleanupMainProcessGroup()
 			if !r.startupOK {
 				r.log("主程序在启动确认前退出")
 
@@ -425,11 +429,31 @@ func (r *Runner) stopMainProgram() {
 
 	select {
 	case <-waitCh:
+		// 即使主程序已正常退出，其未被回收的后代进程仍可能继续占用端口。
+		r.cleanupMainProcessGroup()
 		r.log("主程序已正常退出")
 	case <-time.After(35 * time.Second):
 		r.log("主程序未响应，强制终止")
-		killProcessGroup(r.mainPID)
-		r.mainProcess.Process.Kill()
+		r.cleanupMainProcessGroup()
+		if err := r.mainProcess.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			r.log("强制终止主程序失败: %v", err)
+		}
+
+		// 等待 Wait goroutine 完成，确保主进程资源在启动下一版本前已回收。
+		select {
+		case <-waitCh:
+			r.log("主程序已被强制终止")
+		case <-time.After(5 * time.Second):
+			r.log("等待主程序强制退出超时")
+		}
+	}
+}
+
+// cleanupMainProcessGroup 清理主程序所在进程组中仍存活的后代进程。
+// 主程序无论是正常退出、启动失败还是被强制终止，Launcher 在继续前都必须调用它。
+func (r *Runner) cleanupMainProcessGroup() {
+	if err := killProcessGroup(r.mainPID); err != nil {
+		r.log("清理主程序进程组失败（PID: %d）: %v", r.mainPID, err)
 	}
 }
 
@@ -444,6 +468,7 @@ func (r *Runner) waitForMainProgram() {
 	} else {
 		r.mainProcess.Wait()
 	}
+	r.cleanupMainProcessGroup()
 	r.log("主程序已退出")
 }
 
