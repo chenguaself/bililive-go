@@ -18,7 +18,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/hr3lxphr6j/requests v0.0.1
 	github.com/joho/godotenv v1.5.1
-	github.com/kira1928/remotetools v0.3.6-0.20260726101040-0f5f534cfafa
+	github.com/kira1928/remotetools v0.3.6
 	github.com/prometheus/client_golang v1.11.0
 	github.com/robertkrimen/otto v0.5.1
 	github.com/satori/go.uuid v1.2.1-0.20181028125025-b2ce2384e17b
