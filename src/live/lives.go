@@ -212,6 +212,14 @@ type Live interface {
 	Close()
 }
 
+const (
+	// defaultInterval 没有配置轮询间隔时使用的默认值
+	defaultInterval = 30 * time.Second
+	// maxFailureBackoff 连续失败时退避间隔的上限。
+	// 取值需要兼顾两点：故障时不能把请求打成风暴，恢复后也不能太久才发现开播。
+	maxFailureBackoff = 5 * time.Minute
+)
+
 // infoResult 用于传递 GetInfo 的结果
 type infoResult struct {
 	info *Info
@@ -254,12 +262,13 @@ type WrappedLive struct {
 	cache gcache.Cache
 
 	// 请求调度相关字段
-	mu               sync.Mutex
-	waiters          []waiter      // 等待下一次请求结果的调用方
-	lastRequestAt    time.Time     // 上次发送请求的时间
-	schedulerOnce    sync.Once     // 确保调度器只启动一次
-	schedulerStarted bool          // 调度器是否已启动
-	schedulerStop    chan struct{} // 停止调度器的信号
+	mu                  sync.Mutex
+	waiters             []waiter      // 等待下一次请求结果的调用方
+	lastRequestAt       time.Time     // 上次发送请求的时间（不论成功还是失败）
+	consecutiveFailures int           // 连续失败次数，用于计算退避间隔
+	schedulerOnce       sync.Once     // 确保调度器只启动一次
+	schedulerStarted    bool          // 调度器是否已启动
+	schedulerStop       chan struct{} // 停止调度器的信号
 	schedulerCtx     context.Context
 	schedulerCancel  context.CancelFunc
 }
@@ -311,6 +320,19 @@ func (w *WrappedLive) GetInfo() (*Info, error) {
 
 	i, err := w.Live.GetInfo()
 
+	// 不论成功还是失败都要记录本次请求时间：
+	// 如果失败时不更新 lastRequestAt，调度器会一直认为「早就该请求了」，
+	// 从而退化成固定 3 秒一次的重试，反而把故障状态下的请求频率放大十倍，
+	// 把本地工具和平台接口一起打爆，永远无法自愈。
+	w.mu.Lock()
+	w.lastRequestAt = time.Now()
+	if err != nil {
+		w.consecutiveFailures++
+	} else {
+		w.consecutiveFailures = 0
+	}
+	w.mu.Unlock()
+
 	// 记录请求状态到 IO 统计（通过回调避免循环依赖）
 	if requestStatusCallback != nil {
 		liveID := string(w.GetLiveId())
@@ -331,6 +353,8 @@ func (w *WrappedLive) GetInfo() (*Info, error) {
 			// 避免错误文本出现在录制文件名中
 			info.(*Info).LastError = err.Error()
 		}
+		// 失败同样要通知前端更新倒计时，否则退避期间界面会一直显示「即将刷新」
+		w.dispatchSchedulerRefreshEvent()
 		return nil, err
 	}
 	if w.cache != nil {
@@ -338,11 +362,6 @@ func (w *WrappedLive) GetInfo() (*Info, error) {
 		i.LastError = ""
 		w.cache.Set(w, i)
 	}
-
-	// 更新最后请求时间
-	w.mu.Lock()
-	w.lastRequestAt = time.Now()
-	w.mu.Unlock()
 
 	// 发送调度器刷新完成事件，通知前端更新倒计时
 	w.dispatchSchedulerRefreshEvent()
@@ -431,7 +450,7 @@ func (w *WrappedLive) GetSchedulerStatus() SchedulerStatus {
 
 	now := time.Now()
 	interval := w.getConfiguredInterval()
-	intervalDuration := time.Duration(interval) * time.Second
+	intervalDuration := w.nextRequestIntervalLocked()
 
 	status := SchedulerStatus{
 		HasWaiters:       len(w.waiters) > 0,
@@ -484,11 +503,9 @@ func (w *WrappedLive) runScheduler() {
 			}
 		}
 
-		// 有等待者，计算需要等待的时间
-		interval := time.Duration(w.getConfiguredInterval()) * time.Second
-
+		// 有等待者，计算需要等待的时间（连续失败时会自动退避）
 		w.mu.Lock()
-		nextRequestAt := w.lastRequestAt.Add(interval)
+		nextRequestAt := w.lastRequestAt.Add(w.nextRequestIntervalLocked())
 		w.mu.Unlock()
 
 		now := time.Now()
@@ -529,11 +546,31 @@ func (w *WrappedLive) runScheduler() {
 	}
 }
 
+// nextRequestIntervalLocked 计算下一次请求前应该等待的间隔。
+// 正常情况下就是配置的轮询间隔；连续失败时按 2 的幂次退避，最长 maxFailureBackoff，
+// 一次成功即恢复到配置间隔。
+// 调用方必须持有 w.mu。
+func (w *WrappedLive) nextRequestIntervalLocked() time.Duration {
+	interval := time.Duration(w.getConfiguredInterval()) * time.Second
+	if interval <= 0 {
+		interval = defaultInterval
+	}
+
+	backoff := interval
+	for i := 0; i < w.consecutiveFailures && backoff < maxFailureBackoff; i++ {
+		backoff *= 2
+	}
+	if backoff > maxFailureBackoff {
+		backoff = maxFailureBackoff
+	}
+	return backoff
+}
+
 // getConfiguredInterval 获取此直播间配置的访问间隔（秒）
 func (w *WrappedLive) getConfiguredInterval() int {
 	cfg := configs.GetCurrentConfig()
 	if cfg == nil {
-		return 30 // 默认30秒
+		return int(defaultInterval.Seconds())
 	}
 
 	room, err := cfg.GetLiveRoomByUrl(w.GetRawUrl())
@@ -541,7 +578,7 @@ func (w *WrappedLive) getConfiguredInterval() int {
 		if cfg.Interval > 0 {
 			return cfg.Interval
 		}
-		return 30
+		return int(defaultInterval.Seconds())
 	}
 
 	platformKey := configs.GetPlatformKeyFromUrl(w.GetRawUrl())
