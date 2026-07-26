@@ -291,8 +291,8 @@ type WrappedLive struct {
 	schedulerOnce       sync.Once     // 确保调度器只启动一次
 	schedulerStarted    bool          // 调度器是否已启动
 	schedulerStop       chan struct{} // 停止调度器的信号
-	schedulerCtx     context.Context
-	schedulerCancel  context.CancelFunc
+	schedulerCtx        context.Context
+	schedulerCancel     context.CancelFunc
 }
 
 // NewWrappedLive 创建一个带有缓存功能的 Live 包装器
@@ -334,9 +334,13 @@ func (w *WrappedLive) GetRoomID() string {
 }
 
 func (w *WrappedLive) GetInfo() (*Info, error) {
-	// 依赖的外部工具还没就绪时不发请求（调度器之外还有 listener.refresh 等直接调用方）
+	// 依赖的外部工具还没就绪时不发请求（调度器之外还有 listener.refresh 等直接调用方）。
+	// 正常情况下调度器会先拦住，这里主要覆盖直接调用以及「刚检查完就绪、随即工具挂掉」的竞态，
+	// 因此同样要通知等待者，避免它们一直挂着。
 	if ready, reason := w.platformToolsReadyWithReason(); !ready {
-		return nil, fmt.Errorf("%w: %s", ErrPlatformToolsNotReady, reason)
+		err := fmt.Errorf("%w: %s", ErrPlatformToolsNotReady, reason)
+		w.notifyWaiters(nil, err)
+		return nil, err
 	}
 
 	// 在通用位置应用平台访问频率限制
