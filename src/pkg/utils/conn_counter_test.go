@@ -1,11 +1,15 @@
 package utils
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -231,6 +235,7 @@ func TestCreateDefaultClient(t *testing.T) {
 
 	assert.NotNil(t, client)
 	assert.NotNil(t, client.Transport)
+	assert.Equal(t, infoRequestTimeout, client.Timeout)
 
 	transport, ok := client.Transport.(*http.Transport)
 	assert.True(t, ok, "Transport should be *http.Transport")
@@ -250,6 +255,7 @@ func TestCreateDownloadClient(t *testing.T) {
 
 	assert.NotNil(t, client)
 	assert.NotNil(t, client.Transport)
+	assert.Zero(t, client.Timeout, "直播流下载不能使用信息请求的总超时")
 
 	transport, ok := client.Transport.(*http.Transport)
 	assert.True(t, ok, "Transport should be *http.Transport")
@@ -269,6 +275,7 @@ func TestCreateConnCounterClient(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, client)
 	assert.NotNil(t, client.Transport)
+	assert.Equal(t, infoRequestTimeout, client.Timeout)
 
 	transport, ok := client.Transport.(*http.Transport)
 	assert.True(t, ok, "Transport should be *http.Transport")
@@ -281,4 +288,36 @@ func TestCreateConnCounterClient(t *testing.T) {
 	assert.Greater(t, transport.IdleConnTimeout.Seconds(), 0.0)
 	assert.Greater(t, transport.TLSHandshakeTimeout.Seconds(), 0.0)
 	assert.Greater(t, transport.ResponseHeaderTimeout.Seconds(), 0.0)
+}
+
+func TestInfoClientTimeoutCoversResponseBody(t *testing.T) {
+	requestCanceled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(requestCanceled)
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+
+	client := CreateDefaultClient()
+	client.Timeout = 50 * time.Millisecond
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("读取响应头失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	_, err = io.ReadAll(resp.Body)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("响应体读取错误 = %v，期望请求总超时", err)
+	}
+
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("请求总超时后服务端未收到 context 取消信号")
+	}
 }
