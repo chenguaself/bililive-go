@@ -34,6 +34,10 @@ type RequestTracker struct {
 	stopCh   chan struct{}
 	doneCh   chan struct{}
 
+	// acceptMu 保证 Stop 标记停止与 record 投递原子化，避免后台退出后仍有数据进入队列。
+	acceptMu sync.RWMutex
+	stopped  bool
+
 	// droppedCount 缓冲区满时丢弃的记录数，仅用于日志提示
 	droppedMu    sync.Mutex
 	droppedCount int
@@ -63,6 +67,12 @@ func (t *RequestTracker) RecordFailure(liveID, platform string, errMsg string) {
 
 // record 内部记录方法，不会阻塞调用方
 func (t *RequestTracker) record(liveID, platform string, success bool, errMsg string) {
+	t.acceptMu.RLock()
+	defer t.acceptMu.RUnlock()
+	if t.stopped {
+		return
+	}
+
 	status := &RequestStatus{
 		Timestamp:    time.Now().UnixMilli(),
 		LiveID:       liveID,
@@ -85,7 +95,10 @@ func (t *RequestTracker) record(liveID, platform string, success bool, errMsg st
 // Stop 停止后台落库 goroutine，并把缓冲区中剩余的数据写完
 func (t *RequestTracker) Stop() {
 	t.stopOnce.Do(func() {
+		t.acceptMu.Lock()
+		t.stopped = true
 		close(t.stopCh)
+		t.acceptMu.Unlock()
 		<-t.doneCh
 	})
 }

@@ -30,8 +30,6 @@ type Store interface {
 	// QueryIOStats 查询 IO 统计数据
 	QueryIOStats(ctx context.Context, query IOStatsQuery) ([]IOStat, error)
 
-	// SaveRequestStatus 保存请求状态
-	SaveRequestStatus(ctx context.Context, status *RequestStatus) error
 	// SaveRequestStatuses 批量保存请求状态
 	SaveRequestStatuses(ctx context.Context, statuses []*RequestStatus) error
 	// QueryRequestStatus 查询请求状态
@@ -327,24 +325,6 @@ func (s *SQLiteStore) aggregateStats(stats []IOStat, aggregation string) []IOSta
 	}
 
 	return result
-}
-
-// SaveRequestStatus 保存请求状态
-func (s *SQLiteStore) SaveRequestStatus(ctx context.Context, status *RequestStatus) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	successInt := 0
-	if status.Success {
-		successInt = 1
-	}
-
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO request_status (timestamp, live_id, platform, success, error_message)
-		 VALUES (?, ?, ?, ?, ?)`,
-		status.Timestamp, status.LiveID, status.Platform, successInt, status.ErrorMessage,
-	)
-	return err
 }
 
 // SaveRequestStatuses 批量保存请求状态。

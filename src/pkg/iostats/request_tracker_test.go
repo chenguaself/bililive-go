@@ -78,3 +78,20 @@ func TestRequestTrackerRecordDoesNotBlock(t *testing.T) {
 		t.Fatal("记录请求状态阻塞了调用方")
 	}
 }
+
+func TestRequestTrackerIgnoresRecordsAfterStop(t *testing.T) {
+	store := &fakeStore{}
+	tracker := NewRequestTracker(store)
+	tracker.RecordSuccess("before-stop", "抖音")
+	tracker.Stop()
+
+	before, _ := store.snapshot()
+	tracker.RecordFailure("after-stop", "抖音", "不应入队")
+	if queued := len(tracker.queue); queued != 0 {
+		t.Fatalf("停止后仍有 %d 条记录进入无人消费的队列", queued)
+	}
+	after, _ := store.snapshot()
+	if after != before {
+		t.Fatalf("停止后的记录被写入：停止前 %d 条，停止后 %d 条", before, after)
+	}
+}

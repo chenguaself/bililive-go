@@ -152,3 +152,18 @@ func TestClosedListenerDoesNotPublishInfo(t *testing.T) {
 	l.processInfo(&livepkg.Info{Status: true})
 	assert.False(t, l.status.roomStatus)
 }
+
+func TestListenerCloseSyncWaitsForStopHandlers(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	ed := evtmock.NewMockDispatcher(ctrl)
+	ctx := context.WithValue(context.Background(), instance.Key, &instance.Instance{EventDispatcher: ed})
+	live := livemock.NewMockLive(ctrl)
+	l := NewListener(ctx, live).(*listener)
+	atomic.StoreUint32(&l.state, running)
+	ed.EXPECT().DispatchEventSync(events.NewEvent(ListenStop, live))
+
+	l.CloseSync()
+	assert.True(t, l.isStopped())
+}

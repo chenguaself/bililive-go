@@ -113,6 +113,9 @@ func (l *InitializingLive) GetInfo() (info *live.Info, err error) {
 			RoomName:     roomName,
 			Status:       false,
 			Initializing: true,
+			// 上层仍收到可展示的初始化占位信息和 nil error，但通过 LastError 可以把
+			// 真实的平台失败计入调度退避，避免故障期间始终按基础间隔重试。
+			LastError: err.Error(),
 		}, nil // 返回 nil 错误，让上层知道这是一个有效的（初始化中的）状态
 	}
 

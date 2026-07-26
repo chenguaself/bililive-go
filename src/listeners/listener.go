@@ -26,7 +26,9 @@ const (
 
 type Listener interface {
 	Start() error
+	StartWithInfo(info *live.Info) error
 	Close()
+	CloseSync()
 }
 
 func NewListener(ctx context.Context, live live.Live) Listener {
@@ -56,6 +58,15 @@ type listener struct {
 }
 
 func (l *listener) Start() error {
+	return l.start(nil)
+}
+
+// StartWithInfo 使用已经获取到的直播间信息启动监听器，避免初始化交接后立即重复请求平台。
+func (l *listener) StartWithInfo(info *live.Info) error {
+	return l.start(info)
+}
+
+func (l *listener) start(initialInfo *live.Info) error {
 	if !atomic.CompareAndSwapUint32(&l.state, begin, pending) {
 		return nil
 	}
@@ -68,7 +79,11 @@ func (l *listener) Start() error {
 	// 几百个直播间串行下来会把锁占用好几分钟，期间任何增删直播间的操作都会被卡住。
 	bilisentry.Go(func() {
 		if !l.isStopped() {
-			l.refresh()
+			if initialInfo != nil {
+				l.processInfo(initialInfo)
+			} else {
+				l.refresh()
+			}
 		}
 		l.run()
 	})
@@ -86,12 +101,27 @@ func (l *listener) isStopped() bool {
 }
 
 func (l *listener) Close() {
+	l.close(false)
+}
+
+// CloseSync 同步完成 ListenStop 的所有处理器，仅用于初始化 listener 的交接路径。
+// 普通关闭仍保持异步，避免改变其他调用方的延迟语义。
+func (l *listener) CloseSync() {
+	l.close(true)
+}
+
+func (l *listener) close(syncEvent bool) {
 	if !atomic.CompareAndSwapUint32(&l.state, running, stopped) {
 		return
 	}
-	l.ed.DispatchEvent(events.NewEvent(ListenStop, l.Live))
-	l.runCancel() // 取消 run 循环中的等待
+	l.runCancel() // 先取消等待并标记停止，禁止并发请求结果继续发布事件
 	close(l.stop)
+	event := events.NewEvent(ListenStop, l.Live)
+	if syncEvent {
+		l.ed.DispatchEventSync(event)
+	} else {
+		l.ed.DispatchEvent(event)
+	}
 }
 
 // sendLiveNotification 发送直播状态变更通知
@@ -169,7 +199,7 @@ func (l *listener) processInfo(info *live.Info) {
 	hostName := info.HostName
 	if hostName == "" {
 		if wrappedLive, ok := l.Live.(*live.WrappedLive); ok {
-			if cachedInfo, get_err := wrappedLive.GetInfo(); get_err == nil && cachedInfo != nil {
+			if cachedInfo, found := wrappedLive.GetCachedInfo(); found {
 				hostName = cachedInfo.HostName
 			}
 		}

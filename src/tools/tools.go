@@ -315,8 +315,8 @@ const (
 
 	// btoolsHealthCheckInterval 健康检查的轮询间隔
 	btoolsHealthCheckInterval = time.Second
-	// btoolsHealthCheckTimeout 等待 bililive-tools HTTP 服务就绪的最长时间。
-	// 首次启动需要 Node 加载依赖，慢盘上可能相当久，因此给足余量。
+	// btoolsHealthCheckTimeout bililive-tools 长时间未就绪时输出一次警告的间隔。
+	// 首次启动需要 Node 加载依赖，慢盘上可能相当久，因此超时后继续探测而不是永久失败。
 	btoolsHealthCheckTimeout = 3 * time.Minute
 )
 
@@ -343,7 +343,7 @@ func waitBToolsHealthy() {
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d/", BToolsPort)
 	deadline := time.Now().Add(btoolsHealthCheckTimeout)
 
-	for time.Now().Before(deadline) {
+	for {
 		// 进程已经退出或启动失败时不必再等
 		if GetBToolsStatus() != BToolsStatusStarting {
 			return
@@ -362,11 +362,14 @@ func waitBToolsHealthy() {
 			}
 		}
 
-		time.Sleep(btoolsHealthCheckInterval)
-	}
+		// 超时只表示启动异常缓慢，不能永久停止唯一的健康探测：子进程此时可能仍然
+		// 存活并在稍后恢复响应。继续探测可以让平台依赖自动恢复，无需重启整个应用。
+		if time.Now().After(deadline) {
+			blog.GetLogger().Warnf("bililive-tools 在 %s 内尚未就绪，将继续在后台探测", btoolsHealthCheckTimeout)
+			deadline = time.Now().Add(btoolsHealthCheckTimeout)
+		}
 
-	if currentBToolsStatus.CompareAndSwap(int32(BToolsStatusStarting), int32(BToolsStatusFailed)) {
-		blog.GetLogger().Errorf("bililive-tools 在 %s 内没有就绪，依赖它的平台（如抖音）将无法录制", btoolsHealthCheckTimeout)
+		time.Sleep(btoolsHealthCheckInterval)
 	}
 }
 

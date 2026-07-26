@@ -281,6 +281,8 @@ type SchedulerStatusProvider interface {
 type WrappedLive struct {
 	Live
 	cache gcache.Cache
+	// requestMu 串行化同一直播间的直接刷新与调度刷新，并保护缓存的读改写顺序。
+	requestMu sync.Mutex
 
 	// 请求调度相关字段
 	mu                  sync.Mutex
@@ -333,7 +335,25 @@ func (w *WrappedLive) GetRoomID() string {
 	return ""
 }
 
+// GetCachedInfo 只读取最近一次缓存，不触发平台请求。
+func (w *WrappedLive) GetCachedInfo() (*Info, bool) {
+	if w.cache == nil {
+		return nil, false
+	}
+	cached, err := w.cache.Get(w)
+	if err != nil {
+		return nil, false
+	}
+	info, ok := cached.(*Info)
+	return info, ok && info != nil
+}
+
 func (w *WrappedLive) GetInfo() (*Info, error) {
+	// forceRefresh 与调度器可能同时进入 GetInfo。若允许它们并发，较早开始但较晚写缓存的
+	// 失败请求可能覆盖较新的成功结果；整个请求链串行后，缓存提交顺序与请求顺序一致。
+	w.requestMu.Lock()
+	defer w.requestMu.Unlock()
+
 	// 依赖的外部工具还没就绪时不发请求（调度器之外还有 listener.refresh 等直接调用方）。
 	// 正常情况下调度器会先拦住，这里主要覆盖直接调用以及「刚检查完就绪、随即工具挂掉」的竞态，
 	// 因此同样要通知等待者，避免它们一直挂着。
@@ -343,11 +363,13 @@ func (w *WrappedLive) GetInfo() (*Info, error) {
 		return nil, err
 	}
 
-	// 在通用位置应用平台访问频率限制
-	// 如果被取消则直接返回
-	if !w.waitForPlatformRateLimit() {
+	// 在通用位置获取平台请求许可。许可同时约束请求开始间隔和同平台在途数量，
+	// 防止启动或工具恢复时几百个房间一起进入平台实现。
+	releasePlatform, ok := w.acquirePlatformRequest()
+	if !ok {
 		return nil, w.schedulerCtx.Err()
 	}
+	defer releasePlatform()
 
 	i, err := w.Live.GetInfo()
 
@@ -355,21 +377,21 @@ func (w *WrappedLive) GetInfo() (*Info, error) {
 	// 如果失败时不更新 lastRequestAt，调度器会一直认为「早就该请求了」，
 	// 从而退化成固定 3 秒一次的重试，反而把故障状态下的请求频率放大十倍，
 	// 把本地工具和平台接口一起打爆，永远无法自愈。
-	w.mu.Lock()
-	w.lastRequestAt = time.Now()
-	if err != nil {
-		w.consecutiveFailures++
-	} else {
-		w.consecutiveFailures = 0
-	}
-	w.mu.Unlock()
+	requestFailed := w.recordRequestResult(i, err)
 
 	// 记录请求状态到 IO 统计（通过回调避免循环依赖）
 	if requestStatusCallback != nil {
 		liveID := string(w.GetLiveId())
 		platform := w.GetPlatformCNName()
-		if err != nil {
-			requestStatusCallback(liveID, platform, false, err.Error())
+		if requestFailed {
+			errMessage := ""
+			if i != nil {
+				errMessage = i.LastError
+			}
+			if err != nil {
+				errMessage = err.Error()
+			}
+			requestStatusCallback(liveID, platform, false, errMessage)
 		} else {
 			requestStatusCallback(liveID, platform, true, "")
 		}
@@ -388,8 +410,11 @@ func (w *WrappedLive) GetInfo() (*Info, error) {
 		return nil, err
 	}
 	if w.cache != nil {
-		// 成功获取信息，清除之前的错误
-		i.LastError = ""
+		// 初始化占位 Info 会通过 LastError 告诉调度器底层请求实际失败，既保留可展示的
+		// 占位信息，也不能把这次请求误算成成功并清零退避。
+		if !requestFailed {
+			i.LastError = ""
+		}
 		w.cache.Set(w, i)
 	}
 
@@ -397,6 +422,44 @@ func (w *WrappedLive) GetInfo() (*Info, error) {
 	w.dispatchSchedulerRefreshEvent()
 
 	return i, nil
+}
+
+// recordRequestResult 更新调度器的请求时间和连续失败计数。
+// InitializingLive 为了向前端保留占位信息会返回 nil error，因此还要识别其 LastError。
+func (w *WrappedLive) recordRequestResult(info *Info, err error) bool {
+	requestFailed := err != nil || (info != nil && info.Initializing && info.LastError != "")
+	w.mu.Lock()
+	w.lastRequestAt = time.Now()
+	if requestFailed {
+		w.consecutiveFailures++
+	} else {
+		w.consecutiveFailures = 0
+	}
+	w.mu.Unlock()
+	return requestFailed
+}
+
+// SeedInfo 把已经完成的初始化请求结果注入新的 WrappedLive。
+// 监听器交接时复用这份结果，可以避免新 listener 立刻重复请求一次，并让调度器从本次
+// 请求时间开始计算下一轮间隔。
+func (w *WrappedLive) SeedInfo(info *Info) error {
+	if info == nil {
+		return errors.New("不能注入空的直播间信息")
+	}
+
+	w.requestMu.Lock()
+	defer w.requestMu.Unlock()
+
+	w.mu.Lock()
+	w.lastRequestAt = time.Now()
+	w.consecutiveFailures = 0
+	w.mu.Unlock()
+
+	info.LastError = ""
+	if w.cache == nil {
+		return nil
+	}
+	return w.cache.Set(w, info)
 }
 
 // cacheLastError 把最近一次的错误信息记录到缓存的直播间信息上。
@@ -611,21 +674,30 @@ func (w *WrappedLive) runScheduler() {
 }
 
 // nextRequestIntervalLocked 计算下一次请求前应该等待的间隔。
-// 正常情况下就是配置的轮询间隔；连续失败时按 2 的幂次退避，最长 maxFailureBackoff，
-// 一次成功即恢复到配置间隔。
+// 正常情况下就是配置的轮询间隔；连续失败时按 2 的幂次退避，最长为
+// max(maxFailureBackoff, 配置间隔)，一次成功即恢复到配置间隔。
 // 调用方必须持有 w.mu。
 func (w *WrappedLive) nextRequestIntervalLocked() time.Duration {
 	interval := time.Duration(w.getConfiguredInterval()) * time.Second
 	if interval <= 0 {
 		interval = defaultInterval
 	}
+	return failureBackoffInterval(interval, w.consecutiveFailures)
+}
+
+func failureBackoffInterval(interval time.Duration, consecutiveFailures int) time.Duration {
+	maxBackoff := maxFailureBackoff
+	if interval > maxBackoff {
+		maxBackoff = interval
+	}
 
 	backoff := interval
-	for i := 0; i < w.consecutiveFailures && backoff < maxFailureBackoff; i++ {
-		backoff *= 2
-	}
-	if backoff > maxFailureBackoff {
-		backoff = maxFailureBackoff
+	for i := 0; i < consecutiveFailures && backoff < maxBackoff; i++ {
+		if backoff > maxBackoff/2 {
+			backoff = maxBackoff
+		} else {
+			backoff *= 2
+		}
 	}
 	return backoff
 }
@@ -692,14 +764,22 @@ func (w *WrappedLive) platformToolsReadyWithReason() (bool, string) {
 	return ready, reason
 }
 
-// waitForPlatformRateLimit 在通用位置等待平台访问频率限制
-// 使用 scheduler 的 context，这样在关闭时可以被取消
-func (w *WrappedLive) waitForPlatformRateLimit() bool {
+// acquirePlatformRequest 在通用位置获取平台请求许可。
+// 使用 scheduler 的 context，这样在关闭时可以取消排队。
+func (w *WrappedLive) acquirePlatformRequest() (release func(), ok bool) {
 	platformKey := configs.GetPlatformKeyFromUrl(w.GetRawUrl())
 	if platformKey != "" {
-		return ratelimit.GetGlobalRateLimiter().WaitForPlatformWithContext(w.schedulerCtx, platformKey)
+		minInterval := 1
+		if cfg := configs.GetCurrentConfig(); cfg != nil {
+			minInterval = cfg.GetPlatformMinAccessInterval(platformKey)
+		}
+		rateLimiter := ratelimit.GetGlobalRateLimiter()
+		// 添加新平台的第一个房间时，Live 会先于配置持久化创建；在请求入口兜底补齐
+		// 默认限制，避免该时间窗内首次请求直接放行。
+		rateLimiter.EnsurePlatformLimit(platformKey, minInterval)
+		return rateLimiter.AcquirePlatformWithContext(w.schedulerCtx, platformKey)
 	}
-	return true
+	return func() {}, true
 }
 
 func New(ctx context.Context, room *configs.LiveRoom, cache gcache.Cache) (live Live, err error) {

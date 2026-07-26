@@ -33,7 +33,6 @@ import (
 	"github.com/bililive-go/bililive-go/src/pkg/memwatch"
 	"github.com/bililive-go/bililive-go/src/pkg/metadata"
 	"github.com/bililive-go/bililive-go/src/pkg/openlist"
-	"github.com/bililive-go/bililive-go/src/pkg/ratelimit"
 	bilisentryPkg "github.com/bililive-go/bililive-go/src/pkg/sentry"
 	"github.com/bililive-go/bililive-go/src/pkg/telemetry"
 	"github.com/bililive-go/bililive-go/src/pkg/update"
@@ -546,15 +545,6 @@ func main() {
 	// 初始化 live rooms
 	// 第一步：立即为所有配置的直播间创建 InitializingLive，让前端可以看到
 	cfg := configs.GetCurrentConfig()
-
-	// 确保所有平台都有最小访问限制（用于控制并行初始化时的请求速度）
-	for _, room := range cfg.LiveRooms {
-		platformKey := configs.GetPlatformKeyFromUrl(room.Url)
-		if platformKey != "" {
-			minInterval := cfg.GetPlatformMinAccessInterval(platformKey)
-			ratelimit.GetGlobalRateLimiter().SetPlatformLimit(platformKey, minInterval)
-		}
-	}
 
 	// 分两批处理：监听中的直播间和非监听的直播间
 	var listeningRooms []live.Live
