@@ -19,6 +19,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/hr3lxphr6j/requests"
 	"github.com/tidwall/gjson"
@@ -87,6 +88,15 @@ func parseInfo(ctx context.Context, l live.Live) *live.Info {
 	if info.RoomName == "" {
 		info.RoomName = l.GetRawUrl()
 	}
+
+	// 设置 NotifyOnly 状态
+	info.NotifyOnly = false
+	if cfg := configs.GetCurrentConfig(); cfg != nil {
+		if room, err := cfg.GetLiveRoomByUrl(l.GetRawUrl()); err == nil {
+			info.NotifyOnly = room.NotifyOnly
+		}
+	}
+
 	return info
 }
 
@@ -669,8 +679,9 @@ func addLives(writer http.ResponseWriter, r *http.Request) {
 	inst := instance.GetInstance(r.Context())
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeJSON(writer, map[string]any{
-			"error": err.Error(),
+		writeJsonWithStatusCode(writer, http.StatusBadRequest, commonResp{
+			ErrNo:  http.StatusBadRequest,
+			ErrMsg: err.Error(),
 		})
 		return
 	}
@@ -678,8 +689,9 @@ func addLives(writer http.ResponseWriter, r *http.Request) {
 	errorMessages := make([]string, 0, 4)
 	gjson.ParseBytes(b).ForEach(func(key, value gjson.Result) bool {
 		isListen := value.Get("listen").Bool()
+		notifyOnly := value.Get("notify_only").Bool()
 		urlStr := strings.Trim(value.Get("url").String(), " ")
-		if retInfo, err := addLiveImpl(inst.Ctx, urlStr, isListen); err != nil {
+		if retInfo, err := addLiveImpl(inst.Ctx, urlStr, isListen, notifyOnly, true); err != nil {
 			msg := urlStr + ": " + err.Error()
 			applog.GetLogger().Error(msg)
 			errorMessages = append(errorMessages, msg)
@@ -690,11 +702,10 @@ func addLives(writer http.ResponseWriter, r *http.Request) {
 		return true
 	})
 	sort.Sort(info)
-	// TODO return error messages too
 	writeJSON(writer, info)
 }
 
-func addLiveImpl(ctx context.Context, urlStr string, isListen bool) (info *live.Info, err error) {
+func addLiveImpl(ctx context.Context, urlStr string, isListen bool, notifyOnly bool, persist bool) (info *live.Info, err error) {
 	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
 		urlStr = "https://" + urlStr
 	}
@@ -709,6 +720,7 @@ func addLiveImpl(ctx context.Context, urlStr string, isListen bool) (info *live.
 		liveRoom = &configs.LiveRoom{
 			Url:         u.String(),
 			IsListening: isListen,
+			NotifyOnly:  notifyOnly,
 		}
 		needAppend = true
 	}
@@ -716,31 +728,169 @@ func addLiveImpl(ctx context.Context, urlStr string, isListen bool) (info *live.
 	if err != nil {
 		return nil, err
 	}
+	if !inst.Lives.SetIfAbsent(newLive.GetLiveId(), newLive) {
+		return nil, errors.New("直播间已存在")
+	}
 	// 记录 LiveId 到全局配置（并发安全）
 	configs.SetLiveRoomId(u.String(), newLive.GetLiveId())
-	if inst.Lives.SetIfAbsent(newLive.GetLiveId(), newLive) {
-		if isListen {
-			inst.ListenerManager.(listeners.Manager).AddListener(ctx, newLive)
+	// 先将房间写入配置，再启动 Listener，确保 sendLiveNotification 能读到 NotifyOnly 等字段
+	if needAppend {
+		if liveRoom == nil {
+			return nil, errors.New("liveRoom is nil, cannot append to LiveRooms")
 		}
-		info = parseInfo(ctx, newLive)
-
-		if needAppend {
-			if liveRoom == nil {
-				return nil, errors.New("liveRoom is nil, cannot append to LiveRooms")
-			}
-			// 使用统一的 Update 接口做 COW 并原子替换
+		if persist {
 			if _, err := configs.AppendLiveRoom(*liveRoom); err != nil {
 				return nil, err
 			}
+		} else {
+			if _, err := configs.AppendLiveRoomTransient(*liveRoom); err != nil {
+				return nil, err
+			}
 		}
-		// 广播直播间列表变更事件
-		GetSSEHub().BroadcastListChange(newLive.GetLiveId(), "room_added", map[string]interface{}{
-			"live_id":   string(newLive.GetLiveId()),
-			"url":       urlStr,
-			"listening": isListen,
-		})
 	}
+	if isListen {
+		inst.ListenerManager.(listeners.Manager).AddListener(ctx, newLive)
+	}
+	info = parseInfo(ctx, newLive)
+	// 广播直播间列表变更事件
+	GetSSEHub().BroadcastListChange(newLive.GetLiveId(), "room_added", map[string]interface{}{
+		"live_id":   string(newLive.GetLiveId()),
+		"url":       urlStr,
+		"listening": isListen,
+	})
 	return info, nil
+}
+
+func batchAddLives(writer http.ResponseWriter, r *http.Request) {
+	inst := instance.GetInstance(r.Context())
+	b, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJsonWithStatusCode(writer, http.StatusBadRequest, commonResp{
+			ErrNo:  http.StatusBadRequest,
+			ErrMsg: "failed to read request body",
+		})
+		return
+	}
+
+	var req batchAddRequest
+	if err := json.Unmarshal(b, &req); err != nil {
+		writeJsonWithStatusCode(writer, http.StatusBadRequest, commonResp{
+			ErrNo:  http.StatusBadRequest,
+			ErrMsg: "invalid request body",
+		})
+		return
+	}
+
+	// 过滤空 URL，只保留有效条目
+	validURLs := make([]string, 0, len(req.URLs))
+	for _, u := range req.URLs {
+		if s := strings.TrimSpace(u); s != "" {
+			validURLs = append(validURLs, s)
+		}
+	}
+
+	if len(validURLs) == 0 {
+		writeJsonWithStatusCode(writer, http.StatusBadRequest, commonResp{
+			ErrNo:  http.StatusBadRequest,
+			ErrMsg: "urls is empty",
+		})
+		return
+	}
+
+	const maxBatchSize = 50
+	if len(validURLs) > maxBatchSize {
+		writeJsonWithStatusCode(writer, http.StatusBadRequest, commonResp{
+			ErrNo:  http.StatusBadRequest,
+			ErrMsg: fmt.Sprintf("too many urls: %d (max %d)", len(validURLs), maxBatchSize),
+		})
+		return
+	}
+
+	// 使用客户端提供的 batch_id，或生成新的
+	batchID := req.BatchID
+	if batchID == "" {
+		batchID = "batch_" + uuid.New().String()
+	}
+
+	// 立即返回 batch_id 和有效总数
+	writeJSON(writer, batchAddResponse{
+		BatchID: batchID,
+		Total:   len(validURLs),
+	})
+
+	// 异步处理批量添加
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				applog.GetLogger().Errorf("batch add: panic recovered: %v", r)
+				GetSSEHub().BroadcastBatchComplete(batchID, batchCompleteEvent{
+					Total:        len(validURLs),
+					SuccessCount: 0,
+					FailCount:    len(validURLs),
+					Timestamp:    time.Now(),
+				})
+			}
+		}()
+		hub := GetSSEHub()
+		successCount := 0
+		failCount := 0
+
+		for i, urlStr := range validURLs {
+			// 检查重复房间，避免调用 addLiveImpl 做无用的网络请求
+			checkURL := urlStr
+			if !strings.HasPrefix(checkURL, "http://") && !strings.HasPrefix(checkURL, "https://") {
+				checkURL = "https://" + checkURL
+			}
+			if u, err := url.Parse(checkURL); err == nil {
+				if _, err := configs.GetCurrentConfig().GetLiveRoomByUrl(u.String()); err == nil {
+					event := batchProgressEvent{
+						Index:   i,
+						Total:   len(validURLs),
+						URL:     urlStr,
+						Success: false,
+						Error:   "直播间已存在",
+					}
+					failCount++
+					hub.BroadcastBatchProgress(batchID, event)
+					continue
+				}
+			}
+
+			retInfo, err := addLiveImpl(inst.Ctx, urlStr, req.Listen, req.NotifyOnly, false)
+			event := batchProgressEvent{
+				Index:   i,
+				Total:   len(validURLs),
+				URL:     urlStr,
+				Success: err == nil,
+			}
+			if err != nil {
+				event.Error = err.Error()
+				failCount++
+			} else {
+				event.Info = retInfo
+				successCount++
+			}
+
+			hub.BroadcastBatchProgress(batchID, event)
+		}
+
+		// 批量完成后统一持久化一次配置
+		var persistErr string
+		if successCount > 0 {
+			if err := configs.Persist(); err != nil {
+				persistErr = err.Error()
+				applog.GetLogger().Errorf("batch add: failed to persist config: %v", err)
+			}
+		}
+
+		hub.BroadcastBatchComplete(batchID, batchCompleteEvent{
+			Total:        len(validURLs),
+			SuccessCount: successCount,
+			FailCount:    failCount,
+			PersistError: persistErr,
+			Timestamp:    time.Now(),
+		})
+	}()
 }
 
 func removeLive(writer http.ResponseWriter, r *http.Request) {
@@ -879,7 +1029,7 @@ func applyLiveRoomsByConfig(ctx context.Context, oldConfig *configs.Config, newC
 		newUrlMap[newRoom.Url] = newRoom
 		if room, err := oldConfig.GetLiveRoomByUrl(newRoom.Url); err != nil {
 			// add live
-			if _, err := addLiveImpl(ctx, newRoom.Url, newRoom.IsListening); err != nil {
+			if _, err := addLiveImpl(ctx, newRoom.Url, newRoom.IsListening, newRoom.NotifyOnly, true); err != nil {
 				return err
 			}
 		} else {
@@ -1432,15 +1582,25 @@ func applyConfigUpdates(c *configs.Config, updates map[string]interface{}) error
 			c.Danmaku.Resolution = resolution
 		}
 		if outline, ok := danmaku["outline"].(float64); ok {
-			c.Danmaku.Outline = int(outline)
+			c.Danmaku.Outline = configs.IntPtr(int(outline))
 		}
 		if opacity, ok := danmaku["opacity"].(float64); ok {
-			c.Danmaku.Opacity = int(opacity)
+			c.Danmaku.Opacity = configs.IntPtr(int(opacity))
 		}
 		if recordGift, ok := danmaku["record_gift"].(bool); ok {
 			c.Danmaku.RecordGift = configs.BoolPtr(recordGift)
 		} else if _, exists := danmaku["record_gift"]; exists && danmaku["record_gift"] == nil {
 			c.Danmaku.RecordGift = nil
+		}
+		if recordDouyuGift, ok := danmaku["record_douyu_gift"].(bool); ok {
+			c.Danmaku.RecordDouyuGift = configs.BoolPtr(recordDouyuGift)
+		} else if _, exists := danmaku["record_douyu_gift"]; exists && danmaku["record_douyu_gift"] == nil {
+			c.Danmaku.RecordDouyuGift = nil
+		}
+		if recordDouyinGift, ok := danmaku["record_douyin_gift"].(bool); ok {
+			c.Danmaku.RecordDouyinGift = configs.BoolPtr(recordDouyinGift)
+		} else if _, exists := danmaku["record_douyin_gift"]; exists && danmaku["record_douyin_gift"] == nil {
+			c.Danmaku.RecordDouyinGift = nil
 		}
 		if recordGuard, ok := danmaku["record_guard"].(bool); ok {
 			c.Danmaku.RecordGuard = configs.BoolPtr(recordGuard)
@@ -1613,6 +1773,23 @@ func applyConfigUpdates(c *configs.Config, updates map[string]interface{}) error
 				c.Notify.Bark.Level = level
 			}
 		}
+		if wxpusherCfg, ok := notify["wxpusher"].(map[string]interface{}); ok {
+			if enable, ok := wxpusherCfg["enable"].(bool); ok {
+				c.Notify.WxPusher.Enable = enable
+			}
+			if appToken, ok := wxpusherCfg["appToken"].(string); ok {
+				c.Notify.WxPusher.AppToken = appToken
+			}
+			if uids, ok := wxpusherCfg["uids"].([]interface{}); ok {
+				uidList := make([]string, 0, len(uids))
+				for _, uid := range uids {
+					if uidStr, ok := uid.(string); ok && uidStr != "" {
+						uidList = append(uidList, uidStr)
+					}
+				}
+				c.Notify.WxPusher.UIDs = uidList
+			}
+		}
 	}
 
 	// 处理代理配置
@@ -1717,7 +1894,7 @@ func updatePlatformConfig(writer http.ResponseWriter, r *http.Request) {
 
 		// 验证弹幕配置有效性
 		if pc.Danmaku != nil {
-			if err := pc.Danmaku.Validate(); err != nil {
+			if err := pc.Danmaku.ValidateWithPlatform(platformKey); err != nil {
 				return fmt.Errorf("弹幕参数无效: %w", err)
 			}
 		}
@@ -1787,6 +1964,10 @@ func updateRoomConfigById(writer http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 记录更新前的 NotifyOnly 状态，用于判断是否需要自动开始录制
+	var wasNotifyOnly bool
+	inst := instance.GetInstance(r.Context())
+
 	_, err = configs.UpdateWithRetry(func(c *configs.Config) error {
 		// 查找直播间（先按 LiveId，回退按 URL 计算的 hash）
 		roomIdx := -1
@@ -1815,6 +1996,9 @@ func updateRoomConfigById(writer http.ResponseWriter, r *http.Request) {
 
 		room := &c.LiveRooms[roomIdx]
 
+		// 保存更新前的 NotifyOnly 状态
+		wasNotifyOnly = room.NotifyOnly
+
 		// 更新直播间特有字段
 		if url, ok := updates["url"].(string); ok {
 			room.Url = url
@@ -1828,6 +2012,9 @@ func updateRoomConfigById(writer http.ResponseWriter, r *http.Request) {
 		if audioOnly, ok := updates["audio_only"].(bool); ok {
 			room.AudioOnly = audioOnly
 		}
+		if notifyOnly, ok := updates["notify_only"].(bool); ok {
+			room.NotifyOnly = notifyOnly
+		}
 		if nickName, ok := updates["nick_name"].(string); ok {
 			room.NickName = nickName
 		}
@@ -1835,9 +2022,10 @@ func updateRoomConfigById(writer http.ResponseWriter, r *http.Request) {
 		// 更新可覆盖配置
 		applyOverridableConfigUpdates(&room.OverridableConfig, updates)
 
-		// 验证弹幕配置有效性
+		// 验证弹幕配置有效性（同时根据平台清理不适用的字段）
 		if room.Danmaku != nil {
-			if err := room.Danmaku.Validate(); err != nil {
+			platformKey := configs.GetPlatformKeyFromUrl(room.Url)
+			if err := room.Danmaku.ValidateWithPlatform(platformKey); err != nil {
 				return fmt.Errorf("弹幕参数无效: %w", err)
 			}
 		}
@@ -1851,6 +2039,35 @@ func updateRoomConfigById(writer http.ResponseWriter, r *http.Request) {
 			ErrMsg: "更新直播间配置失败: " + err.Error(),
 		})
 		return
+	}
+
+	// 如果从 NotifyOnly 切换为普通模式，检查是否正在直播并自动开始录制
+	if notifyOnly, ok := updates["notify_only"].(bool); ok {
+		if wasNotifyOnly && !notifyOnly {
+			// 检查是否正在直播（通过缓存）
+			liveObj, ok := inst.Lives.Get(types.LiveID(liveId))
+			if ok {
+				if obj, err := inst.Cache.Get(liveObj); err == nil && obj != nil {
+					liveInfo := obj.(*live.Info)
+					if liveInfo.Status {
+						// 正在直播，检查是否已经在录制
+						recorderMgr, ok := inst.RecorderManager.(recorders.Manager)
+						if ok && !recorderMgr.HasRecorder(inst.Ctx, liveObj.GetLiveId()) {
+							// 未在录制，自动开始录制
+							if err := recorderMgr.AddRecorder(inst.Ctx, liveObj); err != nil {
+								liveObj.GetLogger().Errorf("自动开始录制失败: %v", err)
+							} else {
+								liveObj.GetLogger().Info("从仅提醒模式切换为普通模式，自动开始录制")
+								// 广播录制开始事件
+								GetSSEHub().BroadcastListChange(liveObj.GetLiveId(), "record_start", map[string]interface{}{
+									"live_id": string(liveObj.GetLiveId()),
+								})
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 
 	writeJSON(writer, commonResp{
@@ -1985,15 +2202,25 @@ func applyOverridableConfigUpdates(oc *configs.OverridableConfig, updates map[st
 			oc.Danmaku.Resolution = resolution
 		}
 		if outline, ok := danmaku["outline"].(float64); ok {
-			oc.Danmaku.Outline = int(outline)
+			oc.Danmaku.Outline = configs.IntPtr(int(outline))
 		}
 		if opacity, ok := danmaku["opacity"].(float64); ok {
-			oc.Danmaku.Opacity = int(opacity)
+			oc.Danmaku.Opacity = configs.IntPtr(int(opacity))
 		}
 		if recordGift, ok := danmaku["record_gift"].(bool); ok {
 			oc.Danmaku.RecordGift = configs.BoolPtr(recordGift)
 		} else if _, exists := danmaku["record_gift"]; exists && danmaku["record_gift"] == nil {
 			oc.Danmaku.RecordGift = nil
+		}
+		if recordDouyuGift, ok := danmaku["record_douyu_gift"].(bool); ok {
+			oc.Danmaku.RecordDouyuGift = configs.BoolPtr(recordDouyuGift)
+		} else if _, exists := danmaku["record_douyu_gift"]; exists && danmaku["record_douyu_gift"] == nil {
+			oc.Danmaku.RecordDouyuGift = nil
+		}
+		if recordDouyinGift, ok := danmaku["record_douyin_gift"].(bool); ok {
+			oc.Danmaku.RecordDouyinGift = configs.BoolPtr(recordDouyinGift)
+		} else if _, exists := danmaku["record_douyin_gift"]; exists && danmaku["record_douyin_gift"] == nil {
+			oc.Danmaku.RecordDouyinGift = nil
 		}
 		if recordGuard, ok := danmaku["record_guard"].(bool); ok {
 			oc.Danmaku.RecordGuard = configs.BoolPtr(recordGuard)
@@ -2063,6 +2290,9 @@ func updateRoomConfig(writer http.ResponseWriter, r *http.Request) {
 		if audioOnly, ok := updates["audio_only"].(bool); ok {
 			room.AudioOnly = audioOnly
 		}
+		if notifyOnly, ok := updates["notify_only"].(bool); ok {
+			room.NotifyOnly = notifyOnly
+		}
 		if nickName, ok := updates["nick_name"].(string); ok {
 			room.NickName = nickName
 		}
@@ -2070,9 +2300,10 @@ func updateRoomConfig(writer http.ResponseWriter, r *http.Request) {
 		// 处理可覆盖配置（弹幕、interval、outPutPath、ffmpegPath 等）
 		applyOverridableConfigUpdates(&room.OverridableConfig, updates)
 
-		// 验证弹幕配置
+		// 验证弹幕配置（同时根据平台清理不适用的字段）
 		if room.Danmaku != nil {
-			if err := room.Danmaku.Validate(); err != nil {
+			platformKey := configs.GetPlatformKeyFromUrl(decodedUrl)
+			if err := room.Danmaku.ValidateWithPlatform(platformKey); err != nil {
 				return fmt.Errorf("弹幕配置无效: %w", err)
 			}
 		}
@@ -3270,4 +3501,93 @@ func verifyBilibiliCookie(writer http.ResponseWriter, r *http.Request) {
 	}
 	writer.Header().Set("Content-Type", "application/json")
 	writer.Write(body)
+}
+
+// startRecordDirect 直接启动录制（绕过 Listener，适用于 NotifyOnly 房间）
+func startRecordDirect(writer http.ResponseWriter, r *http.Request) {
+	inst := instance.GetInstance(r.Context())
+	vars := mux.Vars(r)
+	resp := commonResp{}
+
+	liveObj, ok := inst.Lives.Get(types.LiveID(vars["id"]))
+	if !ok {
+		resp.ErrNo = http.StatusNotFound
+		resp.ErrMsg = fmt.Sprintf("live id: %s can not find", vars["id"])
+		writeJsonWithStatusCode(writer, http.StatusNotFound, resp)
+		return
+	}
+
+	recorderMgr, ok := inst.RecorderManager.(recorders.Manager)
+	if !ok {
+		resp.ErrNo = http.StatusInternalServerError
+		resp.ErrMsg = "录制管理器不可用"
+		writeJsonWithStatusCode(writer, http.StatusInternalServerError, resp)
+		return
+	}
+
+	// 检查是否已在录制
+	if recorderMgr.HasRecorder(inst.Ctx, liveObj.GetLiveId()) {
+		resp.ErrNo = http.StatusConflict
+		resp.ErrMsg = "该直播间已在录制中"
+		writeJsonWithStatusCode(writer, http.StatusConflict, resp)
+		return
+	}
+
+	if err := recorderMgr.AddRecorder(inst.Ctx, liveObj); err != nil {
+		resp.ErrNo = http.StatusInternalServerError
+		resp.ErrMsg = fmt.Sprintf("启动录制失败: %s", err.Error())
+		writeJsonWithStatusCode(writer, http.StatusInternalServerError, resp)
+		return
+	}
+
+	// 广播录制开始事件
+	GetSSEHub().BroadcastListChange(liveObj.GetLiveId(), "record_start", map[string]interface{}{
+		"live_id": string(liveObj.GetLiveId()),
+	})
+
+	writeJSON(writer, parseInfo(r.Context(), liveObj))
+}
+
+// stopRecordDirect 直接停止录制
+func stopRecordDirect(writer http.ResponseWriter, r *http.Request) {
+	inst := instance.GetInstance(r.Context())
+	vars := mux.Vars(r)
+	resp := commonResp{}
+
+	liveObj, ok := inst.Lives.Get(types.LiveID(vars["id"]))
+	if !ok {
+		resp.ErrNo = http.StatusNotFound
+		resp.ErrMsg = fmt.Sprintf("live id: %s can not find", vars["id"])
+		writeJsonWithStatusCode(writer, http.StatusNotFound, resp)
+		return
+	}
+
+	recorderMgr, ok := inst.RecorderManager.(recorders.Manager)
+	if !ok {
+		resp.ErrNo = http.StatusInternalServerError
+		resp.ErrMsg = "录制管理器不可用"
+		writeJsonWithStatusCode(writer, http.StatusInternalServerError, resp)
+		return
+	}
+
+	if !recorderMgr.HasRecorder(inst.Ctx, liveObj.GetLiveId()) {
+		resp.ErrNo = http.StatusNotFound
+		resp.ErrMsg = "该直播间未在录制中"
+		writeJsonWithStatusCode(writer, http.StatusNotFound, resp)
+		return
+	}
+
+	if err := recorderMgr.RemoveRecorder(inst.Ctx, liveObj.GetLiveId()); err != nil {
+		resp.ErrNo = http.StatusInternalServerError
+		resp.ErrMsg = fmt.Sprintf("停止录制失败: %s", err.Error())
+		writeJsonWithStatusCode(writer, http.StatusInternalServerError, resp)
+		return
+	}
+
+	// 广播录制停止事件
+	GetSSEHub().BroadcastListChange(liveObj.GetLiveId(), "record_stop", map[string]interface{}{
+		"live_id": string(liveObj.GetLiveId()),
+	})
+
+	writeJSON(writer, parseInfo(r.Context(), liveObj))
 }

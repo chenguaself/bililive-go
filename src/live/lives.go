@@ -290,6 +290,18 @@ func (w *WrappedLive) Close() {
 	}
 }
 
+// GetRoomID 返回底层 Live 已解析的数字房间号（如有）。
+// 用于斗鱼等平台别名 URL 的弹幕录制。
+func (w *WrappedLive) GetRoomID() string {
+	type roomIDProvider interface {
+		GetRoomID() string
+	}
+	if provider, ok := w.Live.(roomIDProvider); ok {
+		return provider.GetRoomID()
+	}
+	return ""
+}
+
 func (w *WrappedLive) GetInfo() (*Info, error) {
 	// 在通用位置应用平台访问频率限制
 	// 如果被取消则直接返回

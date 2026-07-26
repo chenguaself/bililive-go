@@ -16,6 +16,7 @@ type AssWriter struct {
 	mu           sync.Mutex
 	file         *os.File
 	closed       bool
+	writeErr     bool // 首次写入出错后置 true，后续跳过无意义写入
 	startAt      time.Time
 	cfg          configs.DanmakuConfig
 	title        string
@@ -27,7 +28,7 @@ type AssWriter struct {
 	laneEnd      int // last usable lane index (exclusive)
 	laneNum      int // total lanes in the usable range
 	nextLane     int
-	laneLast     []int64 // last end time (centiseconds) per lane
+	laneLast     []int64 // last tail-clear time (centiseconds) per lane
 }
 
 func parseResolution(res string) (int, int) {
@@ -71,6 +72,10 @@ func NewAssWriter(filePath string, startAt time.Time, cfg configs.DanmakuConfig,
 		laneEnd = totalLanes / 2
 	case "bottom":
 		laneStart = totalLanes / 2
+	case "quarter":
+		laneEnd = totalLanes / 4
+	case "three-quarter":
+		laneEnd = totalLanes * 3 / 4
 	}
 	laneNum := laneEnd - laneStart
 	if laneNum < 1 {
@@ -83,14 +88,14 @@ func NewAssWriter(filePath string, startAt time.Time, cfg configs.DanmakuConfig,
 		cfg:          cfg,
 		title:        title,
 		resX:         resX,
-		resY:        resY,
+		resY:         resY,
 		scrollTimeMs: scrollTimeMs,
-		bannerSpeed: bannerSpeed,
-		laneStart:   laneStart,
-		laneEnd:     laneEnd,
-		laneNum:     laneNum,
-		nextLane:    0,
-		laneLast:    make([]int64, laneNum),
+		bannerSpeed:  bannerSpeed,
+		laneStart:    laneStart,
+		laneEnd:      laneEnd,
+		laneNum:      laneNum,
+		nextLane:     0,
+		laneLast:     make([]int64, laneNum),
 	}
 
 	if err := w.writeHeader(); err != nil {
@@ -106,7 +111,7 @@ func scTierColor(price int) string {
 	case price >= 2000:
 		return "&H80E73CC6" // 紫色 #C678F5
 	case price >= 1000:
-		return "&H80396AFF" // 深红 #FF6A39
+		return "&H8030CAFF" // 橙金 #FFCA30
 	case price >= 500:
 		return "&H80396AFF" // 红色 #FF6A39
 	case price >= 200:
@@ -149,7 +154,15 @@ func scTierStyle(price int) string {
 }
 
 func (w *AssWriter) writeHeader() error {
-	assAlpha := 255 - w.cfg.Opacity
+	opacity := 128 // default
+	if w.cfg.Opacity != nil {
+		opacity = *w.cfg.Opacity
+	}
+	outline := 1 // default
+	if w.cfg.Outline != nil {
+		outline = *w.cfg.Outline
+	}
+	assAlpha := 255 - opacity
 	backColor := fmt.Sprintf("&H%02X000000&", assAlpha)
 	guardBackColor := "&H800080FF"
 
@@ -190,8 +203,8 @@ Style: SCDefault,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 `, w.title, w.resX, w.resY,
-		w.cfg.FontName, w.cfg.FontSize, backColor, w.cfg.Outline,
-		w.cfg.FontName, w.cfg.FontSize-6, backColor, w.cfg.Outline,
+		w.cfg.FontName, w.cfg.FontSize, backColor, outline,
+		w.cfg.FontName, w.cfg.FontSize-6, backColor, outline,
 		w.cfg.FontName, w.cfg.FontSize, guardBackColor,
 		w.cfg.FontName, w.cfg.FontSize, sc2,
 		w.cfg.FontName, w.cfg.FontSize, sc30,
@@ -222,7 +235,7 @@ func (w *AssWriter) estimateTextWidth(text string) int {
 func (w *AssWriter) AddDanmaku(recvAt time.Time, username, text string, color int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.closed {
+	if w.closed || w.writeErr {
 		return
 	}
 
@@ -242,7 +255,12 @@ func (w *AssWriter) AddDanmaku(recvAt time.Time, username, text string, color in
 	}
 	endCS := startCS + durationCS
 
-	lane := w.assignLane(startCS, endCS)
+	lane, adjustedStartCS := w.assignLane(startCS, textWidth)
+	// 基于文字宽度的防重叠：使用调整后的起始时间
+	if adjustedStartCS != startCS {
+		startCS = adjustedStartCS
+		endCS = startCS + durationCS
+	}
 	laneHeight := w.cfg.FontSize + 4
 	marginV := (lane + w.laneStart) * laneHeight
 
@@ -253,14 +271,18 @@ func (w *AssWriter) AddDanmaku(recvAt time.Time, username, text string, color in
 
 	line := fmt.Sprintf("Dialogue: 0,%s,%s,Danmaku,,0,0,%d,Banner;%d;0;30,{\\c%s}%s\n",
 		formatTime(startCS), formatTime(endCS), marginV, w.bannerSpeed, assColor, escapeText(fullText))
-	w.file.WriteString(line)
+	if _, err := w.file.WriteString(line); err != nil {
+		w.writeErr = true
+	}
 }
 
 // AddGift appends a gift message as a smaller scrolling line.
-func (w *AssWriter) AddGift(recvAt time.Time, username, giftName string, num int) {
+// price 为金瓜子单价，coinType 为 "gold"(付费) 或 "silver"(免费)。
+// 仅 gold 类型且 price > 0 时显示金额（1 RMB = 1000 金瓜子）。
+func (w *AssWriter) AddGift(recvAt time.Time, username, giftName string, num int, price int, coinType string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.closed {
+	if w.closed || w.writeErr {
 		return
 	}
 
@@ -270,7 +292,13 @@ func (w *AssWriter) AddGift(recvAt time.Time, username, giftName string, num int
 		startCS = 0
 	}
 
-	fullText := fmt.Sprintf("%s 赠送 %s x%d", username, giftName, num)
+	var fullText string
+	if coinType == "gold" && price > 0 {
+		totalPrice := float64(price) * float64(num) / 1000.0
+		fullText = fmt.Sprintf("[礼物 ¥%.1f] %s 赠送 %s x%d", totalPrice, username, giftName, num)
+	} else {
+		fullText = fmt.Sprintf("%s 赠送 %s x%d", username, giftName, num)
+	}
 	textWidth := w.estimateTextWidth(fullText)
 	totalDistance := w.resX + textWidth
 	durationCS := int64(w.scrollTimeMs) * int64(totalDistance) / int64(w.resX) / 10
@@ -279,13 +307,20 @@ func (w *AssWriter) AddGift(recvAt time.Time, username, giftName string, num int
 	}
 	endCS := startCS + durationCS
 
-	lane := w.assignLane(startCS, endCS)
+	lane, adjustedStartCS := w.assignLane(startCS, textWidth)
+	// 基于文字宽度的防重叠：使用调整后的起始时间
+	if adjustedStartCS != startCS {
+		startCS = adjustedStartCS
+		endCS = startCS + durationCS
+	}
 	laneHeight := w.cfg.FontSize + 4
 	marginV := (lane + w.laneStart) * laneHeight
 
 	line := fmt.Sprintf("Dialogue: 0,%s,%s,Gift,,0,0,%d,Banner;%d;0;30,%s\n",
 		formatTime(startCS), formatTime(endCS), marginV, w.bannerSpeed, escapeText(fullText))
-	w.file.WriteString(line)
+	if _, err := w.file.WriteString(line); err != nil {
+		w.writeErr = true
+	}
 }
 
 // positionToAlignment maps position string to ASS \an alignment value and margin.
@@ -304,10 +339,10 @@ func positionToAlignment(pos string, bottomMargin int) (alignment int, marginV i
 }
 
 // AddGuard appends a guard purchase message.
-func (w *AssWriter) AddGuard(recvAt time.Time, username, giftName string) {
+func (w *AssWriter) AddGuard(recvAt time.Time, username, giftName string, price int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.closed {
+	if w.closed || w.writeErr {
 		return
 	}
 
@@ -318,18 +353,20 @@ func (w *AssWriter) AddGuard(recvAt time.Time, username, giftName string) {
 	}
 	endCS := startCS + 500 // 5 seconds
 
-	fullText := fmt.Sprintf("%s %s", username, giftName)
+	fullText := fmt.Sprintf("[%s ¥%d] %s 开通了%s", giftName, price/1000, username, giftName)
 	alignment, marginV := positionToAlignment(w.cfg.GuardPosition, 60)
 	line := fmt.Sprintf("Dialogue: 1,%s,%s,Guard,,0,0,%d,,{\\an%d}{\\q0}%s\n",
 		formatTime(startCS), formatTime(endCS), marginV, alignment, escapeText(fullText))
-	w.file.WriteString(line)
+	if _, err := w.file.WriteString(line); err != nil {
+		w.writeErr = true
+	}
 }
 
 // AddSuperChat appends a Super Chat message.
 func (w *AssWriter) AddSuperChat(recvAt time.Time, username, text string, price int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.closed {
+	if w.closed || w.writeErr {
 		return
 	}
 
@@ -345,27 +382,41 @@ func (w *AssWriter) AddSuperChat(recvAt time.Time, username, text string, price 
 	styleName := scTierStyle(price)
 	line := fmt.Sprintf("Dialogue: 1,%s,%s,%s,,0,0,%d,,{\\an%d}{\\q0}%s\n",
 		formatTime(startCS), formatTime(endCS), styleName, marginV, alignment, escapeText(fullText))
-	w.file.WriteString(line)
+	if _, err := w.file.WriteString(line); err != nil {
+		w.writeErr = true
+	}
 }
 
-func (w *AssWriter) assignLane(startCS, endCS int64) int {
+// assignLane 分配一个空闲 lane，基于文字宽度的防重叠。
+// 参数：startCS 弹幕开始时间，textWidth 文字像素宽度。
+// 返回值：lane 索引、调整后的 startCS（可能延迟）。
+func (w *AssWriter) assignLane(startCS int64, textWidth int) (int, int64) {
+	// 安全间距：防止因字体渲染差异导致的重叠
+	safeTextWidth := textWidth + w.cfg.FontSize
+	// 优先找空闲 lane（前一条弹幕的尾部已离开屏幕右侧）
 	for i := 0; i < w.laneNum; i++ {
 		idx := (w.nextLane + i) % w.laneNum
 		if w.laneLast[idx] <= startCS {
-			w.laneLast[idx] = endCS
+			// 存储该弹幕尾部离开右侧的时间点（用于下一条弹幕判断）
+			tailClearCS := startCS + int64(w.scrollTimeMs)*int64(safeTextWidth)/int64(w.resX)/10
+			w.laneLast[idx] = tailClearCS
 			w.nextLane = (idx + 1) % w.laneNum
-			return idx
+			return idx, startCS
 		}
 	}
+	// 所有 lane 都被占用，延迟到最早可用的时间点
 	earliest := 0
 	for i := 1; i < w.laneNum; i++ {
 		if w.laneLast[i] < w.laneLast[earliest] {
 			earliest = i
 		}
 	}
-	w.laneLast[earliest] = endCS
+	newStartCS := w.laneLast[earliest]
+	// 存储新弹幕尾部离开右侧的时间点
+	tailClearCS := newStartCS + int64(w.scrollTimeMs)*int64(safeTextWidth)/int64(w.resX)/10
+	w.laneLast[earliest] = tailClearCS
 	w.nextLane = (earliest + 1) % w.laneNum
-	return earliest
+	return earliest, newStartCS
 }
 
 func (w *AssWriter) OutputPath() string {
@@ -401,6 +452,12 @@ func escapeText(s string) string {
 	result := make([]byte, 0, len(s))
 	for i := 0; i < len(s); i++ {
 		switch s[i] {
+		case '\\':
+			result = append(result, '\\', '\\')
+		case '{':
+			result = append(result, '\\', '{')
+		case '}':
+			result = append(result, '\\', '}')
 		case '\n':
 			result = append(result, '\\', 'n')
 		case '\r':

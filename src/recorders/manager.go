@@ -22,11 +22,16 @@ type BroadcastRecorderStatusFunc func(liveId types.LiveID, status map[string]int
 // OnRecordingEndFunc 是录制结束时的回调函数类型
 type OnRecordingEndFunc func(ctx context.Context)
 
+// BroadcastDanmakuFunc 是用于广播弹幕消息的回调函数类型
+type BroadcastDanmakuFunc func(liveId types.LiveID, msgType, username, content string, extra map[string]interface{})
+
 var (
 	// broadcastRecorderStatusFunc 全局广播函数，由 servers 包设置
 	broadcastRecorderStatusFunc BroadcastRecorderStatusFunc
 	// onRecordingEndFunc 录制结束时的回调函数，用于触发优雅更新检查
 	onRecordingEndFunc OnRecordingEndFunc
+	// broadcastDanmakuFunc 全局弹幕广播函数，由 servers 包设置
+	broadcastDanmakuFunc BroadcastDanmakuFunc
 )
 
 // SetBroadcastRecorderStatusFunc 设置录制器状态广播函数
@@ -37,6 +42,11 @@ func SetBroadcastRecorderStatusFunc(fn BroadcastRecorderStatusFunc) {
 // SetOnRecordingEndFunc 设置录制结束回调函数
 func SetOnRecordingEndFunc(fn OnRecordingEndFunc) {
 	onRecordingEndFunc = fn
+}
+
+// SetBroadcastDanmakuFunc 设置弹幕广播函数
+func SetBroadcastDanmakuFunc(fn BroadcastDanmakuFunc) {
+	broadcastDanmakuFunc = fn
 }
 
 func NewManager(ctx context.Context) Manager {
@@ -88,6 +98,15 @@ type manager struct {
 func (m *manager) registryListener(ctx context.Context, ed events.Dispatcher) {
 	ed.AddEventListener(listeners.LiveStart, events.NewEventListener(func(event *events.Event) {
 		live := event.Object.(live.Live)
+
+		// 如果房间配置为仅提醒模式，跳过自动录制
+		if cfg := configs.GetCurrentConfig(); cfg != nil {
+			if room, err := cfg.GetLiveRoomByUrl(live.GetRawUrl()); err == nil && room.NotifyOnly {
+				live.GetLogger().Info("Room is notify-only, skipping auto-recording")
+				return
+			}
+		}
+
 		if err := m.AddRecorder(ctx, live); err != nil {
 			live.GetLogger().Errorf("failed to add recorder, err: %v", err)
 		}

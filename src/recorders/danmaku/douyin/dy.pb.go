@@ -537,3 +537,131 @@ func (x *User) Unmarshal(data []byte) error {
 	}
 	return nil
 }
+
+// GiftMessage — 礼物消息
+type GiftMessage struct {
+	Common      *Common `json:"common"`
+	User        *User   `json:"user"`
+	GiftId      int64   `json:"giftId"`
+	RepeatCount int32   `json:"repeatCount"`
+	ComboCount  int32   `json:"comboCount"`
+	RepeatEnd   int32   `json:"repeatEnd"`
+	Gift        *Gift   `json:"gift"`
+}
+
+func (x *GiftMessage) Unmarshal(data []byte) error {
+	*x = GiftMessage{}
+	for len(data) > 0 {
+		num, typ, n := protowire.ConsumeTag(data)
+		if n < 0 {
+			return protowire.ParseError(n)
+		}
+		data = data[n:]
+		switch typ {
+		case protowire.VarintType:
+			v, n := protowire.ConsumeVarint(data)
+			if n < 0 {
+				return protowire.ParseError(n)
+			}
+			data = data[n:]
+			switch num {
+			case 2:
+				x.GiftId = int64(v)
+			case 5:
+				x.RepeatCount = int32(v)
+			case 6:
+				x.ComboCount = int32(v)
+			case 9:
+				x.RepeatEnd = int32(v)
+			}
+		case protowire.BytesType:
+			v, n := protowire.ConsumeBytes(data)
+			if n < 0 {
+				return protowire.ParseError(n)
+			}
+			data = data[n:]
+			switch num {
+			case 1:
+				msg := &Common{}
+				if err := msg.Unmarshal(v); err != nil {
+					return err
+				}
+				x.Common = msg
+			case 7:
+				msg := &User{}
+				if err := msg.Unmarshal(v); err != nil {
+					return err
+				}
+				x.User = msg
+			case 15:
+				msg := &Gift{}
+				if err := msg.Unmarshal(v); err != nil {
+					return err
+				}
+				x.Gift = msg
+			}
+		default:
+			n := protowire.ConsumeFieldValue(num, typ, data)
+			if n < 0 {
+				return protowire.ParseError(n)
+			}
+			data = data[n:]
+		}
+	}
+	return nil
+}
+
+// Gift — 礼物详情
+type Gift struct {
+	Id           int64  `json:"id"`
+	Name         string `json:"name"`
+	DiamondCount int32  `json:"diamondCount"`
+	Type         int32  `json:"type"`
+	Describe     string `json:"describe"`
+}
+
+func (x *Gift) Unmarshal(data []byte) error {
+	*x = Gift{}
+	for len(data) > 0 {
+		num, typ, n := protowire.ConsumeTag(data)
+		if n < 0 {
+			return protowire.ParseError(n)
+		}
+		data = data[n:]
+		switch typ {
+		case protowire.VarintType:
+			v, n := protowire.ConsumeVarint(data)
+			if n < 0 {
+				return protowire.ParseError(n)
+			}
+			data = data[n:]
+			switch num {
+			case 5:
+				x.Id = int64(v)
+			case 11:
+				x.Type = int32(v)
+			case 12:
+				x.DiamondCount = int32(v)
+			}
+		case protowire.BytesType:
+			v, n := protowire.ConsumeBytes(data)
+			if n < 0 {
+				return protowire.ParseError(n)
+			}
+			data = data[n:]
+			switch num {
+			case 2:
+				x.Describe = string(v)
+			case 16:
+				x.Name = string(v)
+			}
+		default:
+			n := protowire.ConsumeFieldValue(num, typ, data)
+			if n < 0 {
+				return protowire.ParseError(n)
+			}
+			data = data[n:]
+		}
+	}
+	return nil
+}
