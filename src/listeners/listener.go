@@ -159,6 +159,12 @@ func (l *listener) run() {
 
 // processInfo 处理获取到的直播间信息，检测状态变化并触发事件
 func (l *listener) processInfo(info *live.Info) {
+	// 初始化完成回调可能在 GetInfo 返回前同步替换并关闭当前 listener。
+	// 已关闭的旧 listener 不得再发布 LiveStart/LiveEnd，否则会与新 listener 的事件竞态。
+	if l.isStopped() {
+		return
+	}
+
 	// 尝试从缓存中获取主播姓名，以防API调用失败
 	hostName := info.HostName
 	if hostName == "" {

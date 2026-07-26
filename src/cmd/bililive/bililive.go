@@ -563,8 +563,11 @@ func main() {
 	// 创建初始化完成的回调函数
 	// 当 InitializingLive.GetInfo() 成功获取真实信息时，会自动调用此回调
 	onInitFinished := func(initializingLive live.Live, originalLive live.Live, info *live.Info) {
-		// 触发 RoomInitializingFinished 事件，让 manager 处理后续逻辑
-		ed.DispatchEvent(events.NewEvent(listeners.RoomInitializingFinished, live.InitializingFinishedParam{
+		// 必须等待旧监听器替换完成后再让 InitializingLive.GetInfo 返回。
+		// 否则旧监听器会先派发 LiveStart，而替换过程又会异步派发 ListenStop 和新的
+		// LiveStart，事件执行顺序不确定，可能出现「新 LiveStart 判断录制器已存在，
+		// 随后旧 ListenStop 又删除录制器」并导致直播中但不再录制。
+		ed.DispatchEventSync(events.NewEvent(listeners.RoomInitializingFinished, live.InitializingFinishedParam{
 			InitializingLive: initializingLive,
 			Live:             originalLive,
 			Info:             info,
