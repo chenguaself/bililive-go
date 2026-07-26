@@ -29,6 +29,8 @@ type InitializingLive struct {
 	onFinished live.InitializingFinishedCallback
 	// 用于标记初始化是否已完成（防止重复触发回调）
 	finished bool
+	// 是否已经记录过初始化失败日志（后续重试降级为 debug，避免刷屏）
+	failureLogged bool
 	// 用于保护并发访问
 	mu sync.Mutex
 
@@ -86,6 +88,20 @@ func (l *InitializingLive) GetInfo() (info *live.Info, err error) {
 	// 尝试获取真实信息
 	realInfo, err := l.OriginalLive.GetInfo()
 	if err != nil {
+		// 这里向上返回 nil error（初始化中是一个有效状态），
+		// 但错误本身不能完全吞掉：否则「直播间一直卡在初始化中」在日志里
+		// 没有任何线索，排查时完全看不出根因。
+		// 首次失败记 warn，后续重试降为 debug，避免大量直播间同时刷屏。
+		l.mu.Lock()
+		firstFailure := !l.failureLogged
+		l.failureLogged = true
+		l.mu.Unlock()
+		if firstFailure {
+			l.GetLogger().WithError(err).Warn("初始化直播间信息失败，将继续重试")
+		} else {
+			l.GetLogger().WithError(err).Debug("初始化直播间信息失败，将继续重试")
+		}
+
 		// 获取失败，返回初始化状态信息（使用缓存信息，允许后续重试）
 		roomName := l.GetRawUrl()
 		if cachedRoom != "" {
