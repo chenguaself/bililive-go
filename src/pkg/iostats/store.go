@@ -30,8 +30,8 @@ type Store interface {
 	// QueryIOStats 查询 IO 统计数据
 	QueryIOStats(ctx context.Context, query IOStatsQuery) ([]IOStat, error)
 
-	// SaveRequestStatus 保存请求状态
-	SaveRequestStatus(ctx context.Context, status *RequestStatus) error
+	// SaveRequestStatuses 批量保存请求状态
+	SaveRequestStatuses(ctx context.Context, statuses []*RequestStatus) error
 	// QueryRequestStatus 查询请求状态
 	QueryRequestStatus(ctx context.Context, query RequestStatusQuery) ([]RequestStatus, error)
 	// QueryRequestStatusSegments 查询请求状态时间段（用于横条图）
@@ -327,22 +327,43 @@ func (s *SQLiteStore) aggregateStats(stats []IOStat, aggregation string) []IOSta
 	return result
 }
 
-// SaveRequestStatus 保存请求状态
-func (s *SQLiteStore) SaveRequestStatus(ctx context.Context, status *RequestStatus) error {
+// SaveRequestStatuses 批量保存请求状态。
+// 直播间轮询失败时会在短时间内产生大量记录，逐条写入会带来大量事务提交，
+// 因此调用方应尽量成批提交。
+func (s *SQLiteStore) SaveRequestStatuses(ctx context.Context, statuses []*RequestStatus) error {
+	if len(statuses) == 0 {
+		return nil
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	successInt := 0
-	if status.Success {
-		successInt = 1
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
+	defer tx.Rollback()
 
-	_, err := s.db.ExecContext(ctx,
+	stmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO request_status (timestamp, live_id, platform, success, error_message)
 		 VALUES (?, ?, ?, ?, ?)`,
-		status.Timestamp, status.LiveID, status.Platform, successInt, status.ErrorMessage,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, status := range statuses {
+		successInt := 0
+		if status.Success {
+			successInt = 1
+		}
+		if _, err = stmt.ExecContext(ctx, status.Timestamp, status.LiveID, status.Platform, successInt, status.ErrorMessage); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
 // QueryRequestStatus 查询请求状态

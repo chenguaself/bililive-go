@@ -33,7 +33,6 @@ import (
 	"github.com/bililive-go/bililive-go/src/pkg/memwatch"
 	"github.com/bililive-go/bililive-go/src/pkg/metadata"
 	"github.com/bililive-go/bililive-go/src/pkg/openlist"
-	"github.com/bililive-go/bililive-go/src/pkg/ratelimit"
 	bilisentryPkg "github.com/bililive-go/bililive-go/src/pkg/sentry"
 	"github.com/bililive-go/bililive-go/src/pkg/telemetry"
 	"github.com/bililive-go/bililive-go/src/pkg/update"
@@ -448,6 +447,11 @@ func main() {
 	// 异步检测并（按需）下载 FFmpeg，不阻塞启动流程
 	tools.FFmpegAsyncInit(ctx)
 
+	// 工具链是异步初始化的，WebUI 会先于工具就绪启动。
+	// 注册就绪检查，让依赖外部工具的平台（抖音依赖 bililive-tools）在工具可用之前
+	// 不去请求直播间信息，从而也不会启动录制任务。
+	live.SetPlatformReadinessChecker(tools.PlatformDependenciesReady)
+
 	// 启动 manager
 	if err = lm.Start(ctx); err != nil {
 		logger.Fatalf("failed to init listener manager, error: %s", err)
@@ -542,15 +546,6 @@ func main() {
 	// 第一步：立即为所有配置的直播间创建 InitializingLive，让前端可以看到
 	cfg := configs.GetCurrentConfig()
 
-	// 确保所有平台都有最小访问限制（用于控制并行初始化时的请求速度）
-	for _, room := range cfg.LiveRooms {
-		platformKey := configs.GetPlatformKeyFromUrl(room.Url)
-		if platformKey != "" {
-			minInterval := cfg.GetPlatformMinAccessInterval(platformKey)
-			ratelimit.GetGlobalRateLimiter().SetPlatformLimit(platformKey, minInterval)
-		}
-	}
-
 	// 分两批处理：监听中的直播间和非监听的直播间
 	var listeningRooms []live.Live
 	var nonListeningRooms []live.Live
@@ -558,8 +553,11 @@ func main() {
 	// 创建初始化完成的回调函数
 	// 当 InitializingLive.GetInfo() 成功获取真实信息时，会自动调用此回调
 	onInitFinished := func(initializingLive live.Live, originalLive live.Live, info *live.Info) {
-		// 触发 RoomInitializingFinished 事件，让 manager 处理后续逻辑
-		ed.DispatchEvent(events.NewEvent(listeners.RoomInitializingFinished, live.InitializingFinishedParam{
+		// 必须等待旧监听器替换完成后再让 InitializingLive.GetInfo 返回。
+		// 否则旧监听器会先派发 LiveStart，而替换过程又会异步派发 ListenStop 和新的
+		// LiveStart，事件执行顺序不确定，可能出现「新 LiveStart 判断录制器已存在，
+		// 随后旧 ListenStop 又删除录制器」并导致直播中但不再录制。
+		ed.DispatchEventSync(events.NewEvent(listeners.RoomInitializingFinished, live.InitializingFinishedParam{
 			InitializingLive: initializingLive,
 			Live:             originalLive,
 			Info:             info,

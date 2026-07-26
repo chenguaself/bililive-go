@@ -381,7 +381,8 @@ func (r *recorder) tryRecord(ctx context.Context) {
 
 	buf := new(bytes.Buffer)
 	if err = tmpl.Execute(buf, info); err != nil {
-		panic(fmt.Sprintf("failed to render filename, err: %v", err))
+		r.getLogger().WithError(err).Error("failed to render filename, recording aborted")
+		return
 	}
 	// 使用层级配置的 OutPutPath
 	fileName := filepath.Join(resolvedConfig.OutPutPath, buf.String())

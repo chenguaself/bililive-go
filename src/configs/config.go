@@ -1316,20 +1316,32 @@ func (c *Config) GetPlatformMinAccessInterval(platformName string) int {
 // syncPlatformRateLimits 同步平台访问频率限制到全局限制器
 func (c *Config) syncPlatformRateLimits() {
 	rateLimiter := ratelimit.GetGlobalRateLimiter()
-
-	// 清除已有限制
 	currentLimits := rateLimiter.GetAllPlatformLimits()
+	desiredLimits := make(map[string]int)
 
-	// 设置新的平台限制
-	for platformKey, platformConfig := range c.PlatformConfigs {
-		if platformConfig.MinAccessIntervalSec > 0 {
-			rateLimiter.SetPlatformLimit(platformKey, platformConfig.MinAccessIntervalSec)
+	// 显式平台配置即使当前没有房间也要保留，便于随后添加房间时立即生效。
+	for platformKey := range c.PlatformConfigs {
+		if platformKey != "" {
+			desiredLimits[platformKey] = c.GetPlatformMinAccessInterval(platformKey)
 		}
-		// 从当前限制列表中移除此平台（标记为已处理）
+	}
+
+	// 所有已配置房间的平台都必须至少应用默认 1 秒限制。
+	// SetLiveRoomId 等配置更新也会调用本方法，不能只同步 platform_configs：否则启动代码
+	// 刚设置的默认限制会在第一个房间写入 LiveId 时被删除，异步初始化便会形成请求风暴。
+	for _, room := range c.LiveRooms {
+		platformKey := GetPlatformKeyFromUrl(room.Url)
+		if platformKey != "" {
+			desiredLimits[platformKey] = c.GetPlatformMinAccessInterval(platformKey)
+		}
+	}
+
+	for platformKey, intervalSec := range desiredLimits {
+		rateLimiter.SetPlatformLimit(platformKey, intervalSec)
 		delete(currentLimits, platformKey)
 	}
 
-	// 清除配置中不再存在的平台限制
+	// 清除配置中已经不存在的平台限制。
 	for platformKey := range currentLimits {
 		rateLimiter.RemovePlatformLimit(platformKey)
 	}
@@ -1390,6 +1402,10 @@ func (r *ResolvedConfig) applyOverrides(override *OverridableConfig) {
 		r.Danmaku = mergeDanmakuConfig(&r.Danmaku, override.Danmaku)
 	}
 }
+
+// PlatformKeyDouyin 抖音的平台键。抖音的直播间解析依赖本地 bililive-tools 服务，
+// 需要在若干处按平台键做就绪判断，因此单独导出常量避免散落的字符串字面量。
+const PlatformKeyDouyin = "douyin"
 
 // GetPlatformKeyFromUrl 从URL中提取平台键，用于配置查找
 func GetPlatformKeyFromUrl(urlStr string) string {

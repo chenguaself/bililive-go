@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -306,11 +307,90 @@ const (
 	BToolsStatusFailed
 )
 
+const (
+	// BToolsPort bililive-tools 本地 HTTP 服务监听的端口
+	BToolsPort = 18110
+	// BToolsAuthToken 访问 bililive-tools 本地 HTTP 服务所需的 Authorization 头
+	BToolsAuthToken = "Basic YTph"
+
+	// btoolsHealthCheckInterval 健康检查的轮询间隔
+	btoolsHealthCheckInterval = time.Second
+	// btoolsHealthCheckTimeout bililive-tools 长时间未就绪时输出一次警告的间隔。
+	// 首次启动需要 Node 加载依赖，慢盘上可能相当久，因此超时后继续探测而不是永久失败。
+	btoolsHealthCheckTimeout = 3 * time.Minute
+)
+
 var currentBToolsStatus atomic.Int32
 
-// IsBToolsReady 检查 bililive-tools 是否已就绪
+// IsBToolsReady 检查 bililive-tools 是否已就绪。
+// 就绪的含义是「本地 HTTP 服务已经能够响应请求」，而不仅仅是进程已经拉起。
 func IsBToolsReady() bool {
 	return btoolsStatusValue(currentBToolsStatus.Load()) == BToolsStatusReady
+}
+
+// GetBToolsStatus 返回 bililive-tools 当前状态
+func GetBToolsStatus() btoolsStatusValue {
+	return btoolsStatusValue(currentBToolsStatus.Load())
+}
+
+// waitBToolsHealthy 轮询 bililive-tools 的本地 HTTP 端口，直到它能够响应请求为止。
+// 只要拿到任意 HTTP 响应（哪怕是 404/500）就说明服务已经在监听并进入了请求处理流程。
+//
+// 进程被拉起 ≠ 服务可用：Node 侧还需要若干秒完成初始化。如果在这段时间里就宣布就绪，
+// 上层几百个直播间会在服务刚 listen 的瞬间一拥而上，把它直接打爆。
+func waitBToolsHealthy() {
+	client := &http.Client{Timeout: 5 * time.Second}
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/", BToolsPort)
+	deadline := time.Now().Add(btoolsHealthCheckTimeout)
+
+	for {
+		// 进程已经退出或启动失败时不必再等
+		if GetBToolsStatus() != BToolsStatusStarting {
+			return
+		}
+
+		req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+		if err == nil {
+			req.Header.Set("Authorization", BToolsAuthToken)
+			if resp, doErr := client.Do(req); doErr == nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+				if currentBToolsStatus.CompareAndSwap(int32(BToolsStatusStarting), int32(BToolsStatusReady)) {
+					blog.GetLogger().Infoln("bililive-tools 服务已就绪")
+				}
+				return
+			}
+		}
+
+		// 超时只表示启动异常缓慢，不能永久停止唯一的健康探测：子进程此时可能仍然
+		// 存活并在稍后恢复响应。继续探测可以让平台依赖自动恢复，无需重启整个应用。
+		if time.Now().After(deadline) {
+			blog.GetLogger().Warnf("bililive-tools 在 %s 内尚未就绪，将继续在后台探测", btoolsHealthCheckTimeout)
+			deadline = time.Now().Add(btoolsHealthCheckTimeout)
+		}
+
+		time.Sleep(btoolsHealthCheckInterval)
+	}
+}
+
+// PlatformDependenciesReady 返回指定平台（configs 中的 platformKey）依赖的外部工具是否已就绪，
+// 以及未就绪时可供展示的原因。
+//
+// 工具未就绪时不应该去请求直播间信息：请求必然失败，只会把本地工具和平台接口打爆，
+// 还会让直播间被误判成未开播。等工具就绪后再开始轮询即可，WebUI 本身不受影响。
+func PlatformDependenciesReady(platformKey string) (bool, string) {
+	if platformKey != configs.PlatformKeyDouyin {
+		return true, ""
+	}
+
+	switch GetBToolsStatus() {
+	case BToolsStatusReady:
+		return true, ""
+	case BToolsStatusFailed:
+		return false, "bililive-tools 启动失败，抖音直播间无法录制"
+	default:
+		return false, "bililive-tools 尚未就绪（正在下载或启动中）"
+	}
 }
 
 // IsBToolsStarting 检查 bililive-tools 是否正在启动
@@ -325,6 +405,9 @@ func IsBToolsStarting() bool {
 // 在进入 launcher 模式前调用，确保端口被释放以供新版本使用。
 func Cleanup() {
 	logger := blog.GetLogger()
+
+	// 先置位关闭标记，避免守护逻辑把刚被杀掉的子进程又拉起来
+	btoolsShuttingDown.Store(true)
 
 	// 1. 终止所有已注册的子进程
 	KillAllProcesses()
@@ -516,12 +599,7 @@ func Init() (err error) {
 	} {
 		AsyncDownloadIfNecessary(toolName)
 	}
-	bilisentry.Go(func() {
-		err := startBTools()
-		if err != nil {
-			blog.GetLogger().WithError(err).Errorln("Failed to start bililive-tools")
-		}
-	})
+	bilisentry.Go(superviseBTools)
 	bilisentry.Go(func() {
 		if cfg := configs.GetCurrentConfig(); cfg != nil && cfg.RPC.Enable {
 			startScheduler()
@@ -529,6 +607,51 @@ func Init() (err error) {
 	})
 
 	return nil
+}
+
+// btoolsShuttingDown 标记程序正在退出，避免守护逻辑在关闭过程中重启子进程
+var btoolsShuttingDown atomic.Bool
+
+// superviseBTools 启动 bililive-tools 并在它意外退出后自动重启。
+//
+// 没有守护的话，Node 进程一旦崩溃（或被外部结束），抖音等依赖它的平台
+// 在本次运行的剩余时间里就再也无法恢复，只能靠用户重启整个程序。
+func superviseBTools() {
+	const (
+		minRestartDelay = 5 * time.Second
+		maxRestartDelay = 5 * time.Minute
+		// 运行超过这个时长才认为「曾经正常工作过」，可以把退避重置
+		healthyRunDuration = time.Minute
+	)
+
+	delay := minRestartDelay
+	for {
+		startedAt := time.Now()
+		if err := startBTools(); err != nil {
+			blog.GetLogger().WithError(err).Errorln("Failed to start bililive-tools")
+		}
+
+		if btoolsShuttingDown.Load() {
+			return
+		}
+
+		// 之前稳定运行过一段时间，说明不是启动就失败，重置退避
+		if time.Since(startedAt) >= healthyRunDuration {
+			delay = minRestartDelay
+		}
+
+		blog.GetLogger().Warnf("bililive-tools 将在 %s 后重启", delay)
+		time.Sleep(delay)
+
+		if btoolsShuttingDown.Load() {
+			return
+		}
+
+		delay *= 2
+		if delay > maxRestartDelay {
+			delay = maxRestartDelay
+		}
+	}
 }
 
 func startBTools() error {
@@ -598,16 +721,30 @@ func startBTools() error {
 
 	blog.GetLogger().Infoln("Starting bililive-tools server…")
 
-	// 设置状态为已就绪（服务已启动）
-	currentBToolsStatus.Store(int32(BToolsStatusReady))
+	// 状态保持 Starting，由健康检查在服务真正可以响应请求后置为 Ready，
+	// 避免进程刚拉起、HTTP 端口还没 listen 时上层就一拥而上。
+	bilisentry.Go(waitBToolsHealthy)
 
 	// 在 Windows 下使用 Job Object，确保主进程退出时子进程被一并终止
 	// 使用 runWithKillOnCloseAndGetPID 来获取进程 PID
-	return runWithKillOnCloseAndGetPID(cmd, func(pid int) {
+	// 该调用会阻塞到子进程退出为止
+	err = runWithKillOnCloseAndGetPID(cmd, func(pid int) {
 		// 使用通用的进程跟踪器注册子进程
 		RegisterProcess("bililive-tools", pid, ProcessCategoryBTools)
 		blog.GetLogger().Infof("bililive-tools process started with PID: %d", pid)
 	})
+
+	// 进程已经退出，及时反注册，避免 KillAllProcesses 去操作一个已经失效
+	// （甚至可能被系统回收复用）的 PID
+	UnregisterProcess("bililive-tools")
+
+	// 子进程退出后服务不再可用，必须把状态改回去，
+	// 否则依赖它的平台会继续认为服务健康并不断发出必然失败的请求
+	if previous := GetBToolsStatus(); previous != BToolsStatusFailed {
+		currentBToolsStatus.Store(int32(BToolsStatusFailed))
+		blog.GetLogger().WithError(err).Warnln("bililive-tools 进程已退出，依赖它的平台（如抖音）将暂停请求")
+	}
+	return err
 }
 
 func AsyncDownloadIfNecessary(toolName string) {
