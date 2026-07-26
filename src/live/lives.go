@@ -375,11 +375,10 @@ func (w *WrappedLive) GetInfo() (*Info, error) {
 	w.notifyWaiters(i, err)
 
 	if err != nil {
-		if info, err2 := w.cache.Get(w); err2 == nil {
-			// 将错误信息存到 LastError 而非 RoomName
-			// 避免错误文本出现在录制文件名中
-			info.(*Info).LastError = err.Error()
-		}
+		// 将错误信息存到 LastError 而非 RoomName，避免错误文本出现在录制文件名中。
+		// 注意这里不能就地修改缓存里的 *Info：它同时被 API/SSE 等读取方持有，
+		// 就地写字段是无锁的数据竞争。改为写入一份副本再替换缓存。
+		w.cacheLastError(err)
 		// 失败同样要通知前端更新倒计时，否则退避期间界面会一直显示「即将刷新」
 		w.dispatchSchedulerRefreshEvent()
 		return nil, err
@@ -394,6 +393,26 @@ func (w *WrappedLive) GetInfo() (*Info, error) {
 	w.dispatchSchedulerRefreshEvent()
 
 	return i, nil
+}
+
+// cacheLastError 把最近一次的错误信息记录到缓存的直播间信息上。
+// 通过「读出来 → 复制 → 改副本 → 写回」的方式更新，避免修改其他 goroutine
+// 正在读取的 *Info（gcache 只保证自身的并发安全，不保证值对象的）。
+func (w *WrappedLive) cacheLastError(err error) {
+	if w.cache == nil {
+		return
+	}
+	cached, cacheErr := w.cache.Get(w)
+	if cacheErr != nil {
+		return
+	}
+	info, ok := cached.(*Info)
+	if !ok || info == nil {
+		return
+	}
+	updated := *info
+	updated.LastError = err.Error()
+	w.cache.Set(w, &updated)
 }
 
 // dispatchSchedulerRefreshEvent 发送调度器刷新完成事件
