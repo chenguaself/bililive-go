@@ -62,9 +62,27 @@ func (l *listener) Start() error {
 	defer atomic.CompareAndSwapUint32(&l.state, pending, running)
 
 	l.ed.DispatchEvent(events.NewEvent(ListenStart, l.Live))
-	l.refresh()
-	bilisentry.Go(func() { l.run() })
+
+	// 首次信息获取放到后台执行。调用方 manager.AddListener 全程持有管理器的全局锁，
+	// 而 refresh 是一次真实的网络请求，还要排队等待平台访问频率限制；
+	// 几百个直播间串行下来会把锁占用好几分钟，期间任何增删直播间的操作都会被卡住。
+	bilisentry.Go(func() {
+		if !l.isStopped() {
+			l.refresh()
+		}
+		l.run()
+	})
 	return nil
+}
+
+// isStopped 返回 listener 是否已经被关闭
+func (l *listener) isStopped() bool {
+	select {
+	case <-l.stop:
+		return true
+	default:
+		return false
+	}
 }
 
 func (l *listener) Close() {
