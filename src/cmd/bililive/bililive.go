@@ -33,7 +33,6 @@ import (
 	"github.com/bililive-go/bililive-go/src/pkg/memwatch"
 	"github.com/bililive-go/bililive-go/src/pkg/metadata"
 	"github.com/bililive-go/bililive-go/src/pkg/openlist"
-	"github.com/bililive-go/bililive-go/src/pkg/ratelimit"
 	bilisentryPkg "github.com/bililive-go/bililive-go/src/pkg/sentry"
 	"github.com/bililive-go/bililive-go/src/pkg/telemetry"
 	"github.com/bililive-go/bililive-go/src/pkg/update"
@@ -88,13 +87,13 @@ func getConfigBesidesExecutable() (*configs.Config, error) {
 			fmt.Fprintf(os.Stderr, "[Config] 使用 Launcher 目录的配置文件: %s\n", launcherConfigPath)
 			return config, nil
 		} else {
-			fmt.Fprintf(os.Stderr, "[Config] Launcher 配置文件加载失败 (%s): %v，回退到 exe 目录\n", launcherConfigPath, loadErr)
+			fmt.Fprintf(os.Stderr, "[Config] Launcher 配置文件加载失败 (%s): %v，回退到程序所在目录\n", launcherConfigPath, loadErr)
 		}
 	}
 
-	// 回退：在当前 exe 旁边查找（用户直接双击运行的场景）
+	// 回退：在当前程序所在目录查找（用户直接双击运行的场景）
 	configPath := filepath.Join(filepath.Dir(exePath), "config.yml")
-	fmt.Fprintf(os.Stderr, "[Config] 使用当前 exe 目录的配置文件: %s\n", configPath)
+	fmt.Fprintf(os.Stderr, "[Config] 使用当前程序所在目录的配置文件: %s\n", configPath)
 	config, err := configs.NewConfigWithFile(configPath)
 	if err != nil {
 		return nil, err
@@ -279,6 +278,10 @@ func main() {
 	logger.Debugf("%+v", consts.GetAppInfo())
 	logger.Debugf("%+v", configs.GetCurrentConfig())
 
+	// 提前声明信号通道，以便后续 OnShutdownRequest 闭包可以引用它
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
 	// 初始化更新管理器并尝试连接到启动器（如果由启动器启动）
 	var updateManager *update.Manager
 	if os.Getenv("BILILIVE_LAUNCHER") != "" {
@@ -315,7 +318,14 @@ func main() {
 				logger.Infof("收到启动器关闭请求，优雅期 %d 秒", gracePeriod)
 				// 发送关闭确认
 				updateManager.AckShutdown()
-				// 触发主程序关闭
+				// 触发完整关闭流程（包括 tools.Cleanup），而非仅 rootCancel。
+				// 确保 bililive-tools 等子进程在 Launcher 超时重启时被正确清理，
+				// 避免端口占用导致下次启动失败（issue #1129）。
+				select {
+				case c <- syscall.SIGTERM:
+				default:
+				}
+				// 立即取消 context，确保关闭请求即时生效（即使关闭 goroutine 尚未启动也能中断初始化流程）
 				rootCancel()
 			})
 		}
@@ -437,6 +447,11 @@ func main() {
 	// 异步检测并（按需）下载 FFmpeg，不阻塞启动流程
 	tools.FFmpegAsyncInit(ctx)
 
+	// 工具链是异步初始化的，WebUI 会先于工具就绪启动。
+	// 注册就绪检查，让依赖外部工具的平台（抖音依赖 bililive-tools）在工具可用之前
+	// 不去请求直播间信息，从而也不会启动录制任务。
+	live.SetPlatformReadinessChecker(tools.PlatformDependenciesReady)
+
 	// 启动 manager
 	if err = lm.Start(ctx); err != nil {
 		logger.Fatalf("failed to init listener manager, error: %s", err)
@@ -531,15 +546,6 @@ func main() {
 	// 第一步：立即为所有配置的直播间创建 InitializingLive，让前端可以看到
 	cfg := configs.GetCurrentConfig()
 
-	// 确保所有平台都有最小访问限制（用于控制并行初始化时的请求速度）
-	for _, room := range cfg.LiveRooms {
-		platformKey := configs.GetPlatformKeyFromUrl(room.Url)
-		if platformKey != "" {
-			minInterval := cfg.GetPlatformMinAccessInterval(platformKey)
-			ratelimit.GetGlobalRateLimiter().SetPlatformLimit(platformKey, minInterval)
-		}
-	}
-
 	// 分两批处理：监听中的直播间和非监听的直播间
 	var listeningRooms []live.Live
 	var nonListeningRooms []live.Live
@@ -547,8 +553,11 @@ func main() {
 	// 创建初始化完成的回调函数
 	// 当 InitializingLive.GetInfo() 成功获取真实信息时，会自动调用此回调
 	onInitFinished := func(initializingLive live.Live, originalLive live.Live, info *live.Info) {
-		// 触发 RoomInitializingFinished 事件，让 manager 处理后续逻辑
-		ed.DispatchEvent(events.NewEvent(listeners.RoomInitializingFinished, live.InitializingFinishedParam{
+		// 必须等待旧监听器替换完成后再让 InitializingLive.GetInfo 返回。
+		// 否则旧监听器会先派发 LiveStart，而替换过程又会异步派发 ListenStop 和新的
+		// LiveStart，事件执行顺序不确定，可能出现「新 LiveStart 判断录制器已存在，
+		// 随后旧 ListenStop 又删除录制器」并导致直播中但不再录制。
+		ed.DispatchEventSync(events.NewEvent(listeners.RoomInitializingFinished, live.InitializingFinishedParam{
 			InitializingLive: initializingLive,
 			Live:             originalLive,
 			Info:             info,
@@ -677,16 +686,18 @@ func main() {
 	logger.Infof("Created %d live rooms (%d listening, %d not listening)",
 		inst.Lives.Len(), len(listeningRooms), len(nonListeningRooms))
 
-	c := make(chan os.Signal, 1)
-	// 使用 os.Interrupt 更跨平台，在 Windows 上 SIGHUP 可能不被支持
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	msgChan := c
 
 	// 注册关闭回调，供更新系统在热重启时触发优雅关闭
 	servers.SetShutdownFunc(func() {
-		c <- os.Interrupt
+		select {
+		case c <- os.Interrupt:
+		default:
+		}
 	})
+	shutdownComplete := make(chan struct{})
 	bilisentryPkg.Go(func() {
+		defer close(shutdownComplete)
 		<-msgChan
 		logger.Info("Received shutdown signal, closing...")
 		// 取消根 context，这会导致所有派生的 context 被取消
@@ -719,10 +730,21 @@ func main() {
 		}
 		// 停止自动更新器
 		servers.StopAutoUpdater()
+		// 终止所有子进程（bililive-tools 等）并关闭 remotetools WebUI。
+		// 在所有关闭路径下执行，确保端口被释放（issue #1129）。
+		tools.Cleanup()
 		logger.Info("Shutdown complete")
 	})
 
 	inst.WaitGroup.Wait()
+	// WaitGroup 只覆盖 Server、ListenerManager 和 RecorderManager。
+	// 收到关闭请求后还必须等待其余模块和 tools.Cleanup() 完成，避免主程序退出后
+	// Launcher 立即启动新版本，与尚未退出的 bililive-tools 等子进程争用端口。
+	select {
+	case <-rootCtx.Done():
+		<-shutdownComplete
+	default:
+	}
 
 	// 检查是否需要就地切换到 launcher 模式
 	// 如果用户在前端点击了"立即更新"，doApplyUpdate 会设置此标志并触发服务关闭
@@ -733,11 +755,6 @@ func main() {
 	// 这样进程不会退出，Docker 容器不会重启
 	if servers.PendingLauncherTransition() {
 		logger.Infof("====== 版本切换: 所有服务已关闭，正在进入 Launcher 模式 (AppDataPath=%s) ======", configs.GetCurrentConfig().AppDataPath)
-		// 取消根 context，确保日志文件句柄被关闭（避免新版本清理时文件冲突）
-		rootCancel()
-		// 在进入 launcher 模式前，终止所有子进程（btools、klive 等）并关闭 remotetools WebUI
-		// 确保端口被释放，否则新版本 bgo 启动时会遇到 EADDRINUSE
-		tools.Cleanup()
 
 		// 如果当前进程是由父 Launcher 启动的（BILILIVE_LAUNCHER=1），
 		// 不能自己再变成 launcher——否则两个 launcher 会争抢同一个 Named Pipe。
