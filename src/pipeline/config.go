@@ -24,6 +24,8 @@ const (
 	OptionPathTemplate = "path_template"
 	// OptionDeleteAfter 上传后是否删除
 	OptionDeleteAfter = "delete_after"
+	// OptionUploadTiming 上传时机（immediate/after_process）
+	OptionUploadTiming = "upload_timing"
 	// OptionCommand 自定义命令
 	OptionCommand = "command"
 	// OptionFileTypes 处理的文件类型过滤
@@ -71,14 +73,31 @@ func ConvertLegacyConfig(legacy *configs.OnRecordFinished) *PipelineConfig {
 
 	var stages []StageConfig
 
-	// 1. FLV 修复（在转换之前）
+	// 构建云上传阶段配置
+	cloudUploadStage := StageConfig{
+		Name: StageNameCloudUpload,
+		Options: map[string]any{
+			OptionStorage:      legacy.CloudUpload.StorageName,
+			OptionPathTemplate: legacy.CloudUpload.UploadPathTmpl,
+			OptionDeleteAfter:  legacy.CloudUpload.DeleteAfterUpload,
+			OptionUploadTiming: string(legacy.UploadTiming),
+		},
+	}
+	hasCloudUpload := legacy.CloudUpload.Enable && legacy.CloudUpload.StorageName != ""
+
+	// 立即上传模式：上传在所有处理之前
+	if hasCloudUpload && legacy.UploadTiming == configs.UploadTimingImmediate {
+		stages = append(stages, cloudUploadStage)
+	}
+
+	// FLV 修复（在转换之前）
 	if legacy.FixFlvAtFirst {
 		stages = append(stages, StageConfig{
 			Name: StageNameFixFlv,
 		})
 	}
 
-	// 2. MP4 转换
+	// MP4 转换
 	if legacy.ConvertToMp4 {
 		stages = append(stages, StageConfig{
 			Name: StageNameConvertMp4,
@@ -88,7 +107,7 @@ func ConvertLegacyConfig(legacy *configs.OnRecordFinished) *PipelineConfig {
 		})
 	}
 
-	// 3. 弹幕字幕烧录（在 MP4 转换之后，封面提取之前）
+	// 弹幕字幕烧录（在 MP4 转换之后，封面提取之前）
 	if legacy.BurnSubtitles {
 		stages = append(stages, StageConfig{
 			Name: StageNameBurnSubtitles,
@@ -102,26 +121,19 @@ func ConvertLegacyConfig(legacy *configs.OnRecordFinished) *PipelineConfig {
 		})
 	}
 
-	// 4. 封面提取
+	// 封面提取
 	if legacy.SaveCover {
 		stages = append(stages, StageConfig{
 			Name: StageNameExtractCover,
 		})
 	}
 
-	// 5. 云上传
-	if legacy.CloudUpload.Enable && legacy.CloudUpload.StorageName != "" {
-		stages = append(stages, StageConfig{
-			Name: StageNameCloudUpload,
-			Options: map[string]any{
-				OptionStorage:      legacy.CloudUpload.StorageName,
-				OptionPathTemplate: legacy.CloudUpload.UploadPathTmpl,
-				OptionDeleteAfter:  legacy.CloudUpload.DeleteAfterUpload,
-			},
-		})
+	// 后处理完成后上传模式：上传在所有处理之后（默认行为）
+	if hasCloudUpload && legacy.UploadTiming != configs.UploadTimingImmediate {
+		stages = append(stages, cloudUploadStage)
 	}
 
-	// 6. 自定义命令（在最后执行）
+	// 自定义命令（在最后执行）
 	if legacy.CustomCommandline != "" {
 		stages = append(stages, StageConfig{
 			Name: StageNameCustomCmd,
