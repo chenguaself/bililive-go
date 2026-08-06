@@ -31,7 +31,7 @@ const { TextArea } = Input;
 // 功能开关：代理配置（开发中，设为 false 隐藏 UI）
 // 与后端 configs.EnableProxyConfig 对应
 const ENABLE_PROXY_CONFIG = false;
-const ENABLE_CLOUD_UPLOAD_SETTINGS = false;
+const ENABLE_CLOUD_UPLOAD_SETTINGS = true;
 const { Panel } = Collapse;
 
 // 配置项类型定义
@@ -79,6 +79,26 @@ interface EffectiveConfig {
     delete_flv_after_convert: boolean;
     custom_commandline: string;
     fix_flv_at_first: boolean;
+    cloud_upload: {
+      enable: boolean;
+      storage_name: string;
+      upload_path_tmpl: string;
+      delete_after_upload: boolean;
+    };
+    upload_timing: string;
+    burn_subtitles: boolean;
+    burn_subtitles_codec: string;
+    burn_subtitles_crf: string;
+    burn_subtitles_preset: string;
+    burn_delete_ass: boolean;
+    burn_delete_source: boolean;
+  };
+  openlist: {
+    port: number;
+    data_path: string;
+    username: string;
+    password: string;
+    token: string;
   };
   timeout_in_us: number;
   timeout_in_seconds: number;
