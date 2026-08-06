@@ -2,7 +2,6 @@ package stages
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"os"
 	"path"
@@ -139,10 +138,8 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 
 	// 获取配置并创建客户端
 	config := configs.GetCurrentConfig()
-	uploadCtx, cancel := context.WithTimeout(ctx.Ctx, 30*time.Minute)
-	defer cancel()
 
-	client, err := mgr.GetClient(uploadCtx, config.OpenList.Token, config.OpenList.Username, config.OpenList.Password)
+	client, err := mgr.GetClient(ctx.Ctx, config.OpenList.Token, config.OpenList.Username, config.OpenList.Password)
 	if err != nil {
 		s.logs += fmt.Sprintf("创建 OpenList 客户端失败: %s\n", err.Error())
 		return input, fmt.Errorf("创建 OpenList 客户端失败: %w", err)
@@ -197,7 +194,7 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 		// 使用 path.Dir 而非 filepath.Dir，因为远程路径始终用正斜杠
 		remoteDir := path.Dir(fullRemotePath)
 		if remoteDir != "" && remoteDir != "." {
-			if err := client.MkdirRecursive(uploadCtx, remoteDir); err != nil {
+			if err := client.MkdirRecursive(ctx.Ctx, remoteDir); err != nil {
 				ctx.Logger.Warnf("创建远程目录失败（可能已存在）: %s - %v", remoteDir, err)
 			}
 		}
@@ -205,7 +202,7 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 		// 执行上传（带进度追踪）
 		fileName := filepath.Base(file.Path)
 		var lastPct float64
-		err := client.Upload(uploadCtx, file.Path, fullRemotePath, func(p openlist.UploadProgress) {
+		err := client.Upload(ctx.Ctx, file.Path, fullRemotePath, func(p openlist.UploadProgress) {
 			// 每 10% 报告一次进度
 			if p.Percentage-lastPct >= 10 || p.Percentage >= 100 {
 				lastPct = p.Percentage
