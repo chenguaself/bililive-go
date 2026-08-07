@@ -92,25 +92,27 @@ func (s *ExtractCoverStage) GetLogs() string {
 
 // CloudUploadStage 云上传阶段
 type CloudUploadStage struct {
-	config       pipeline.StageConfig
-	storageName  string
-	pathTemplate string
-	deleteAfter  bool
-	uploadTiming string // immediate 或 after_process
-	fileTypes    []string // 过滤的文件类型，空表示所有
-	commands     []string
-	logs         string
+	config         pipeline.StageConfig
+	storageName    string
+	pathTemplate   string
+	deleteAfter    bool   // 仅删除已上传的文件
+	deleteAllAfter bool   // 删除全部文件（含中间产物）
+	uploadTiming   string // immediate 或 after_process
+	fileTypes      []string // 过滤的文件类型，空表示所有
+	commands       []string
+	logs           string
 }
 
 // NewCloudUploadStage 创建云上传阶段工厂
 func NewCloudUploadStage(config pipeline.StageConfig) (pipeline.Stage, error) {
 	return &CloudUploadStage{
-		config:       config,
-		storageName:  config.GetStringOption(pipeline.OptionStorage, ""),
-		pathTemplate: config.GetStringOption(pipeline.OptionPathTemplate, ""),
-		deleteAfter:  config.GetBoolOption(pipeline.OptionDeleteAfter, false),
-		uploadTiming: config.GetStringOption(pipeline.OptionUploadTiming, ""),
-		fileTypes:    config.GetStringSliceOption(pipeline.OptionFileTypes),
+		config:         config,
+		storageName:    config.GetStringOption(pipeline.OptionStorage, ""),
+		pathTemplate:   config.GetStringOption(pipeline.OptionPathTemplate, ""),
+		deleteAfter:    config.GetBoolOption(pipeline.OptionDeleteAfter, false),
+		deleteAllAfter: config.GetBoolOption(pipeline.OptionDeleteAllAfter, false),
+		uploadTiming:   config.GetStringOption(pipeline.OptionUploadTiming, ""),
+		fileTypes:      config.GetStringSliceOption(pipeline.OptionFileTypes),
 	}, nil
 }
 
@@ -156,12 +158,38 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 	}
 
 	var output []pipeline.FileInfo
+	var uploadFailed bool
+
+	// 清除所有输入文件的 Deletable 标记（防止数据库中残留的旧标记影响本次判断）
+	for i := range input {
+		input[i].Deletable = false
+	}
+
+	// 只上传第一个视频文件和封面文件，跳过中间产物
+	// Pipeline 阶段输出顺序保证：最终视频在最前面，中间文件在后面
+	videoUploaded := false
+	uploadedIndices := map[int]bool{} // 记录实际上传的文件在 output 中的索引
 
 	for _, file := range input {
+		// 跳过标记为待删除的中间文件（由其他阶段产出，不应上传）
+		if file.Deletable {
+			output = append(output, file)
+			continue
+		}
+
 		// 文件类型过滤
 		if len(s.fileTypes) > 0 && !s.matchFileType(file.Type) {
 			output = append(output, file)
 			continue
+		}
+
+		// 视频文件：只上传第一个（最终视频），跳过后续中间视频
+		if file.Type == pipeline.FileTypeVideo {
+			if videoUploaded {
+				output = append(output, file)
+				continue
+			}
+			videoUploaded = true
 		}
 
 		// 检查文件是否存在
@@ -175,6 +203,7 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 		if targetPath == "" {
 			s.logs += fmt.Sprintf("无法生成目标路径: %s\n", file.Path)
 			output = append(output, file)
+			uploadFailed = true
 			continue
 		}
 
@@ -217,27 +246,43 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 			ctx.Logger.Errorf("上传失败: %s - %v", file.Path, err)
 			// 上传失败，保留文件
 			output = append(output, file)
+			uploadFailed = true
 			continue
 		}
 
 		s.logs += fmt.Sprintf("上传成功: %s -> %s/%s\n", fileName, s.storageName, targetPath)
 		ctx.Logger.Infof("文件上传成功: %s -> %s/%s", fileName, s.storageName, targetPath)
+		uploadedIndices[len(output)] = true // 记录上传成功的文件索引
+		output = append(output, file)
+	}
 
-		// 立即上传模式：始终保留文件，后续阶段（修复/转换/烧录）会处理删除
-		// 后处理上传模式：如果配置了删除，则删除文件（此时已是最终文件）
-		if s.deleteAfter && s.uploadTiming != "immediate" {
-			if err := os.Remove(file.Path); err != nil {
-				// 删除失败，保留文件在输出中供后续阶段使用
-				s.logs += fmt.Sprintf("删除本地文件失败: %s - %s\n", fileName, err.Error())
-				ctx.Logger.Warnf("删除本地文件失败: %s - %v", file.Path, err)
-				output = append(output, file)
-			} else {
-				s.logs += fmt.Sprintf("已删除本地文件: %s\n", fileName)
+	// 全部上传成功后，根据配置标记文件为可删除（由 Executor 在管道全部成功后统一删除）
+	// 任意一个上传失败，则不标记任何文件，确保本地文件全部保留
+	if !uploadFailed && s.uploadTiming != "immediate" {
+		if s.deleteAllAfter {
+			// 删除全部文件（含中间产物）
+			for i := range output {
+				output[i].Deletable = true
 			}
-		} else {
-			// 保留文件在输出中
-			output = append(output, file)
+			s.logs += fmt.Sprintf("全部上传成功，已标记 %d 个文件待删除（含中间产物）\n", len(output))
+			ctx.Logger.Infof("全部上传成功，已标记 %d 个文件待删除（含中间产物）", len(output))
+		} else if s.deleteAfter {
+			// 仅删除已上传的文件
+			count := 0
+			for i := range output {
+				if uploadedIndices[i] {
+					output[i].Deletable = true
+					count++
+				}
+			}
+			s.logs += fmt.Sprintf("全部上传成功，已标记 %d 个已上传文件待删除\n", count)
+			ctx.Logger.Infof("全部上传成功，已标记 %d 个已上传文件待删除", count)
 		}
+	}
+
+	// 任意上传失败，返回错误（让 Executor 将任务标记为 failed）
+	if uploadFailed {
+		return output, fmt.Errorf("部分文件上传失败，详见日志")
 	}
 
 	return output, nil
