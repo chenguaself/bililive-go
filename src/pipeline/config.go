@@ -22,8 +22,10 @@ const (
 	OptionStorage = "storage"
 	// OptionPathTemplate 上传路径模板
 	OptionPathTemplate = "path_template"
-	// OptionDeleteAfter 上传后是否删除
+	// OptionDeleteAfter 上传后是否删除已上传的文件
 	OptionDeleteAfter = "delete_after"
+	// OptionDeleteAllAfter 上传后是否删除全部文件（含中间产物）
+	OptionDeleteAllAfter = "delete_all_after"
 	// OptionUploadTiming 上传时机（immediate/after_process）
 	OptionUploadTiming = "upload_timing"
 	// OptionCommand 自定义命令
@@ -77,10 +79,12 @@ func ConvertLegacyConfig(legacy *configs.OnRecordFinished) *PipelineConfig {
 	cloudUploadStage := StageConfig{
 		Name: StageNameCloudUpload,
 		Options: map[string]any{
-			OptionStorage:      legacy.CloudUpload.StorageName,
-			OptionPathTemplate: legacy.CloudUpload.UploadPathTmpl,
-			OptionDeleteAfter:  legacy.CloudUpload.DeleteAfterUpload,
-			OptionUploadTiming: string(legacy.UploadTiming),
+			OptionStorage:        legacy.CloudUpload.StorageName,
+			OptionPathTemplate:   legacy.CloudUpload.UploadPathTmpl,
+			OptionDeleteAfter:    legacy.CloudUpload.DeleteAfterUpload,
+			OptionDeleteAllAfter: legacy.CloudUpload.DeleteAllAfterUpload,
+			OptionUploadTiming:   string(legacy.UploadTiming),
+			OptionFileTypes:      []string{string(FileTypeVideo), string(FileTypeCover)},
 		},
 	}
 	hasCloudUpload := legacy.CloudUpload.Enable && legacy.CloudUpload.StorageName != ""

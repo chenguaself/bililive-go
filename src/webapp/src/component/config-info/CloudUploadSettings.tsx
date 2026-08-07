@@ -1,6 +1,6 @@
-import React from 'react';
-import { Card, Form, Switch, Select, Input, Tag, Alert } from 'antd';
-import { CloudUploadOutlined } from '@ant-design/icons';
+import React, { useMemo } from 'react';
+import { Card, Form, Switch, Select, Input, Tag, Alert, Descriptions } from 'antd';
+import { CloudUploadOutlined, FileOutlined, DeleteOutlined, UploadOutlined } from '@ant-design/icons';
 import TemplateBuilder, { TemplateVariable, PresetTemplate, MockStream } from '../TemplateBuilder';
 
 interface ConfigFieldProps {
@@ -105,17 +105,204 @@ const renderUploadTemplate = (template: string, stream: MockStream, room: MockSt
   return path;
 };
 
+// 分析配置，返回上传文件和本地剩余文件
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const analyzeConfig = (config: any) => {
+  const orf = config.on_record_finished || {};
+  const cu = orf.cloud_upload || {};
+  const isImmediate = orf.upload_timing === 'immediate';
+  const isAfterProcess = !isImmediate;
+
+  // 功能开关
+  const convert = orf.convert_to_mp4 ?? false;
+  const deleteFlv = orf.delete_flv_after_convert ?? false;
+  const burn = orf.burn_subtitles ?? false;
+  const burnDelSource = orf.burn_delete_source ?? false;
+  const burnDelAss = orf.burn_delete_ass ?? false;
+  const cover = orf.save_cover ?? false;
+  const upload = cu.enable ?? false;
+  const delAfter = cu.delete_after_upload ?? false;
+  const delAllAfter = cu.delete_all_after_upload ?? false;
+
+  // 文件状态：uploaded(上传), deleted(删除), kept(保留)
+  const files: Record<string, { ext: string; desc: string; status: string }> = {};
+
+  // 初始文件
+  files['video.flv'] = { ext: '.flv', desc: '原始录制视频', status: 'kept' };
+  files['video.ass'] = { ext: '.ass', desc: '弹幕字幕', status: 'kept' };
+
+  // immediate 模式：先上传原始文件
+  if (isImmediate && upload) {
+    files['video.flv'].status = 'uploaded';
+  }
+
+  // 转码
+  if (convert) {
+    files['video.mp4'] = { ext: '.mp4', desc: '转码后视频', status: 'kept' };
+    if (deleteFlv) {
+      // 如果已经被标记为 uploaded，改为 uploaded_deleted
+      if (files['video.flv'].status === 'uploaded') {
+        files['video.flv'].status = 'uploaded_deleted';
+      } else {
+        files['video.flv'].status = 'deleted';
+      }
+    }
+  }
+
+  // 烧录
+  if (burn) {
+    files['video.mkv'] = { ext: '.mkv', desc: '烧录后视频', status: 'kept' };
+    if (burnDelSource) {
+      // 删除转码后的 mp4 或原始 flv
+      const target = convert ? 'video.mp4' : 'video.flv';
+      if (files[target].status === 'uploaded') {
+        files[target].status = 'uploaded_deleted';
+      } else {
+        files[target].status = 'deleted';
+      }
+    }
+    if (burnDelAss) {
+      files['video.ass'].status = 'deleted';
+    }
+  }
+
+  // 封面
+  if (cover) {
+    files['cover.jpg'] = { ext: '.jpg', desc: '视频封面', status: 'kept' };
+  }
+
+  // after_process 模式：上传最终文件
+  if (isAfterProcess && upload) {
+    // 上传第一个视频和封面
+    if (burn) {
+      files['video.mkv'].status = 'uploaded';
+    } else if (convert) {
+      files['video.mp4'].status = 'uploaded';
+    } else {
+      files['video.flv'].status = 'uploaded';
+    }
+    if (cover) {
+      files['cover.jpg'].status = 'uploaded';
+    }
+
+    // 删除逻辑
+    if (delAllAfter) {
+      // 删除全部
+      Object.values(files).forEach(f => { f.status = 'deleted'; });
+      // 但上传的文件标记为 uploaded_deleted
+      if (burn) files['video.mkv'].status = 'uploaded_deleted';
+      else if (convert) files['video.mp4'].status = 'uploaded_deleted';
+      else files['video.flv'].status = 'uploaded_deleted';
+      if (cover) files['cover.jpg'].status = 'uploaded_deleted';
+    } else if (delAfter) {
+      // 只删除已上传的文件
+      if (burn) files['video.mkv'].status = 'uploaded_deleted';
+      else if (convert) files['video.mp4'].status = 'uploaded_deleted';
+      else files['video.flv'].status = 'uploaded_deleted';
+      if (cover) files['cover.jpg'].status = 'uploaded_deleted';
+    }
+  }
+
+  // 兜底逻辑：清理无关联视频文件的 .ass 文件
+  if (files['video.ass'] && files['video.ass'].status === 'kept') {
+    const hasVideo = Object.entries(files).some(([name, f]) => {
+      if (name === 'video.ass') return false;
+      const ext = f.ext.toLowerCase();
+      return (ext === '.flv' || ext === '.mp4' || ext === '.mkv') && f.status !== 'deleted' && f.status !== 'uploaded_deleted';
+    });
+    if (!hasVideo) {
+      files['video.ass'].status = 'deleted';
+    }
+  }
+
+  // 分类结果
+  const uploaded: string[] = [];
+  const deleted: string[] = [];
+  const kept: string[] = [];
+
+  Object.entries(files).forEach(([, f]) => {
+    const name = f.desc + ' (' + f.ext + ')';
+    if (f.status === 'uploaded') {
+      uploaded.push(name);
+      kept.push(name); // 上传但本地保留
+    } else if (f.status === 'uploaded_deleted') {
+      uploaded.push(name);
+      deleted.push(name);
+    } else if (f.status === 'deleted') {
+      deleted.push(name);
+    } else {
+      kept.push(name);
+    }
+  });
+
+  return { uploaded, deleted, kept };
+};
+
+// 文件处理预览组件
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const FileProcessingPreview: React.FC<{ config: any }> = ({ config }) => {
+  const result = useMemo(() => analyzeConfig(config), [config]);
+
+  if (!config.on_record_finished?.cloud_upload?.enable) {
+    return null;
+  }
+
+  return (
+    <Card
+      size="small"
+      title={<><FileOutlined /> 文件处理预览</>}
+      style={{ marginBottom: 16, background: '#fafafa' }}
+    >
+      <Descriptions column={1} size="small" labelStyle={{ width: 100 }}>
+        <Descriptions.Item label={<><UploadOutlined /> 上传文件</>}>
+          {result.uploaded.length > 0
+            ? result.uploaded.map((f, i) => <Tag key={i} color="blue">{f}</Tag>)
+            : <Tag>无</Tag>
+          }
+        </Descriptions.Item>
+        <Descriptions.Item label={<><DeleteOutlined /> 删除文件</>}>
+          {result.deleted.length > 0
+            ? result.deleted.map((f, i) => <Tag key={i} color="red">{f}</Tag>)
+            : <Tag>无</Tag>
+          }
+        </Descriptions.Item>
+        <Descriptions.Item label={<><FileOutlined /> 本地保留</>}>
+          {result.kept.length > 0
+            ? result.kept.map((f, i) => <Tag key={i} color="green">{f}</Tag>)
+            : <Tag>无（全部清理）</Tag>
+          }
+        </Descriptions.Item>
+      </Descriptions>
+    </Card>
+  );
+};
+
 interface CloudUploadSettingsProps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   config: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  form?: any; // Form instance for mutual exclusion
 }
 
 /**
  * 云盘上传设置组件
  * 用于 GlobalSettings 中显示云上传配置
  */
-const CloudUploadSettings: React.FC<CloudUploadSettingsProps> = ({ config }) => {
+const CloudUploadSettings: React.FC<CloudUploadSettingsProps> = ({ config, form }) => {
   const isEnabled = config.on_record_finished?.cloud_upload?.enable;
+
+  // 互斥逻辑：开启一个时关闭另一个
+  const handleDeleteAfterChange = (checked: boolean) => {
+    if (checked && form) {
+      form.setFieldValue(['on_record_finished', 'cloud_upload', 'delete_all_after_upload'], false);
+    }
+  };
+
+  const handleDeleteAllAfterChange = (checked: boolean) => {
+    if (checked && form) {
+      form.setFieldValue(['on_record_finished', 'cloud_upload', 'delete_after_upload'], false);
+    }
+  };
 
   return (
     <Card
@@ -145,6 +332,10 @@ const CloudUploadSettings: React.FC<CloudUploadSettingsProps> = ({ config }) => 
         showIcon
         style={{ marginBottom: 16 }}
       />
+
+      {/* 文件处理预览 */}
+      <FileProcessingPreview config={config} />
+
       <ConfigField label="启用云上传" description="录制结束后自动把视频上传到网盘">
         <Form.Item name={['on_record_finished', 'cloud_upload', 'enable']} valuePropName="checked" noStyle>
           <Switch />
@@ -184,9 +375,14 @@ const CloudUploadSettings: React.FC<CloudUploadSettingsProps> = ({ config }) => 
         />
       </div>
 
-      <ConfigField label="上传后删除本地文件" description="仅对「处理完再上传」生效。「先上传再处理」模式下，文件删除由转码、烧录等设置控制">
+      <ConfigField label="上传后删除本地文件" description="选「处理完再上传」时，上传成功后仅删除已上传的文件（如最终视频），不影响其他中间文件。选「先上传再处理」时此开关无效">
         <Form.Item name={['on_record_finished', 'cloud_upload', 'delete_after_upload']} valuePropName="checked" noStyle>
-          <Switch />
+          <Switch onChange={handleDeleteAfterChange} />
+        </Form.Item>
+      </ConfigField>
+      <ConfigField label="上传后删除全部文件" description="选「处理完再上传」时，上传成功后删除所有本地文件（含中间产物）。选「先上传再处理」时此开关无效">
+        <Form.Item name={['on_record_finished', 'cloud_upload', 'delete_all_after_upload']} valuePropName="checked" noStyle>
+          <Switch onChange={handleDeleteAllAfterChange} />
         </Form.Item>
       </ConfigField>
 

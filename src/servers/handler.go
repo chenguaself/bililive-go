@@ -1723,6 +1723,9 @@ func applyConfigUpdates(c *configs.Config, updates map[string]interface{}) error
 			if deleteAfter, ok := cloudUpload["delete_after_upload"].(bool); ok {
 				c.OnRecordFinished.CloudUpload.DeleteAfterUpload = deleteAfter
 			}
+			if deleteAllAfter, ok := cloudUpload["delete_all_after_upload"].(bool); ok {
+				c.OnRecordFinished.CloudUpload.DeleteAllAfterUpload = deleteAllAfter
+			}
 		}
 		// 处理上传时机
 		if uploadTiming, ok := orf["upload_timing"].(string); ok {

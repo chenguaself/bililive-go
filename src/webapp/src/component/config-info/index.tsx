@@ -84,6 +84,7 @@ interface EffectiveConfig {
       storage_name: string;
       upload_path_tmpl: string;
       delete_after_upload: boolean;
+      delete_all_after_upload: boolean;
     };
     upload_timing: string;
     burn_subtitles: boolean;
@@ -685,7 +686,7 @@ const GlobalSettings: React.FC<{
               <Switch />
             </Form.Item>
           </ConfigField>
-          <ConfigField label="转换后删除 FLV" description="MP4 转换成功后删除原始 FLV 文件">
+          <ConfigField label="转换后删除 FLV" description="MP4 转换成功后标记原始 FLV 为待删除，全部处理阶段完成后才真正删除">
             <Form.Item name={['on_record_finished', 'delete_flv_after_convert']} valuePropName="checked" noStyle>
               <Switch />
             </Form.Item>
@@ -703,7 +704,7 @@ const GlobalSettings: React.FC<{
         </Card>
 
         {/* 云盘上传设置（开发中） */}
-        {ENABLE_CLOUD_UPLOAD_SETTINGS && <CloudUploadSettings config={config} />}
+        {ENABLE_CLOUD_UPLOAD_SETTINGS && <CloudUploadSettings config={config} form={form} />}
 
         {/* 高级设置 */}
         <Card title="高级设置" size="small" style={{ marginBottom: 16 }}>
