@@ -145,7 +145,7 @@ func (e *Executor) Execute(
 	}
 
 	// 全部成功：执行延迟删除
-	files = e.deleteMarkedFiles(files)
+	e.deleteMarkedFiles(files)
 
 	return results, nil
 }
