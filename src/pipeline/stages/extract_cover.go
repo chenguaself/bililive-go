@@ -230,15 +230,9 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 
 		// 执行上传（带进度追踪）
 		fileName := filepath.Base(file.Path)
-		var lastPct float64
+		ctx.Logger.Infof("开始上传: %s -> %s/%s", fileName, s.storageName, targetPath)
 		err := client.Upload(ctx.Ctx, file.Path, fullRemotePath, func(p openlist.UploadProgress) {
-			// 每 10% 报告一次进度
-			if p.Percentage-lastPct >= 10 || p.Percentage >= 100 {
-				lastPct = p.Percentage
-				speedMB := float64(p.SpeedBytesPerSec) / 1024 / 1024
-				ctx.Logger.Infof("上传进度 [%s]: %.1f%% (%.1f MB/s, 剩余 %ds)",
-					fileName, p.Percentage, speedMB, p.EtaSeconds)
-			}
+			// 进度回调仅用于内部追踪，不打印日志
 		})
 
 		if err != nil {
