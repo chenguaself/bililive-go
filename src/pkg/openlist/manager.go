@@ -197,9 +197,14 @@ func (m *Manager) saveInitialCredentials(logFile string) {
 		return
 	}
 
-	// 如果已经配置了用户名密码，跳过
+	// 如果已经配置了用户名密码，验证有效性
 	if config.OpenList.Username != "" && config.OpenList.Password != "" {
-		return
+		// 用现有凭据尝试登录，验证是否有效
+		testClient := NewClient(m.apiEndpoint, "")
+		if _, err := testClient.GetToken(context.Background(), config.OpenList.Username, config.OpenList.Password); err == nil {
+			return // 凭据有效，无需更新
+		}
+		// 凭据无效（如占位值 root/root），继续从日志读取真实密码
 	}
 
 	// 读取日志文件查找初始密码
@@ -228,7 +233,7 @@ func (m *Manager) saveInitialCredentials(logFile string) {
 
 	// 验证密码有效性：日志是追加模式，旧密码可能已被用户修改
 	// 只有实际能登录时才保存
-	client := NewClient(fmt.Sprintf("http://127.0.0.1:%d", m.port), "")
+	client := NewClient(m.apiEndpoint, "")
 	if _, err := client.GetToken(context.Background(), "admin", initialPassword); err != nil {
 		logrus.WithError(err).Debug("初始密码验证失败，跳过保存（可能已被修改）")
 		return

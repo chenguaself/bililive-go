@@ -340,13 +340,30 @@ const CloudUploadSettings: React.FC<CloudUploadSettingsProps> = ({ config, form 
           <>
             录制结束后自动把视频传到网盘。需要先在{' '}
             <a
-              href="/remotetools/tool/openlist/"
+              href={`http://${window.location.hostname}:${config.openlist?.port || 5244}`}
               target="_blank"
               rel="noopener noreferrer"
             >
               OpenList 管理页面
             </a>{' '}
-            添加网盘。
+            添加网盘。{' '}
+            {config.openlist?.username && config.openlist?.password && (
+              <>
+                <span style={{ color: '#999', fontSize: 12 }}>
+                  (登录凭据: {config.openlist.username} / {config.openlist.password})
+                </span>{' '}
+              </>
+            )}
+            <span style={{ color: '#999', fontSize: 12 }}>
+              (如无法访问，尝试{' '}
+              <a
+                href="/remotetools/tool/openlist/"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                通过代理访问
+              </a>)
+            </span>
           </>
         }
         type="info"
