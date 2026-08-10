@@ -227,9 +227,11 @@ func (m *Manager) saveInitialCredentials(logFile string) {
 	}
 
 	// 保存到配置
-	config.OpenList.Username = "admin"
-	config.OpenList.Password = initialPassword
-	if err := config.Marshal(); err != nil {
+	if _, err := configs.UpdateWithRetry(func(c *configs.Config) error {
+		c.OpenList.Username = "admin"
+		c.OpenList.Password = initialPassword
+		return nil
+	}, 3, 10*time.Millisecond); err != nil {
 		logrus.WithError(err).Warn("保存 OpenList 初始密码到配置文件失败")
 	} else {
 		logrus.Info("OpenList 首次启动，初始密码已保存到配置文件")

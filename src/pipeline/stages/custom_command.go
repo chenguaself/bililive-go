@@ -51,6 +51,13 @@ func (s *CustomCommandStage) Execute(ctx *pipeline.PipelineContext, input []pipe
 	var output []pipeline.FileInfo
 
 	for _, file := range input {
+		// 跳过已标记待删除的文件（如 ConvertMp4/BurnSubtitles 阶段标记的中间产物），
+		// 避免对本应删除的文件重复执行命令，但仍将其透传到 output。
+		if file.Deletable {
+			output = append(output, file)
+			continue
+		}
+
 		// 渲染命令模板
 		cmdStr, err := s.renderCommand(ctx, file)
 		if err != nil {

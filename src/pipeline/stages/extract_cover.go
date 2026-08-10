@@ -52,6 +52,12 @@ func (s *ExtractCoverStage) Execute(ctx *pipeline.PipelineContext, input []pipel
 			continue
 		}
 
+		// 跳过已标记待删除的文件（如 ConvertMp4 阶段标记的原始 FLV），
+		// 避免重复提取封面。
+		if file.Deletable {
+			continue
+		}
+
 		// 检查文件是否存在
 		if _, err := os.Stat(file.Path); os.IsNotExist(err) {
 			s.logs += fmt.Sprintf("文件不存在: %s\n", file.Path)
@@ -134,8 +140,8 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 	// 获取 OpenList 管理器
 	mgr := openlist.GetGlobalManager()
 	if mgr == nil {
-		s.logs = "OpenList 管理器未初始化，跳过上传\n"
-		return input, nil
+		s.logs = "OpenList 管理器未初始化\n"
+		return input, fmt.Errorf("OpenList 管理器未初始化")
 	}
 
 	// 获取配置并创建客户端
@@ -149,8 +155,11 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 
 	// 如果 token 变化了（通过用户名密码登录获取了新 token），自动写回配置
 	if newToken := client.GetCurrentToken(); newToken != "" && newToken != config.OpenList.Token {
-		config.OpenList.Token = newToken
-		if err := config.Marshal(); err != nil {
+		_, err := configs.UpdateWithRetry(func(c *configs.Config) error {
+			c.OpenList.Token = newToken
+			return nil
+		}, 3, 10*time.Millisecond)
+		if err != nil {
 			ctx.Logger.Warnf("保存 OpenList token 到配置文件失败: %v", err)
 		} else {
 			ctx.Logger.Info("OpenList token 已自动更新到配置文件")
@@ -160,15 +169,18 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 	var output []pipeline.FileInfo
 	var uploadFailed bool
 
-	// 清除所有输入文件的 Deletable 标记（防止数据库中残留的旧标记影响本次判断）
-	for i := range input {
-		input[i].Deletable = false
-	}
-
-	// 只上传第一个视频文件和封面文件，跳过中间产物
-	// Pipeline 阶段输出顺序保证：最终视频在最前面，中间文件在后面
-	videoUploaded := false
+	// 上传所有非 Deletable 的视频文件和封面文件
+	// Deletable 检查已能正确区分中间产物（如 ConvertMp4 标记的原始 FLV）
+	// 与最终视频（如录播姬生成的多分段 _PART 文件），无需额外限制
 	uploadedIndices := map[int]bool{} // 记录实际上传的文件在 output 中的索引
+
+	// 统计待上传的视频文件数量，用于判断是否需要在路径中包含文件名以避免冲突
+	nonDeletableVideoCount := 0
+	for _, file := range input {
+		if file.Type == pipeline.FileTypeVideo && !file.Deletable {
+			nonDeletableVideoCount++
+		}
+	}
 
 	for _, file := range input {
 		// 跳过标记为待删除的中间文件（由其他阶段产出，不应上传）
@@ -183,23 +195,17 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 			continue
 		}
 
-		// 视频文件：只上传第一个（最终视频），跳过后续中间视频
-		if file.Type == pipeline.FileTypeVideo {
-			if videoUploaded {
-				output = append(output, file)
-				continue
-			}
-			videoUploaded = true
-		}
-
 		// 检查文件是否存在
 		if _, err := os.Stat(file.Path); os.IsNotExist(err) {
 			s.logs += fmt.Sprintf("文件不存在: %s\n", file.Path)
+			output = append(output, file)
+			uploadFailed = true
 			continue
 		}
 
 		// 渲染目标路径
-		targetPath := s.renderTargetPath(ctx, file)
+		// 多视频场景（如录播姬 _PART 分段）时，若模板不含 .FileName 则自动追加，确保路径唯一
+		targetPath := s.renderTargetPath(ctx, file, nonDeletableVideoCount > 1)
 		if targetPath == "" {
 			s.logs += fmt.Sprintf("无法生成目标路径: %s\n", file.Path)
 			output = append(output, file)
@@ -293,7 +299,8 @@ func (s *CloudUploadStage) matchFileType(fileType pipeline.FileType) bool {
 }
 
 // renderTargetPath 渲染目标路径
-func (s *CloudUploadStage) renderTargetPath(ctx *pipeline.PipelineContext, file pipeline.FileInfo) string {
+// multiVideo 为 true 时，若模板不含 .FileName 则自动追加，确保多分段文件路径唯一
+func (s *CloudUploadStage) renderTargetPath(ctx *pipeline.PipelineContext, file pipeline.FileInfo, multiVideo bool) string {
 	if s.pathTemplate == "" {
 		// 默认路径：/录播归档/{平台}/{主播名}/{文件名}
 		return fmt.Sprintf("/录播归档/%s/%s/%s",
@@ -301,6 +308,18 @@ func (s *CloudUploadStage) renderTargetPath(ctx *pipeline.PipelineContext, file 
 			ctx.RecordInfo.HostName,
 			filepath.Base(file.Path),
 		)
+	}
+
+	// 多视频场景下，若模板不含 .FileName 则自动追加以避免路径冲突
+	templateStr := s.pathTemplate
+	if multiVideo && !strings.Contains(templateStr, ".FileName") {
+		// 在模板末尾（扩展名之前）插入文件名
+		// 例如: /path/房间名-日期.{{ .Ext }} → /path/房间名-日期_{{ .FileName }}.{{ .Ext }}
+		templateStr = strings.TrimSuffix(templateStr, ".{{ .Ext }}") + "_{{ .FileName }}.{{ .Ext }}"
+		if !strings.Contains(templateStr, ".FileName") {
+			// 兜底：直接在末尾追加
+			templateStr = s.pathTemplate + "/{{ .FileName }}"
+		}
 	}
 
 	// 获取扩展名
@@ -330,7 +349,7 @@ func (s *CloudUploadStage) renderTargetPath(ctx *pipeline.PipelineContext, file 
 			return t.Format(format)
 		},
 		"now": func() time.Time {
-			return time.Now()
+			return ctx.RecordInfo.StartTime
 		},
 		"trimSuffix": func(suffix, s string) string {
 			return strings.TrimSuffix(s, suffix)
@@ -348,41 +367,20 @@ func (s *CloudUploadStage) renderTargetPath(ctx *pipeline.PipelineContext, file 
 		},
 	}
 
-	tmpl, err := template.New("path").Funcs(funcMap).Parse(s.pathTemplate)
+	tmpl, err := template.New("path").Funcs(funcMap).Parse(templateStr)
 	if err != nil {
-		// 模板解析失败，回退到简单替换
-		return s.fallbackRender(data)
+		// 模板语法错误，返回空让调用方跳过上传，避免上传到错误路径
+		ctx.Logger.Errorf("上传路径模板解析失败: %v", err)
+		return ""
 	}
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		// 模板执行失败，回退到简单替换
-		return s.fallbackRender(data)
+		ctx.Logger.Errorf("上传路径模板执行失败: %v", err)
+		return ""
 	}
 
 	return buf.String()
-}
-
-// fallbackRender 简单字符串替换（模板引擎失败时的回退方案）
-func (s *CloudUploadStage) fallbackRender(data struct {
-	Platform string
-	HostName string
-	RoomName string
-	FileName string
-	Ext      string
-}) string {
-	path := s.pathTemplate
-	path = strings.ReplaceAll(path, "{{ .Platform }}", data.Platform)
-	path = strings.ReplaceAll(path, "{{.Platform}}", data.Platform)
-	path = strings.ReplaceAll(path, "{{ .HostName }}", data.HostName)
-	path = strings.ReplaceAll(path, "{{.HostName}}", data.HostName)
-	path = strings.ReplaceAll(path, "{{ .RoomName }}", data.RoomName)
-	path = strings.ReplaceAll(path, "{{.RoomName}}", data.RoomName)
-	path = strings.ReplaceAll(path, "{{ .FileName }}", data.FileName)
-	path = strings.ReplaceAll(path, "{{.FileName}}", data.FileName)
-	path = strings.ReplaceAll(path, "{{ .Ext }}", data.Ext)
-	path = strings.ReplaceAll(path, "{{.Ext}}", data.Ext)
-	return path
 }
 
 func (s *CloudUploadStage) GetCommands() []string {

@@ -366,6 +366,45 @@ func main() {
 		logger.Info("云上传功能已启用")
 	}
 
+	// 注册配置更新回调：当用户通过 Web UI 首次启用云上传时，自动创建并启动 OpenList Manager
+	configs.RegisterAfterUpdate(func(oldCfg, newCfg *configs.Config) {
+		if newCfg == nil {
+			return
+		}
+		// 检测云上传开关是否从关变为开
+		wasEnabled := oldCfg != nil && oldCfg.OnRecordFinished.CloudUpload.Enable
+		isEnabled := newCfg.OnRecordFinished.CloudUpload.Enable
+		if wasEnabled || !isEnabled {
+			return
+		}
+		// 已有 Manager 则跳过
+		if openlist.GetGlobalManager() != nil {
+			return
+		}
+
+		logger.Info("检测到云上传已启用，正在初始化 OpenList...")
+
+		openlistDataPath := newCfg.OpenList.DataPath
+		if openlistDataPath == "" {
+			openlistDataPath = filepath.Join(newCfg.AppDataPath, "openlist")
+		}
+		openlistPort := newCfg.OpenList.Port
+		if openlistPort == 0 {
+			openlistPort = 5244
+		}
+
+		mgr := openlist.NewManager(openlistDataPath, openlistPort)
+		// 先设置全局 Manager，让 API 端能立即获取到状态
+		servers.SetOpenListManager(mgr)
+
+		// 在后台启动 OpenList 进程（需要 rootCtx 生命周期）
+		bilisentryPkg.Go(func() {
+			if err := mgr.Start(rootCtx); err != nil {
+				logger.WithError(err).Error("动态启动 OpenList 失败，云上传功能将不可用")
+			}
+		})
+	})
+
 	// 初始化 Pipeline 管道管理器
 	pipelineDbPath := filepath.Join(config.AppDataPath, "db", "pipeline.db")
 	pipelineStore, err := pipeline.NewSQLiteStore(pipelineDbPath)

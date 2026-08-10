@@ -86,6 +86,9 @@ func (e *Executor) Execute(
 		var commands []string
 		var logs string
 
+		// 记录阶段开始时间
+		stageStartTime := getTimeNow()
+
 		// 并行阶段处理
 		if stageCfg.IsParallel() {
 			e.logger.WithField("stage_index", i).Debug("executing parallel stages")
@@ -107,7 +110,7 @@ func (e *Executor) Execute(
 			Commands:   commands,
 			Logs:       logs,
 		}
-		result.StartedAt = getTimeNow()
+		result.StartedAt = stageStartTime
 
 		if err != nil {
 			result.Status = StageStatusFailed
@@ -144,8 +147,19 @@ func (e *Executor) Execute(
 		}).Debug("stage completed")
 	}
 
-	// 全部成功：执行延迟删除
-	e.deleteMarkedFiles(files)
+	// 全部成功：执行延迟删除，并让最终结果反映磁盘上的文件
+	// 如果上下文已取消，跳过删除以保留所有文件
+	if ctx.Ctx.Err() != nil {
+		e.logger.Warn("pipeline cancelled after completion, skipping file cleanup")
+		if len(results) > 0 {
+			results[len(results)-1].OutputFiles = files
+		}
+		return results, nil
+	}
+	keptFiles := e.deleteMarkedFiles(files)
+	if len(results) > 0 {
+		results[len(results)-1].OutputFiles = keptFiles
+	}
 
 	return results, nil
 }
@@ -183,7 +197,7 @@ func (e *Executor) cleanupOrphanedAssFiles(allFiles []FileInfo, keptFiles []File
 	dirs := map[string]bool{}
 	for _, f := range allFiles {
 		ext := strings.ToLower(filepath.Ext(f.Path))
-		if ext == ".flv" || ext == ".mp4" || ext == ".mkv" {
+		if ext == ".flv" || ext == ".mp4" || ext == ".mkv" || ext == ".ts" {
 			dir := filepath.Dir(f.Path)
 			base := strings.TrimSuffix(filepath.Base(f.Path), ext)
 			videoBaseNames[filepath.Join(dir, base)] = true
@@ -193,13 +207,21 @@ func (e *Executor) cleanupOrphanedAssFiles(allFiles []FileInfo, keptFiles []File
 
 	// 收集 Pipeline 中已知的 .ass 文件路径
 	knownAssFiles := map[string]bool{}
+	// 同时收集 allFiles 中的 .ass 文件路径（用于限定扫描范围）
+	allAssFiles := map[string]bool{}
 	for _, f := range keptFiles {
 		if strings.ToLower(filepath.Ext(f.Path)) == ".ass" {
 			knownAssFiles[f.Path] = true
 		}
 	}
+	for _, f := range allFiles {
+		if strings.ToLower(filepath.Ext(f.Path)) == ".ass" {
+			allAssFiles[f.Path] = true
+		}
+	}
 
-	// 扫描目录中的 .ass 文件（包括未进入 Pipeline 的）
+	// 扫描目录中的 .ass 文件
+	// 仅处理本任务关联的 .ass 文件，避免误删其他任务或用户放置的字幕
 	for dir := range dirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -216,12 +238,15 @@ func (e *Executor) cleanupOrphanedAssFiles(allFiles []FileInfo, keptFiles []File
 			if knownAssFiles[assPath] {
 				continue // 已在 Pipeline 中处理
 			}
+			if !allAssFiles[assPath] {
+				continue // 非本任务关联的 .ass 文件，跳过
+			}
 			// 检查磁盘上是否有同名视频文件
 			base := strings.TrimSuffix(entry.Name(), ".ass")
 			key := filepath.Join(dir, base)
-			// 检查磁盘上实际存在的视频文件
+			// 检查磁盘上实际存在的视频文件（含 .ts 格式）
 			hasVideo := false
-			for _, ext := range []string{".flv", ".mp4", ".mkv"} {
+			for _, ext := range []string{".flv", ".mp4", ".mkv", ".ts"} {
 				if _, err := os.Stat(key + ext); err == nil {
 					hasVideo = true
 					break
@@ -230,10 +255,10 @@ func (e *Executor) cleanupOrphanedAssFiles(allFiles []FileInfo, keptFiles []File
 			if !hasVideo {
 				if err := os.Remove(assPath); err != nil {
 					if !os.IsNotExist(err) {
-						e.logger.Warnf("pipeline cleanup: 删除磁盘孤立 .ass 文件失败 %s: %v", assPath, err)
+						e.logger.Warnf("pipeline cleanup: 删除孤立 .ass 文件失败 %s: %v", assPath, err)
 					}
 				} else {
-					e.logger.Infof("pipeline cleanup: 已删除磁盘孤立 .ass 文件 %s（无关联视频）", assPath)
+					e.logger.Infof("pipeline cleanup: 已删除孤立 .ass 文件 %s（无关联视频）", assPath)
 				}
 			}
 		}

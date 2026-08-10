@@ -342,6 +342,7 @@ func (m *Manager) RetryTask(taskID int64) error {
 	task.CompletedAt = nil
 	task.ErrorMessage = ""
 	task.CurrentStage = 0
+	task.CurrentFiles = task.InitialFiles // 重置为初始文件，从头开始重试
 	task.StageResults = nil
 	task.Progress = 0
 

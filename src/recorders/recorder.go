@@ -792,7 +792,7 @@ func (r *recorder) tryRecord(ctx context.Context) {
 			for _, stage := range pipelineConfig.Stages {
 				stageNames = append(stageNames, stage.Name)
 			}
-			r.getLogger().Infof("pipeline task enqueued: %d files, stages: %s", len(outputFiles), stageNames)
+			r.getLogger().Infof("pipeline task enqueued: %d files, stages: %v", len(outputFiles), stageNames)
 		}
 	}
 }

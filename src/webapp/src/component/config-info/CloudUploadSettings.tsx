@@ -44,8 +44,8 @@ const UPLOAD_PRESETS: PresetTemplate[] = [
   },
   {
     name: '简洁归档',
-    description: '按平台/主播归档，文件名带日期',
-    template: '/录播归档/{{ .Platform }}/{{ .HostName }}/{{ .RoomName }}-{{ now | date "2006-01-02" }}.{{ .Ext }}',
+    description: '按平台/主播归档，文件名带日期时间',
+    template: '/录播归档/{{ .Platform }}/{{ .HostName }}/{{ .RoomName }}-{{ now | date "2006-01-02 15-04-05" }}.{{ .Ext }}',
   },
   {
     name: '按房间归档',
@@ -95,7 +95,7 @@ const MOCK_DATA: MockStream[] = [
 const renderUploadTemplate = (template: string, stream: MockStream, room: MockStream['rooms'][0]): string => {
   const fileName = `[${room.date} ${room.time}][${stream.hostName}][${room.roomName}].flv`;
   let path = template;
-  path = path.replace(/\{\{ ?\.Platform ?\}\}/g, stream.platform);
+  path = path.replace(/\{\{ ?\.Platform ?\}\}/g, stream.platformCN);
   path = path.replace(/\{\{ ?\.HostName ?\}\}/g, stream.hostName);
   path = path.replace(/\{\{ ?\.RoomName ?\}\}/g, room.roomName);
   path = path.replace(/\{\{ ?\.FileName ?\}\}/g, fileName);
@@ -291,6 +291,27 @@ interface CloudUploadSettingsProps {
 const CloudUploadSettings: React.FC<CloudUploadSettingsProps> = ({ config, form }) => {
   const isEnabled = config.on_record_finished?.cloud_upload?.enable;
 
+  // 订阅表单中影响文件处理预览的字段，使预览实时反映用户编辑
+  const watchedOrf = Form.useWatch('on_record_finished', form);
+  const watchedCloudUpload = Form.useWatch(['on_record_finished', 'cloud_upload'], form);
+
+  // 将表单实时值合并到 config 副本中，供 FileProcessingPreview 使用
+  // Form.useWatch 返回 undefined 时表示字段未被编辑，此时保留 config 中的原始值
+  const liveConfig = useMemo(() => {
+    if (!watchedOrf && !watchedCloudUpload) return config;
+    return {
+      ...config,
+      on_record_finished: {
+        ...config.on_record_finished,
+        ...watchedOrf,
+        cloud_upload: {
+          ...config.on_record_finished?.cloud_upload,
+          ...watchedCloudUpload,
+        },
+      },
+    };
+  }, [config, watchedOrf, watchedCloudUpload]);
+
   // 互斥逻辑：开启一个时关闭另一个
   const handleDeleteAfterChange = (checked: boolean) => {
     if (checked && form) {
@@ -319,7 +340,7 @@ const CloudUploadSettings: React.FC<CloudUploadSettingsProps> = ({ config, form 
           <>
             录制结束后自动把视频传到网盘。需要先在{' '}
             <a
-              href={`http://${window.location.hostname}:${config.openlist?.port || 5244}`}
+              href="/remotetools/tool/openlist/"
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -333,8 +354,8 @@ const CloudUploadSettings: React.FC<CloudUploadSettingsProps> = ({ config, form 
         style={{ marginBottom: 16 }}
       />
 
-      {/* 文件处理预览 */}
-      <FileProcessingPreview config={config} />
+      {/* 文件处理预览 - 使用表单实时值，无需保存即可反映用户编辑 */}
+      <FileProcessingPreview config={liveConfig} />
 
       <ConfigField label="启用云上传" description="录制结束后自动把视频上传到网盘">
         <Form.Item name={['on_record_finished', 'cloud_upload', 'enable']} valuePropName="checked" noStyle>
@@ -369,7 +390,7 @@ const CloudUploadSettings: React.FC<CloudUploadSettingsProps> = ({ config, form 
           presets={UPLOAD_PRESETS}
           mockData={MOCK_DATA}
           renderTemplate={renderUploadTemplate}
-          placeholder="/录播归档/{{ .Platform }}/{{ .HostName }}/{{ now | date '2006-01-02' }}/{{ .FileName }}"
+          placeholder={'/录播归档/{{ .Platform }}/{{ .HostName }}/{{ now | date "2006-01-02" }}/{{ .FileName }}'}
           showTreePreview={true}
           width={500}
         />
