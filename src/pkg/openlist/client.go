@@ -186,10 +186,6 @@ func (c *Client) doUpload(ctx context.Context, localPath, remotePath string, onP
 		Message string `json:"message"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		// 仅空响应（io.EOF）视为成功，某些 API 成功时返回空 body
-		if err == io.EOF {
-			return nil
-		}
 		return fmt.Errorf("解析上传响应失败: %w", err)
 	}
 	if result.Code != 200 {

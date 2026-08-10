@@ -371,9 +371,21 @@ func main() {
 		if newCfg == nil {
 			return
 		}
-		// 检测云上传开关是否从关变为开
 		wasEnabled := oldCfg != nil && oldCfg.OnRecordFinished.CloudUpload.Enable
 		isEnabled := newCfg.OnRecordFinished.CloudUpload.Enable
+
+		// 关闭云上传：停止 OpenList 进程
+		if wasEnabled && !isEnabled {
+			if mgr := openlist.GetGlobalManager(); mgr != nil {
+				logger.Info("检测到云上传已关闭，正在停止 OpenList...")
+				mgr.Stop()
+				servers.SetOpenListManager(nil)
+				openlistManager = nil
+			}
+			return
+		}
+
+		// 开启云上传：启动 OpenList 进程
 		if wasEnabled || !isEnabled {
 			return
 		}

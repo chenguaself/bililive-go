@@ -164,14 +164,32 @@ func (e *Executor) Execute(
 	return results, nil
 }
 
-// deleteMarkedFiles 删除标记为 Deletable 的文件，返回保留的文件列表
+// deleteMarkedFiles 删除标记为 Deletable 或 Metadata["uploaded"] 的文件，返回保留的文件列表
 func (e *Executor) deleteMarkedFiles(files []FileInfo) []FileInfo {
 	var kept []FileInfo
+	deleteAll := false // 标记是否为 deleteAll 模式
+
 	for _, f := range files {
-		if f.Deletable {
+		// 检查是否为 deleteAll 模式（CloudUploadStage 标记）
+		if f.Metadata != nil {
+			if da, ok := f.Metadata["delete_all"].(bool); ok && da {
+				deleteAll = true
+			}
+		}
+
+		// 判断是否应删除：Deletable 标记 或 CloudUploadStage 标记的已上传文件
+		shouldDelete := f.Deletable
+		if !shouldDelete && f.Metadata != nil {
+			if uploaded, ok := f.Metadata["uploaded"].(bool); ok && uploaded {
+				shouldDelete = true
+			}
+		}
+
+		if shouldDelete {
 			if err := os.Remove(f.Path); err != nil {
 				if !os.IsNotExist(err) {
 					e.logger.Warnf("pipeline cleanup: 删除文件失败 %s: %v", f.Path, err)
+					kept = append(kept, f) // 删除失败，文件仍在磁盘，保留记录
 				}
 			} else {
 				e.logger.Infof("pipeline cleanup: 已删除 %s", f.Path)
@@ -181,9 +199,11 @@ func (e *Executor) deleteMarkedFiles(files []FileInfo) []FileInfo {
 		}
 	}
 
-	// 兜底逻辑：清理无关联视频文件的 .ass 文件
-	// 传入原始 files 列表，确保即使视频被删除也能扫描到对应目录
-	kept = e.cleanupOrphanedAssFiles(files, kept)
+	// 仅在 deleteAll 模式下清理孤立 .ass 文件
+	// deleteAfter 模式只删除已上传文件，不应连带清理弹幕
+	if deleteAll {
+		kept = e.cleanupOrphanedAssFiles(files, kept)
+	}
 
 	return kept
 }

@@ -146,6 +146,10 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 
 	// 获取配置并创建客户端
 	config := configs.GetCurrentConfig()
+	if config == nil {
+		s.logs = "配置未初始化\n"
+		return input, fmt.Errorf("配置未初始化")
+	}
 
 	client, err := mgr.GetClient(ctx.Ctx, config.OpenList.Token, config.OpenList.Username, config.OpenList.Password)
 	if err != nil {
@@ -168,19 +172,12 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 
 	var output []pipeline.FileInfo
 	var uploadFailed bool
+	usedPaths := map[string]bool{} // 检测远程路径冲突
 
 	// 上传所有非 Deletable 的视频文件和封面文件
 	// Deletable 检查已能正确区分中间产物（如 ConvertMp4 标记的原始 FLV）
 	// 与最终视频（如录播姬生成的多分段 _PART 文件），无需额外限制
 	uploadedIndices := map[int]bool{} // 记录实际上传的文件在 output 中的索引
-
-	// 统计待上传的视频文件数量，用于判断是否需要在路径中包含文件名以避免冲突
-	nonDeletableVideoCount := 0
-	for _, file := range input {
-		if file.Type == pipeline.FileTypeVideo && !file.Deletable {
-			nonDeletableVideoCount++
-		}
-	}
 
 	for _, file := range input {
 		// 跳过标记为待删除的中间文件（由其他阶段产出，不应上传）
@@ -204,14 +201,24 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 		}
 
 		// 渲染目标路径
-		// 多视频场景（如录播姬 _PART 分段）时，若模板不含 .FileName 则自动追加，确保路径唯一
-		targetPath := s.renderTargetPath(ctx, file, nonDeletableVideoCount > 1)
+		targetPath := s.renderTargetPath(ctx, file)
 		if targetPath == "" {
 			s.logs += fmt.Sprintf("无法生成目标路径: %s\n", file.Path)
 			output = append(output, file)
 			uploadFailed = true
 			continue
 		}
+
+		// 检测远程路径冲突（多分段视频或视频+封面使用相同模板时可能产生同路径）
+		// 冲突时自动追加原始文件名以区分
+		if usedPaths[targetPath] {
+			dir := filepath.Dir(targetPath)
+			ext := filepath.Ext(targetPath)
+			base := strings.TrimSuffix(filepath.Base(targetPath), ext)
+			targetPath = filepath.Join(dir, base+"_"+filepath.Base(file.Path))
+			ctx.Logger.Infof("检测到远程路径冲突，自动追加文件名: %s", targetPath)
+		}
+		usedPaths[targetPath] = true
 
 		ctx.Logger.Infof("上传文件: %s -> %s", file.Path, targetPath)
 		s.commands = append(s.commands, fmt.Sprintf("upload %s to %s/%s", file.Path, s.storageName, targetPath))
@@ -258,20 +265,62 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 
 	// 全部上传成功后，根据配置标记文件为可删除（由 Executor 在管道全部成功后统一删除）
 	// 任意一个上传失败，则不标记任何文件，确保本地文件全部保留
+	// 注意：不使用 Deletable 标记，避免后续阶段（如 CustomCommand）误跳过最终成品
+	// 改用 Metadata["uploaded"] 标记，由 Executor 在清理时读取
 	if !uploadFailed && s.uploadTiming != "immediate" {
 		if s.deleteAllAfter {
-			// 删除全部文件（含中间产物）
+			// 删除全部模式：查找视频文件关联的 .ass 字幕文件并加入 output
+			// （BurnSubtitlesStage 仅在 burn_delete_ass=true 时才将 .ass 加入 output，
+			//   但 delete_all 意图是删除所有文件，应包含字幕）
+			assAdded := map[string]bool{}
+			for _, f := range output {
+				ext := strings.ToLower(filepath.Ext(f.Path))
+				if ext != ".flv" && ext != ".mp4" && ext != ".mkv" && ext != ".ts" {
+					continue
+				}
+				assPath := strings.TrimSuffix(f.Path, ext) + ".ass"
+				if assAdded[assPath] {
+					continue
+				}
+				if _, err := os.Stat(assPath); err == nil {
+					// 检查 output 中是否已存在
+					alreadyInOutput := false
+					for _, of := range output {
+						if of.Path == assPath {
+							alreadyInOutput = true
+							break
+						}
+					}
+					if !alreadyInOutput {
+						output = append(output, pipeline.FileInfo{
+							Path: assPath,
+							Type: pipeline.FileTypeOther,
+						})
+						assAdded[assPath] = true
+						ctx.Logger.Infof("delete_all 模式：关联字幕文件 %s", assPath)
+					}
+				}
+			}
+
+			// 删除全部文件（含中间产物）：用 Deletable 标记
 			for i := range output {
 				output[i].Deletable = true
+				if output[i].Metadata == nil {
+					output[i].Metadata = map[string]any{}
+				}
+				output[i].Metadata["delete_all"] = true
 			}
 			s.logs += fmt.Sprintf("全部上传成功，已标记 %d 个文件待删除（含中间产物）\n", len(output))
 			ctx.Logger.Infof("全部上传成功，已标记 %d 个文件待删除（含中间产物）", len(output))
 		} else if s.deleteAfter {
-			// 仅删除已上传的文件
+			// 仅删除已上传的文件：用 Metadata["uploaded"] 标记，不设 Deletable
 			count := 0
 			for i := range output {
 				if uploadedIndices[i] {
-					output[i].Deletable = true
+					if output[i].Metadata == nil {
+						output[i].Metadata = map[string]any{}
+					}
+					output[i].Metadata["uploaded"] = true
 					count++
 				}
 			}
@@ -299,8 +348,7 @@ func (s *CloudUploadStage) matchFileType(fileType pipeline.FileType) bool {
 }
 
 // renderTargetPath 渲染目标路径
-// multiVideo 为 true 时，若模板不含 .FileName 则自动追加，确保多分段文件路径唯一
-func (s *CloudUploadStage) renderTargetPath(ctx *pipeline.PipelineContext, file pipeline.FileInfo, multiVideo bool) string {
+func (s *CloudUploadStage) renderTargetPath(ctx *pipeline.PipelineContext, file pipeline.FileInfo) string {
 	if s.pathTemplate == "" {
 		// 默认路径：/录播归档/{平台}/{主播名}/{文件名}
 		return fmt.Sprintf("/录播归档/%s/%s/%s",
@@ -308,18 +356,6 @@ func (s *CloudUploadStage) renderTargetPath(ctx *pipeline.PipelineContext, file 
 			ctx.RecordInfo.HostName,
 			filepath.Base(file.Path),
 		)
-	}
-
-	// 多视频场景下，若模板不含 .FileName 则自动追加以避免路径冲突
-	templateStr := s.pathTemplate
-	if multiVideo && !strings.Contains(templateStr, ".FileName") {
-		// 在模板末尾（扩展名之前）插入文件名
-		// 例如: /path/房间名-日期.{{ .Ext }} → /path/房间名-日期_{{ .FileName }}.{{ .Ext }}
-		templateStr = strings.TrimSuffix(templateStr, ".{{ .Ext }}") + "_{{ .FileName }}.{{ .Ext }}"
-		if !strings.Contains(templateStr, ".FileName") {
-			// 兜底：直接在末尾追加
-			templateStr = s.pathTemplate + "/{{ .FileName }}"
-		}
 	}
 
 	// 获取扩展名
@@ -367,7 +403,7 @@ func (s *CloudUploadStage) renderTargetPath(ctx *pipeline.PipelineContext, file 
 		},
 	}
 
-	tmpl, err := template.New("path").Funcs(funcMap).Parse(templateStr)
+	tmpl, err := template.New("path").Funcs(funcMap).Parse(s.pathTemplate)
 	if err != nil {
 		// 模板语法错误，返回空让调用方跳过上传，避免上传到错误路径
 		ctx.Logger.Errorf("上传路径模板解析失败: %v", err)

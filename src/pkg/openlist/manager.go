@@ -226,6 +226,14 @@ func (m *Manager) saveInitialCredentials(logFile string) {
 		return
 	}
 
+	// 验证密码有效性：日志是追加模式，旧密码可能已被用户修改
+	// 只有实际能登录时才保存
+	client := NewClient(fmt.Sprintf("http://127.0.0.1:%d", m.port), "")
+	if _, err := client.GetToken(context.Background(), "admin", initialPassword); err != nil {
+		logrus.WithError(err).Debug("初始密码验证失败，跳过保存（可能已被修改）")
+		return
+	}
+
 	// 保存到配置
 	if _, err := configs.UpdateWithRetry(func(c *configs.Config) error {
 		c.OpenList.Username = "admin"
@@ -324,6 +332,7 @@ func (m *Manager) GetDataPath() string {
 
 // GetClient 获取已认证的 API 客户端
 // 如果提供了 token，直接使用；否则使用用户名密码登录获取 token
+// token 有效性由 withRetry 在实际 API 调用时自动处理（401/403 时自动刷新）
 func (m *Manager) GetClient(ctx context.Context, token, username, password string) (*Client, error) {
 	client := NewClient(m.apiEndpoint, "")
 
@@ -332,23 +341,10 @@ func (m *Manager) GetClient(ctx context.Context, token, username, password strin
 		client.SetCredentials(username, password)
 	}
 
-	// 有 token 时，验证其有效性
+	// 有 token 时直接使用，不预验证（避免需要管理员权限的 API 调用）
+	// withRetry 会在实际调用遇到 401/403 时自动用密码刷新 token
 	if token != "" {
 		client.SetToken(token)
-		// 尝试用 token 调用一个轻量 API 验证有效性
-		if _, err := client.ListStorages(ctx); err != nil {
-			// token 无效，尝试用密码重新登录
-			if username != "" && password != "" {
-				logrus.Warn("配置的 OpenList token 无效，尝试用用户名密码重新登录")
-				newToken, loginErr := client.GetToken(ctx, username, password)
-				if loginErr != nil {
-					return nil, fmt.Errorf("OpenList token 无效且登录失败: %w", loginErr)
-				}
-				client.SetToken(newToken)
-				return client, nil
-			}
-			return nil, fmt.Errorf("OpenList token 无效且未配置用户名密码")
-		}
 		return client, nil
 	}
 
