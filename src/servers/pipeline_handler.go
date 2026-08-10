@@ -165,6 +165,8 @@ func makePipelineCancelTaskHandler(pm *pipeline.Manager) http.HandlerFunc {
 }
 
 // makePipelineRetryTaskHandler 重试任务
+// 支持可选的 JSON body: {"stage_name": "cloud_upload"}
+// 无 body 或 stage_name 为空时全量重试
 func makePipelineRetryTaskHandler(pm *pipeline.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
@@ -174,9 +176,27 @@ func makePipelineRetryTaskHandler(pm *pipeline.Manager) http.HandlerFunc {
 			return
 		}
 
-		if err := pm.RetryTask(id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		// 解析可选的 JSON body
+		var reqBody struct {
+			StageName string `json:"stage_name"`
+		}
+		if r.Body != nil {
+			// 尝试解析 body，失败不影响（向后兼容无 body 的情况）
+			json.NewDecoder(r.Body).Decode(&reqBody)
+		}
+
+		if reqBody.StageName != "" {
+			// 从指定阶段重试
+			if err := pm.RetryTaskFromStage(id, reqBody.StageName); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// 全量重试（向后兼容）
+			if err := pm.RetryTask(id); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 
 		w.WriteHeader(http.StatusOK)

@@ -48,10 +48,12 @@ func (e *Executor) getFactory(name string) (StageFactory, bool) {
 }
 
 // Execute 执行管道
+// startStage: 从第几个启用的阶段开始执行（0=全部执行，用于重试指定阶段）
 func (e *Executor) Execute(
 	ctx *PipelineContext,
 	config *PipelineConfig,
 	initialFiles []FileInfo,
+	startStage int,
 	onProgress func(stageIndex int, stageName string, status StageStatus),
 ) ([]StageResult, error) {
 	if config == nil || len(config.Stages) == 0 {
@@ -73,6 +75,12 @@ func (e *Executor) Execute(
 		// 检查是否启用
 		if !stageCfg.IsEnabled() {
 			e.logger.WithField("stage", stageCfg.Name).Debug("stage disabled, skipping")
+			continue
+		}
+
+		// 跳过 startStage 之前的阶段（用于从指定阶段重试）
+		if stageIndex < startStage {
+			stageIndex++
 			continue
 		}
 
@@ -460,7 +468,7 @@ func (e *Executor) ExecuteAsync(
 	bilisentry.GoWithContext(ctx.Ctx, func(goCtx context.Context) {
 		// 更新上下文
 		ctx.Ctx = goCtx
-		results, err := e.Execute(ctx, config, initialFiles, onProgress)
+		results, err := e.Execute(ctx, config, initialFiles, 0, onProgress)
 		if onComplete != nil {
 			onComplete(results, err)
 		}
