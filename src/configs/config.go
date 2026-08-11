@@ -1012,7 +1012,7 @@ var defaultConfig = Config{
 		CloudUpload: CloudUpload{
 			Enable:            false,
 			StorageName:       "",
-			UploadPathTmpl:    "/录播归档/{{ .Platform }}/{{ .HostName }}/{{ .RoomName }}-{{ now | date \"2006-01-02\" }}.{{ .Ext }}",
+			UploadPathTmpl:    "/录播归档/{{ .Platform }}/{{ .HostName }}/{{ .FileName }}",
 			DeleteAfterUpload: false,
 		},
 		UploadTiming:        UploadTimingAfterProcess,
