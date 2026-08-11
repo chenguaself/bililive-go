@@ -359,8 +359,8 @@ func main() {
 		bilisentryPkg.Go(func() {
 			if err := openlistManager.Start(rootCtx); err != nil {
 				logger.WithError(err).Error("启动 OpenList 失败，云上传功能将不可用")
-				// 启动失败时清除全局指针，避免 GetGlobalManager() != nil 永久阻止后续重试
-				servers.SetOpenListManager(nil)
+				// 启动失败时清除全局指针（CAS：仅当仍为当前实例时才清除，避免误清新 Manager）
+				openlist.ClearGlobalManagerIf(openlistManager)
 				openlistManager = nil
 			}
 		})
@@ -422,7 +422,8 @@ func main() {
 							if err := newMgr.Start(rootCtx); err != nil {
 								logger.WithError(err).Error("重建 OpenList 失败")
 								openlistLifecycleMu.Lock()
-								servers.SetOpenListManager(nil)
+								// CAS：仅当全局仍为 newMgr 时才清除
+								openlist.ClearGlobalManagerIf(newMgr)
 								openlistManager = nil
 								openlistLifecycleMu.Unlock()
 							}
@@ -460,9 +461,9 @@ func main() {
 		bilisentryPkg.Go(func() {
 			if err := mgr.Start(rootCtx); err != nil {
 				logger.WithError(err).Error("动态启动 OpenList 失败，云上传功能将不可用")
-				// 启动失败时清除全局指针，允许后续配置变更时重试
+				// CAS：仅当全局仍为当前实例时才清除，避免误清新 Manager
 				openlistLifecycleMu.Lock()
-				servers.SetOpenListManager(nil)
+				openlist.ClearGlobalManagerIf(mgr)
 				openlistLifecycleMu.Unlock()
 				return
 			}
@@ -472,7 +473,7 @@ func main() {
 			if cfg := configs.GetCurrentConfig(); cfg == nil || !cfg.OnRecordFinished.CloudUpload.Enable {
 				logger.Info("OpenList 启动完成但云上传已关闭，立即停止")
 				mgr.Stop()
-				servers.SetOpenListManager(nil)
+				openlist.ClearGlobalManagerIf(mgr)
 			}
 		})
 	})

@@ -34,6 +34,19 @@ func SetGlobalManager(m *Manager) {
 	globalManager = m
 }
 
+// ClearGlobalManagerIf 仅当全局管理器等于 expected 时才清除（CAS 语义）
+// 用于异步清理路径，避免误清已被新实例替换的管理器
+// 返回是否成功清除
+func ClearGlobalManagerIf(expected *Manager) bool {
+	globalMu.Lock()
+	defer globalMu.Unlock()
+	if globalManager == expected {
+		globalManager = nil
+		return true
+	}
+	return false
+}
+
 // GetGlobalManager 获取全局 OpenList 管理器
 func GetGlobalManager() *Manager {
 	globalMu.RLock()
