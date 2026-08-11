@@ -182,13 +182,17 @@ func (e *Executor) Execute(
 // deleteMarkedFiles 删除标记为 Deletable 或 Metadata["uploaded"] 的文件，返回保留的文件列表
 func (e *Executor) deleteMarkedFiles(files []FileInfo) []FileInfo {
 	var kept []FileInfo
-	deleteAll := false // 标记是否为 deleteAll 模式
+	deleteAll := false  // 标记是否为 deleteAll 模式
+	deleteAfter := false // 标记是否为 deleteAfter 模式（仅删除已上传文件）
 
 	for _, f := range files {
-		// 检查是否为 deleteAll 模式（CloudUploadStage 标记）
+		// 检查删除模式（CloudUploadStage 标记）
 		if f.Metadata != nil {
 			if da, ok := f.Metadata["delete_all"].(bool); ok && da {
 				deleteAll = true
+			}
+			if uploaded, ok := f.Metadata["uploaded"].(bool); ok && uploaded {
+				deleteAfter = true
 			}
 		}
 
@@ -214,9 +218,9 @@ func (e *Executor) deleteMarkedFiles(files []FileInfo) []FileInfo {
 		}
 	}
 
-	// 仅在 deleteAll 模式下清理孤立 .ass 文件
-	// deleteAfter 模式只删除已上传文件，不应连带清理弹幕
-	if deleteAll {
+	// 清理无关联视频文件的孤立 .ass 文件
+	// deleteAll 模式下删除所有文件（含 .ass），deleteAfter 模式下删除已上传视频后也应清理残留 .ass
+	if deleteAll || deleteAfter {
 		kept = e.cleanupOrphanedAssFiles(files, kept)
 	}
 
@@ -242,21 +246,14 @@ func (e *Executor) cleanupOrphanedAssFiles(allFiles []FileInfo, keptFiles []File
 
 	// 收集 Pipeline 中已知的 .ass 文件路径
 	knownAssFiles := map[string]bool{}
-	// 同时收集 allFiles 中的 .ass 文件路径（用于限定扫描范围）
-	allAssFiles := map[string]bool{}
 	for _, f := range keptFiles {
 		if strings.ToLower(filepath.Ext(f.Path)) == ".ass" {
 			knownAssFiles[f.Path] = true
 		}
 	}
-	for _, f := range allFiles {
-		if strings.ToLower(filepath.Ext(f.Path)) == ".ass" {
-			allAssFiles[f.Path] = true
-		}
-	}
 
 	// 扫描目录中的 .ass 文件
-	// 仅处理本任务关联的 .ass 文件，避免误删其他任务或用户放置的字幕
+	// 通过视频基名匹配判断 .ass 是否属于本任务，避免误删其他任务或用户放置的字幕
 	for dir := range dirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -273,13 +270,14 @@ func (e *Executor) cleanupOrphanedAssFiles(allFiles []FileInfo, keptFiles []File
 			if knownAssFiles[assPath] {
 				continue // 已在 Pipeline 中处理
 			}
-			if !allAssFiles[assPath] {
-				continue // 非本任务关联的 .ass 文件，跳过
-			}
-			// 检查磁盘上是否有同名视频文件
+			// 通过基名匹配判断是否属于本任务的视频文件
+			// （.ass 文件可能未被传入 Pipeline，不能依赖文件列表过滤）
 			base := strings.TrimSuffix(entry.Name(), ".ass")
 			key := filepath.Join(dir, base)
-			// 检查磁盘上实际存在的视频文件（含 .ts 格式）
+			if !videoBaseNames[key] {
+				continue // 基名不匹配任何本任务视频，跳过
+			}
+			// 检查磁盘上是否有同名视频文件
 			hasVideo := false
 			for _, ext := range []string{".flv", ".mp4", ".mkv", ".ts"} {
 				if _, err := os.Stat(key + ext); err == nil {
