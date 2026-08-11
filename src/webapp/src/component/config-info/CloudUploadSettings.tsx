@@ -146,6 +146,12 @@ const analyzeConfig = (config: any) => {
       } else {
         files['video.flv'].status = 'deleted';
       }
+    } else {
+      // delete_flv_after_convert=false：源视频保留在 ConvertMp4Stage output 中
+      // immediate 模式下已在 pipeline 开头被上传，after_process 模式下也会被上传
+      if (files['video.flv'].status === 'kept') {
+        files['video.flv'].status = 'uploaded';
+      }
     }
   }
 
