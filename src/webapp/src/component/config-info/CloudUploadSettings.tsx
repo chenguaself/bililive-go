@@ -173,9 +173,16 @@ const analyzeConfig = (config: any) => {
 
   // after_process 模式：上传最终文件
   if (isAfterProcess && upload) {
-    // 上传第一个视频和封面
+    // 上传最终产物
     if (burn) {
       files['video.mkv'].status = 'uploaded';
+      // burn_delete_source=false 时，源视频也会被上传（未标记 Deletable）
+      if (!burnDelSource) {
+        const src = convert ? 'video.mp4' : 'video.flv';
+        if (files[src] && files[src].status === 'kept') {
+          files[src].status = 'uploaded';
+        }
+      }
     } else if (convert) {
       files['video.mp4'].status = 'uploaded';
     } else {
@@ -196,9 +203,20 @@ const analyzeConfig = (config: any) => {
       if (cover) files['cover.jpg'].status = 'uploaded_deleted';
     } else if (delAfter) {
       // 只删除已上传的文件
-      if (burn) files['video.mkv'].status = 'uploaded_deleted';
-      else if (convert) files['video.mp4'].status = 'uploaded_deleted';
-      else files['video.flv'].status = 'uploaded_deleted';
+      if (burn) {
+        files['video.mkv'].status = 'uploaded_deleted';
+        // burn_delete_source=false 时源视频也被上传，应一并删除
+        if (!burnDelSource) {
+          const src = convert ? 'video.mp4' : 'video.flv';
+          if (files[src] && files[src].status === 'uploaded') {
+            files[src].status = 'uploaded_deleted';
+          }
+        }
+      } else if (convert) {
+        files['video.mp4'].status = 'uploaded_deleted';
+      } else {
+        files['video.flv'].status = 'uploaded_deleted';
+      }
       if (cover) files['cover.jpg'].status = 'uploaded_deleted';
     }
   }
