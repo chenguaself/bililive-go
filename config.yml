@@ -21,7 +21,7 @@ feature:
 out_put_tmpl: ""
 video_split_strategies:
   on_room_name_changed: false
-  max_duration: 0s
+  max_duration: 1m20s
   # 仅在使用 ffmpeg 或 bililive-recorder 下载器时生效
   # 支持可读格式，如: 500MB, 1GB, 1.5GB, 1024KB
   # 也支持纯数字（视为字节），如: 1073741824
@@ -30,25 +30,25 @@ video_split_strategies:
   max_file_size: "0"
 on_record_finished:
   convert_to_mp4: false
-  delete_flv_after_convert: false
+  delete_flv_after_convert: true
   custom_commandline: ""
   fix_flv_at_first: true
   save_cover: false
   cloud_upload:
-    enable: false
-    storage_name: ""
-    upload_path_tmpl: /录播归档/{{ .Platform }}/{{ .HostName }}/{{ .FileName }}
-    delete_after_upload: false
+    enable: true
+    storage_name: baidu
+    upload_path_tmpl: /录播归档/{{ .Platform }}/{{ .HostName }}/{{ .RoomName }}/{{ .FileName }}
+    delete_after_upload: true
     delete_all_after_upload: false
   upload_timing: after_process
-  burn_subtitles: false
+  burn_subtitles: true
   burn_subtitles_codec: libx264
   burn_subtitles_crf: "18"
   burn_subtitles_preset: medium
   burn_delete_ass: false
-  burn_delete_source: false
+  burn_delete_source: true
 timeout_in_us: 60000000
-danmaku_enable: false
+danmaku_enable: true
 danmaku:
   font_size: 36
   font_name: Microsoft YaHei
@@ -69,11 +69,8 @@ live_rooms:
   # (B站)0代表原画PRO(HEVC)优先, 其他数值为原画(AVC)
   # 原画PRO会保存为.ts文件, 原画为.flv
   # HEVC相比AVC体积更小, 减少35%体积, 画质相当, 但是B站转码有时候会崩
-  - url: https://www.lang.live/room/5664344
+  - url: https://live.bilibili.com/1601605?live_from=71002&visit_id=cp0crnd7mt40
     is_listening: false
-    scheme: ""
-  - url: https://live.bilibili.com/22603245
-    is_listening: true
     scheme: ""
 cookies: {}
 # 通知服务配置
@@ -147,8 +144,9 @@ proxy:
 openlist:
   port: 5244
   data_path: ""
-  username: ""
-  password: ""
+  username: admin
+  password: RcoNhw4s
+  token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwicHdkX3RzIjowLCJleHAiOjE3ODY1OTc4NjcsIm5iZiI6MTc4NjQyNTA2NywiaWF0IjoxNzg2NDI1MDY3fQ.pB4bk71C-gcsObup1acrfq2nxHX16SSWeGoSouzotWY
 update:
   auto_check: true
   check_interval_hours: 6
