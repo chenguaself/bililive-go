@@ -226,11 +226,16 @@ func (m *Manager) executeTask(ctx context.Context, task *PipelineTask) {
 			}
 			m.broadcastTaskUpdate(task)
 		},
-		// 阶段完成后持久化 CurrentFiles，确保崩溃恢复时能拿到正确的中间文件
-		func(stageIndex int, outputFiles []FileInfo) {
-			task.CurrentFiles = outputFiles
+		// 阶段完成后持久化结果，确保崩溃恢复时阶段记录完整
+		func(stageIndex int, result StageResult) {
+			task.CurrentFiles = result.OutputFiles
+			// 追加/更新 StageResults，让崩溃恢复后 preservedResults 合并条件成立
+			for len(task.StageResults) <= stageIndex {
+				task.StageResults = append(task.StageResults, StageResult{})
+			}
+			task.StageResults[stageIndex] = result
 			if err := m.store.UpdateTask(ctx, task); err != nil {
-				logrus.WithError(err).Warn("failed to persist stage output files")
+				logrus.WithError(err).Warn("failed to persist stage result")
 			}
 		},
 	)
@@ -359,6 +364,13 @@ func (m *Manager) RetryTask(taskID int64) error {
 		return fmt.Errorf("only failed, cancelled or completed tasks can be retried")
 	}
 
+	// 校验初始文件存在（Completed 任务的文件可能已被 deleteMarkedFiles 清理）
+	for _, f := range task.InitialFiles {
+		if _, err := os.Stat(f.Path); os.IsNotExist(err) {
+			return fmt.Errorf("initial file not found, cannot retry (may have been deleted after upload): %s", f.Path)
+		}
+	}
+
 	// 重置任务状态
 	task.Status = PipelineStatusPending
 	task.StartedAt = nil
@@ -444,17 +456,24 @@ func (m *Manager) RetryTaskFromStage(taskID int64, stageName string) error {
 		inputFiles = task.InitialFiles
 	}
 
-	// 过滤掉已标记删除/已上传的中间文件（它们在管道完成后已被 deleteMarkedFiles 从磁盘移除）
-	// 只保留目标阶段实际需要的文件，确保后续 os.Stat 校验和重试执行不会引用已删除的路径
+	// 过滤已清理的中间文件，保留仍在磁盘上的文件
+	// deleteMarkedFiles 仅在管道全部成功后执行，失败/取消时文件仍在磁盘但带有标记
+	// 因此需要结合磁盘实际存在性判断：标记但仍在 → 保留（管道未清理），标记且已删 → 跳过
 	var activeFiles []FileInfo
 	for _, f := range inputFiles {
-		if f.Deletable {
-			continue
-		}
+		isDeletable := f.Deletable
+		isUploaded := false
 		if f.Metadata != nil {
 			if uploaded, ok := f.Metadata["uploaded"].(bool); ok && uploaded {
-				continue
+				isUploaded = true
 			}
+		}
+
+		if _, err := os.Stat(f.Path); os.IsNotExist(err) {
+			if isDeletable || isUploaded {
+				continue // 已被 deleteMarkedFiles 正常清理，跳过
+			}
+			return fmt.Errorf("input file not found, cannot retry: %s", f.Path)
 		}
 		activeFiles = append(activeFiles, f)
 	}
@@ -463,13 +482,6 @@ func (m *Manager) RetryTaskFromStage(taskID int64, stageName string) error {
 	// 校验输入文件不为空
 	if len(inputFiles) == 0 {
 		return fmt.Errorf("no input files available for stage %s, cannot retry", stageName)
-	}
-
-	// 验证文件存在于磁盘
-	for _, f := range inputFiles {
-		if _, err := os.Stat(f.Path); os.IsNotExist(err) {
-			return fmt.Errorf("input file not found, cannot retry: %s", f.Path)
-		}
 	}
 
 	// 重置任务状态
@@ -483,7 +495,7 @@ func (m *Manager) RetryTaskFromStage(taskID int64, stageName string) error {
 	if targetStageIndex < len(task.StageResults) {
 		task.StageResults = task.StageResults[:targetStageIndex]
 	}
-	task.Progress = (targetStageIndex * 100) / task.TotalStages
+	task.UpdateProgress()
 
 	if err := m.store.UpdateTask(m.ctx, task); err != nil {
 		return err
