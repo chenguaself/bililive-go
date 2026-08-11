@@ -160,6 +160,13 @@ const analyzeConfig = (config: any) => {
       } else {
         files[target].status = 'deleted';
       }
+    } else {
+      // burn_delete_source=false：源视频保留在 BurnSubtitlesStage output 中
+      // immediate 模式下已在 pipeline 开头被上传，after_process 模式下也会被上传
+      const src = convert ? 'video.mp4' : 'video.flv';
+      if (files[src] && files[src].status === 'kept') {
+        files[src].status = 'uploaded';
+      }
     }
     if (burnDelAss) {
       files['video.ass'].status = 'deleted';
@@ -176,13 +183,7 @@ const analyzeConfig = (config: any) => {
     // 上传最终产物
     if (burn) {
       files['video.mkv'].status = 'uploaded';
-      // burn_delete_source=false 时，源视频也会被上传（未标记 Deletable）
-      if (!burnDelSource) {
-        const src = convert ? 'video.mp4' : 'video.flv';
-        if (files[src] && files[src].status === 'kept') {
-          files[src].status = 'uploaded';
-        }
-      }
+      // 源视频已在烧录阶段标记为 uploaded（burnDelSource=false 时）
     } else if (convert) {
       files['video.mp4'].status = 'uploaded';
     } else {
@@ -194,30 +195,21 @@ const analyzeConfig = (config: any) => {
 
     // 删除逻辑
     if (delAllAfter) {
-      // 删除全部
+      // 删除全部：先保存已上传文件的状态，再全部标记删除，最后恢复已上传的标记
+      const uploadedStatus: Record<string, string> = {};
+      Object.entries(files).forEach(([name, f]) => {
+        if (f.status === 'uploaded') uploadedStatus[name] = f.status;
+      });
       Object.values(files).forEach(f => { f.status = 'deleted'; });
-      // 但上传的文件标记为 uploaded_deleted
-      if (burn) files['video.mkv'].status = 'uploaded_deleted';
-      else if (convert) files['video.mp4'].status = 'uploaded_deleted';
-      else files['video.flv'].status = 'uploaded_deleted';
-      if (cover) files['cover.jpg'].status = 'uploaded_deleted';
+      // 恢复已上传文件为 uploaded_deleted
+      Object.entries(uploadedStatus).forEach(([name]) => {
+        files[name].status = 'uploaded_deleted';
+      });
     } else if (delAfter) {
       // 只删除已上传的文件
-      if (burn) {
-        files['video.mkv'].status = 'uploaded_deleted';
-        // burn_delete_source=false 时源视频也被上传，应一并删除
-        if (!burnDelSource) {
-          const src = convert ? 'video.mp4' : 'video.flv';
-          if (files[src] && files[src].status === 'uploaded') {
-            files[src].status = 'uploaded_deleted';
-          }
-        }
-      } else if (convert) {
-        files['video.mp4'].status = 'uploaded_deleted';
-      } else {
-        files['video.flv'].status = 'uploaded_deleted';
-      }
-      if (cover) files['cover.jpg'].status = 'uploaded_deleted';
+      Object.entries(files).forEach(([, f]) => {
+        if (f.status === 'uploaded') f.status = 'uploaded_deleted';
+      });
     }
   }
 
