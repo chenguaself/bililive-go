@@ -56,7 +56,7 @@ func (e *Executor) Execute(
 	initialFiles []FileInfo,
 	startStage int,
 	onProgress func(stageIndex int, stageName string, status StageStatus),
-	onStageComplete func(stageIndex int, outputFiles []FileInfo),
+	onStageComplete func(stageIndex int, result StageResult),
 ) ([]StageResult, error) {
 	if config == nil || len(config.Stages) == 0 {
 		e.logger.Debug("pipeline config is empty, skipping")
@@ -149,7 +149,7 @@ func (e *Executor) Execute(
 
 		// 通知外部持久化阶段完成状态（用于崩溃恢复）
 		if onStageComplete != nil {
-			onStageComplete(stageIndex, output)
+			onStageComplete(stageIndex, result)
 		}
 
 		// 更新文件列表给下一阶段
@@ -163,13 +163,13 @@ func (e *Executor) Execute(
 	}
 
 	// 全部成功：执行延迟删除，并让最终结果反映磁盘上的文件
-	// 如果上下文已取消，跳过删除以保留所有文件
+	// 如果上下文已取消，跳过删除以保留所有文件，返回取消错误让任务标记为 Cancelled
 	if ctx.Ctx.Err() != nil {
 		e.logger.Warn("pipeline cancelled after completion, skipping file cleanup")
 		if len(results) > 0 {
 			results[len(results)-1].OutputFiles = files
 		}
-		return results, nil
+		return results, ctx.Ctx.Err()
 	}
 	keptFiles := e.deleteMarkedFiles(files)
 	if len(results) > 0 {
