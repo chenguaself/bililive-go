@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -201,11 +202,21 @@ func (m *Manager) executeTask(ctx context.Context, task *PipelineTask) {
 		WorkDir: "", // 后续可以从配置获取
 	}
 
-	// 执行管道
+	// 执行管道（从 startStage 开始，支持从指定阶段重试）
+	startStage := task.CurrentStage
+
+	// 保留目标阶段之前的结果（用于合并）
+	var preservedResults []StageResult
+	if startStage > 0 && len(task.StageResults) >= startStage {
+		preservedResults = make([]StageResult, startStage)
+		copy(preservedResults, task.StageResults[:startStage])
+	}
+
 	results, err := m.executor.Execute(
 		pipelineCtx,
 		task.PipelineConfig,
 		task.CurrentFiles,
+		startStage,
 		func(stageIndex int, stageName string, status StageStatus) {
 			// 更新任务进度
 			task.CurrentStage = stageIndex
@@ -215,10 +226,26 @@ func (m *Manager) executeTask(ctx context.Context, task *PipelineTask) {
 			}
 			m.broadcastTaskUpdate(task)
 		},
+		// 阶段完成后持久化结果，确保崩溃恢复时阶段记录完整
+		func(stageIndex int, result StageResult) {
+			task.CurrentFiles = result.OutputFiles
+			// 追加/更新 StageResults，让崩溃恢复后 preservedResults 合并条件成立
+			for len(task.StageResults) <= stageIndex {
+				task.StageResults = append(task.StageResults, StageResult{})
+			}
+			task.StageResults[stageIndex] = result
+			if err := m.store.UpdateTask(ctx, task); err != nil {
+				logrus.WithError(err).Warn("failed to persist stage result")
+			}
+		},
 	)
 
-	// 保存阶段结果
-	task.StageResults = results
+	// 合并：保留之前的结果 + 新执行的结果
+	if preservedResults != nil {
+		task.StageResults = append(preservedResults, results...)
+	} else {
+		task.StageResults = results
+	}
 
 	if err != nil {
 		if ctx.Err() == context.Canceled {
@@ -332,8 +359,16 @@ func (m *Manager) RetryTask(taskID int64) error {
 		return fmt.Errorf("task cannot be retried")
 	}
 
-	if task.Status != PipelineStatusFailed && task.Status != PipelineStatusCancelled {
-		return fmt.Errorf("only failed or cancelled tasks can be retried")
+	// 允许 Failed/Cancelled/Completed 状态
+	if task.Status != PipelineStatusFailed && task.Status != PipelineStatusCancelled && task.Status != PipelineStatusCompleted {
+		return fmt.Errorf("only failed, cancelled or completed tasks can be retried")
+	}
+
+	// 校验初始文件存在（Completed 任务的文件可能已被 deleteMarkedFiles 清理）
+	for _, f := range task.InitialFiles {
+		if _, err := os.Stat(f.Path); os.IsNotExist(err) {
+			return fmt.Errorf("initial file not found, cannot retry (may have been deleted after upload): %s", f.Path)
+		}
 	}
 
 	// 重置任务状态
@@ -342,8 +377,125 @@ func (m *Manager) RetryTask(taskID int64) error {
 	task.CompletedAt = nil
 	task.ErrorMessage = ""
 	task.CurrentStage = 0
+	task.CurrentFiles = task.InitialFiles // 重置为初始文件，从头开始重试
 	task.StageResults = nil
 	task.Progress = 0
+
+	if err := m.store.UpdateTask(m.ctx, task); err != nil {
+		return err
+	}
+
+	m.broadcastTaskUpdate(task)
+
+	// 立即尝试调度
+	bilisentry.Go(func() { m.scheduleNextTasks() })
+
+	return nil
+}
+
+// RetryTaskFromStage 从指定阶段开始重试任务
+// 允许 Failed/Cancelled/Completed 状态的任务
+// stageName: 要从哪个阶段开始重试（如 "cloud_upload"）
+func (m *Manager) RetryTaskFromStage(taskID int64, stageName string) error {
+	task, err := m.store.GetTask(m.ctx, taskID)
+	if err != nil {
+		return err
+	}
+
+	if !task.CanRetry {
+		return fmt.Errorf("task cannot be retried")
+	}
+
+	// 允许 Failed/Cancelled/Completed 状态
+	if task.Status != PipelineStatusFailed &&
+		task.Status != PipelineStatusCancelled &&
+		task.Status != PipelineStatusCompleted {
+		return fmt.Errorf("only failed, cancelled or completed tasks can be retried")
+	}
+
+	// 找到目标阶段在启用阶段中的索引
+	targetStageIndex := -1
+	stageIndex := 0
+	for _, stageCfg := range task.PipelineConfig.Stages {
+		if !stageCfg.IsEnabled() {
+			continue
+		}
+		if stageCfg.Name == stageName {
+			targetStageIndex = stageIndex
+			break
+		}
+		stageIndex++
+	}
+	if targetStageIndex == -1 {
+		return fmt.Errorf("stage %s not found in pipeline", stageName)
+	}
+
+	// 校验：目标阶段之前的所有阶段必须已完成
+	if targetStageIndex > 0 {
+		for i := 0; i < targetStageIndex; i++ {
+			if i >= len(task.StageResults) {
+				return fmt.Errorf("stage %d has not been executed, cannot retry from stage %s", i, stageName)
+			}
+			if task.StageResults[i].Status != StageStatusCompleted {
+				return fmt.Errorf("stage %d (%s) is not completed (status: %s), cannot retry from stage %s",
+					i, task.StageResults[i].StageName, task.StageResults[i].Status, stageName)
+			}
+		}
+	}
+
+	// 获取目标阶段的输入文件
+	var inputFiles []FileInfo
+	if targetStageIndex < len(task.StageResults) {
+		// 从已有的 StageResult 中取输入文件
+		inputFiles = task.StageResults[targetStageIndex].InputFiles
+	} else if targetStageIndex > 0 && targetStageIndex-1 < len(task.StageResults) {
+		// 使用上一阶段的输出文件
+		inputFiles = task.StageResults[targetStageIndex-1].OutputFiles
+	} else if targetStageIndex == 0 {
+		// 从头开始，使用初始文件
+		inputFiles = task.InitialFiles
+	}
+
+	// 过滤已清理的中间文件，保留仍在磁盘上的文件
+	// deleteMarkedFiles 仅在管道全部成功后执行，失败/取消时文件仍在磁盘但带有标记
+	// 因此需要结合磁盘实际存在性判断：标记但仍在 → 保留（管道未清理），标记且已删 → 跳过
+	var activeFiles []FileInfo
+	for _, f := range inputFiles {
+		isDeletable := f.Deletable
+		isUploaded := false
+		if f.Metadata != nil {
+			if uploaded, ok := f.Metadata["uploaded"].(bool); ok && uploaded {
+				isUploaded = true
+			}
+		}
+
+		if _, err := os.Stat(f.Path); os.IsNotExist(err) {
+			if isDeletable || isUploaded {
+				continue // 已被 deleteMarkedFiles 正常清理，跳过
+			}
+			return fmt.Errorf("input file not found, cannot retry: %s", f.Path)
+		}
+		activeFiles = append(activeFiles, f)
+	}
+	inputFiles = activeFiles
+
+	// 校验输入文件不为空
+	if len(inputFiles) == 0 {
+		return fmt.Errorf("no input files available for stage %s, cannot retry", stageName)
+	}
+
+	// 重置任务状态
+	task.Status = PipelineStatusPending
+	task.StartedAt = nil
+	task.CompletedAt = nil
+	task.ErrorMessage = ""
+	task.CurrentStage = targetStageIndex
+	task.CurrentFiles = inputFiles
+	// 保留目标阶段之前的结果，清除目标阶段及之后的结果
+	if targetStageIndex < len(task.StageResults) {
+		task.StageResults = task.StageResults[:targetStageIndex]
+	}
+	task.UpdateProgress()
 
 	if err := m.store.UpdateTask(m.ctx, task); err != nil {
 		return err

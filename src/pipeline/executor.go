@@ -3,6 +3,9 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,11 +48,15 @@ func (e *Executor) getFactory(name string) (StageFactory, bool) {
 }
 
 // Execute 执行管道
+// startStage: 从第几个启用的阶段开始执行（0=全部执行，用于重试指定阶段）
+// onStageComplete: 每个阶段成功完成后的回调，用于持久化进度（崩溃恢复的关键）
 func (e *Executor) Execute(
 	ctx *PipelineContext,
 	config *PipelineConfig,
 	initialFiles []FileInfo,
+	startStage int,
 	onProgress func(stageIndex int, stageName string, status StageStatus),
+	onStageComplete func(stageIndex int, result StageResult),
 ) ([]StageResult, error) {
 	if config == nil || len(config.Stages) == 0 {
 		e.logger.Debug("pipeline config is empty, skipping")
@@ -63,12 +70,19 @@ func (e *Executor) Execute(
 	for i, stageCfg := range config.Stages {
 		// 检查上下文是否已取消
 		if ctx.Ctx.Err() != nil {
+			e.logger.Warnf("pipeline cancelled at stage %s, preserving all files", stageCfg.Name)
 			return results, ctx.Ctx.Err()
 		}
 
 		// 检查是否启用
 		if !stageCfg.IsEnabled() {
 			e.logger.WithField("stage", stageCfg.Name).Debug("stage disabled, skipping")
+			continue
+		}
+
+		// 跳过 startStage 之前的阶段（用于从指定阶段重试）
+		if stageIndex < startStage {
+			stageIndex++
 			continue
 		}
 
@@ -81,6 +95,9 @@ func (e *Executor) Execute(
 		var err error
 		var commands []string
 		var logs string
+
+		// 记录阶段开始时间
+		stageStartTime := getTimeNow()
 
 		// 并行阶段处理
 		if stageCfg.IsParallel() {
@@ -103,7 +120,7 @@ func (e *Executor) Execute(
 			Commands:   commands,
 			Logs:       logs,
 		}
-		result.StartedAt = getTimeNow()
+		result.StartedAt = stageStartTime
 
 		if err != nil {
 			result.Status = StageStatusFailed
@@ -116,6 +133,7 @@ func (e *Executor) Execute(
 				onProgress(stageIndex, stageCfg.Name, StageStatusFailed)
 			}
 
+			e.logger.Warnf("pipeline failed at stage %s, preserving all files", stageCfg.Name)
 			return results, fmt.Errorf("stage %s failed: %w", stageCfg.Name, err)
 		}
 
@@ -129,6 +147,11 @@ func (e *Executor) Execute(
 			onProgress(stageIndex, stageCfg.Name, StageStatusCompleted)
 		}
 
+		// 通知外部持久化阶段完成状态（用于崩溃恢复）
+		if onStageComplete != nil {
+			onStageComplete(stageIndex, result)
+		}
+
 		// 更新文件列表给下一阶段
 		files = output
 		stageIndex++
@@ -139,7 +162,168 @@ func (e *Executor) Execute(
 		}).Debug("stage completed")
 	}
 
+	// 全部成功：执行延迟删除，并让最终结果反映磁盘上的文件
+	// 如果上下文已取消，跳过删除以保留所有文件，返回取消错误让任务标记为 Cancelled
+	if ctx.Ctx.Err() != nil {
+		e.logger.Warn("pipeline cancelled after completion, skipping file cleanup")
+		if len(results) > 0 {
+			results[len(results)-1].OutputFiles = files
+		}
+		return results, ctx.Ctx.Err()
+	}
+	keptFiles := e.deleteMarkedFiles(files)
+	if len(results) > 0 {
+		results[len(results)-1].OutputFiles = keptFiles
+	}
+
 	return results, nil
+}
+
+// deleteMarkedFiles 删除标记为 Deletable 或 Metadata["uploaded"] 的文件，返回保留的文件列表
+func (e *Executor) deleteMarkedFiles(files []FileInfo) []FileInfo {
+	var kept []FileInfo
+	deleteAll := false  // 标记是否为 deleteAll 模式
+	deleteAfter := false // 标记是否为 deleteAfter 模式（仅删除已上传文件）
+
+	for _, f := range files {
+		// 检查删除模式（CloudUploadStage 标记）
+		if f.Metadata != nil {
+			if da, ok := f.Metadata["delete_all"].(bool); ok && da {
+				deleteAll = true
+			}
+			if uploaded, ok := f.Metadata["uploaded"].(bool); ok && uploaded {
+				deleteAfter = true
+			}
+		}
+
+		// 判断是否应删除：Deletable 标记 或 CloudUploadStage 标记的已上传文件
+		shouldDelete := f.Deletable
+		if !shouldDelete && f.Metadata != nil {
+			if uploaded, ok := f.Metadata["uploaded"].(bool); ok && uploaded {
+				shouldDelete = true
+			}
+		}
+
+		if shouldDelete {
+			if err := os.Remove(f.Path); err != nil {
+				if !os.IsNotExist(err) {
+					e.logger.Warnf("pipeline cleanup: 删除文件失败 %s: %v", f.Path, err)
+					kept = append(kept, f) // 删除失败，文件仍在磁盘，保留记录
+				}
+			} else {
+				e.logger.Infof("pipeline cleanup: 已删除 %s", f.Path)
+			}
+		} else {
+			kept = append(kept, f)
+		}
+	}
+
+	// 清理无关联视频文件的孤立 .ass 文件
+	// deleteAll 模式下删除所有文件（含 .ass），deleteAfter 模式下删除已上传视频后也应清理残留 .ass
+	if deleteAll || deleteAfter {
+		kept = e.cleanupOrphanedAssFiles(files, kept)
+	}
+
+	return kept
+}
+
+// cleanupOrphanedAssFiles 清理无关联视频文件的 .ass 文件
+// allFiles: 原始文件列表（含已删除的视频），用于确定扫描目录
+// keptFiles: 保留的文件列表，用于检查 Pipeline 内的 .ass 文件
+func (e *Executor) cleanupOrphanedAssFiles(allFiles []FileInfo, keptFiles []FileInfo) []FileInfo {
+	// 从原始文件列表收集所有视频文件目录（即使视频已被删除）
+	videoBaseNames := map[string]bool{}
+	dirs := map[string]bool{}
+	for _, f := range allFiles {
+		ext := strings.ToLower(filepath.Ext(f.Path))
+		if ext == ".flv" || ext == ".mp4" || ext == ".mkv" || ext == ".ts" {
+			dir := filepath.Dir(f.Path)
+			base := strings.TrimSuffix(filepath.Base(f.Path), ext)
+			videoBaseNames[filepath.Join(dir, base)] = true
+			dirs[dir] = true
+		}
+	}
+
+	// 收集 Pipeline 中已知的 .ass 文件路径
+	knownAssFiles := map[string]bool{}
+	for _, f := range keptFiles {
+		if strings.ToLower(filepath.Ext(f.Path)) == ".ass" {
+			knownAssFiles[f.Path] = true
+		}
+	}
+
+	// 扫描目录中的 .ass 文件
+	// 通过视频基名匹配判断 .ass 是否属于本任务，避免误删其他任务或用户放置的字幕
+	for dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			if strings.ToLower(filepath.Ext(entry.Name())) != ".ass" {
+				continue
+			}
+			assPath := filepath.Join(dir, entry.Name())
+			if knownAssFiles[assPath] {
+				continue // 已在 Pipeline 中处理
+			}
+			// 通过基名匹配判断是否属于本任务的视频文件
+			// （.ass 文件可能未被传入 Pipeline，不能依赖文件列表过滤）
+			base := strings.TrimSuffix(entry.Name(), ".ass")
+			key := filepath.Join(dir, base)
+			if !videoBaseNames[key] {
+				continue // 基名不匹配任何本任务视频，跳过
+			}
+			// 检查磁盘上是否有同名视频文件
+			hasVideo := false
+			for _, ext := range []string{".flv", ".mp4", ".mkv", ".ts"} {
+				if _, err := os.Stat(key + ext); err == nil {
+					hasVideo = true
+					break
+				}
+			}
+			if !hasVideo {
+				if err := os.Remove(assPath); err != nil {
+					if !os.IsNotExist(err) {
+						e.logger.Warnf("pipeline cleanup: 删除孤立 .ass 文件失败 %s: %v", assPath, err)
+					}
+				} else {
+					e.logger.Infof("pipeline cleanup: 已删除孤立 .ass 文件 %s（无关联视频）", assPath)
+				}
+			}
+		}
+	}
+
+	// 处理 Pipeline 中的 .ass 文件
+	var kept []FileInfo
+	for _, f := range keptFiles {
+		ext := strings.ToLower(filepath.Ext(f.Path))
+		if ext == ".ass" {
+			dir := filepath.Dir(f.Path)
+			base := strings.TrimSuffix(filepath.Base(f.Path), ".ass")
+			key := filepath.Join(dir, base)
+			if !videoBaseNames[key] {
+				// 无关联视频文件，删除 .ass
+				if err := os.Remove(f.Path); err != nil {
+					if !os.IsNotExist(err) {
+						e.logger.Warnf("pipeline cleanup: 删除孤立 .ass 文件失败 %s: %v", f.Path, err)
+					}
+					kept = append(kept, f) // 删除失败则保留
+				} else {
+					e.logger.Infof("pipeline cleanup: 已删除孤立 .ass 文件 %s（无关联视频）", f.Path)
+				}
+			} else {
+				kept = append(kept, f)
+			}
+		} else {
+			kept = append(kept, f)
+		}
+	}
+
+	return kept
 }
 
 // executeStage 执行单个阶段
@@ -289,7 +473,7 @@ func (e *Executor) ExecuteAsync(
 	bilisentry.GoWithContext(ctx.Ctx, func(goCtx context.Context) {
 		// 更新上下文
 		ctx.Ctx = goCtx
-		results, err := e.Execute(ctx, config, initialFiles, onProgress)
+		results, err := e.Execute(ctx, config, initialFiles, 0, onProgress, nil)
 		if onComplete != nil {
 			onComplete(results, err)
 		}

@@ -349,11 +349,12 @@ const (
 
 // CloudUpload 云上传配置
 type CloudUpload struct {
-	Enable             bool     `yaml:"enable" json:"enable"`                                               // 是否启用云上传
-	StorageName        string   `yaml:"storage_name" json:"storage_name"`                                   // 使用的 OpenList 存储名称
-	UploadPathTmpl     string   `yaml:"upload_path_tmpl" json:"upload_path_tmpl"`                           // 上传路径模板
-	DeleteAfterUpload  bool     `yaml:"delete_after_upload" json:"delete_after_upload"`                     // 上传成功后删除本地文件
-	AdditionalStorages []string `yaml:"additional_storages,omitempty" json:"additional_storages,omitempty"` // 额外存储（支持多目标上传）
+	Enable              bool     `yaml:"enable" json:"enable"`                                               // 是否启用云上传
+	StorageName         string   `yaml:"storage_name" json:"storage_name"`                                   // 使用的 OpenList 存储名称
+	UploadPathTmpl      string   `yaml:"upload_path_tmpl" json:"upload_path_tmpl"`                           // 上传路径模板
+	DeleteAfterUpload   bool     `yaml:"delete_after_upload" json:"delete_after_upload"`                     // 上传成功后仅删除已上传的文件
+	DeleteAllAfterUpload bool    `yaml:"delete_all_after_upload" json:"delete_all_after_upload"`             // 上传成功后删除全部文件（含中间产物）
+	AdditionalStorages  []string `yaml:"additional_storages,omitempty" json:"additional_storages,omitempty"` // 额外存储（支持多目标上传）
 }
 
 // On record finished actions.
@@ -448,13 +449,18 @@ var defaultProxy = Proxy{
 
 // OpenListConfig OpenList 服务配置
 type OpenListConfig struct {
-	Port     int    `yaml:"port" json:"port"`           // OpenList 监听端口（默认 5244）
-	DataPath string `yaml:"data_path" json:"data_path"` // OpenList 数据目录（留空使用默认路径）
+	Port     int    `yaml:"port" json:"port"`               // OpenList 监听端口（默认 5244）
+	DataPath string `yaml:"data_path" json:"data_path"`     // OpenList 数据目录（留空使用默认路径）
+	Username string `yaml:"username" json:"username"`        // OpenList 管理员用户名
+	Password string `yaml:"password" json:"password"`        // OpenList 管理员密码
+	Token    string `yaml:"token,omitempty" json:"token"`    // OpenList API Token（优先于用户名密码）
 }
 
 var defaultOpenListConfig = OpenListConfig{
 	Port:     5244,
 	DataPath: "", // 默认使用 AppDataPath/openlist
+	Username: "",
+	Password: "",
 }
 
 // UpdateConfig 自动更新配置
@@ -612,6 +618,36 @@ var updateMu sync.Mutex
 // 当期望版本与实际版本不一致时返回的错误
 var ErrConfigVersionConflict = errors.New("config version conflict")
 
+// AfterUpdateCallback 配置更新后的回调函数类型
+// old 为更新前的配置（可能为 nil），newCfg 为更新后的配置
+type AfterUpdateCallback func(old, newCfg *Config)
+
+// afterUpdateCallbacks 配置更新后的回调列表
+var (
+	afterUpdateCallbacks []AfterUpdateCallback
+	afterUpdateMu        sync.RWMutex
+)
+
+// RegisterAfterUpdate 注册配置更新后的回调
+// 回调在配置更新并持久化完成后同步执行，此时已释放 updateMu 锁
+func RegisterAfterUpdate(cb AfterUpdateCallback) {
+	afterUpdateMu.Lock()
+	defer afterUpdateMu.Unlock()
+	afterUpdateCallbacks = append(afterUpdateCallbacks, cb)
+}
+
+// fireAfterUpdate 触发所有配置更新回调
+func fireAfterUpdate(old, newCfg *Config) {
+	afterUpdateMu.RLock()
+	callbacks := make([]AfterUpdateCallback, len(afterUpdateCallbacks))
+	copy(callbacks, afterUpdateCallbacks)
+	afterUpdateMu.RUnlock()
+
+	for _, cb := range callbacks {
+		cb(old, newCfg)
+	}
+}
+
 func SetCurrentConfig(cfg *Config) {
 	if cfg == nil {
 		// 存储 nil 以保持行为一致
@@ -651,19 +687,19 @@ func UpdateTransient(mutator func(c *Config) error) (*Config, error) {
 }
 
 func updateImpl(mutator func(c *Config) error, persist bool) (*Config, error) {
-	var newCfg *Config
+	var oldCfg, newCfg *Config
 	var updateErr error
 
 	func() {
 		updateMu.Lock()
 		defer updateMu.Unlock()
-		old := GetCurrentConfig()
+		oldCfg = GetCurrentConfig()
 		// 若当前尚未设置配置，则以默认配置为基础
 		var base *Config
-		if old == nil {
+		if oldCfg == nil {
 			base = NewConfig()
 		} else {
-			base = CloneConfigShallow(old)
+			base = CloneConfigShallow(oldCfg)
 		}
 		if err := mutator(base); err != nil {
 			updateErr = err
@@ -672,10 +708,10 @@ func updateImpl(mutator func(c *Config) error, persist bool) (*Config, error) {
 		// 维护派生字段
 		base.RefreshLiveRoomIndexCache()
 		// 版本号自增
-		if old == nil {
+		if oldCfg == nil {
 			base.Version = 1
 		} else {
-			base.Version = old.Version + 1
+			base.Version = oldCfg.Version + 1
 		}
 		newCfg = base
 
@@ -696,6 +732,7 @@ func updateImpl(mutator func(c *Config) error, persist bool) (*Config, error) {
 		return nil, errors.New("config update failed")
 	}
 
+	fireAfterUpdate(oldCfg, newCfg)
 	return newCfg, nil
 }
 
@@ -706,17 +743,17 @@ func UpdateCAS(expectedVersion int64, mutator func(c *Config) error) (*Config, e
 }
 
 func updateCASImpl(expectedVersion int64, mutator func(c *Config) error, persist bool) (*Config, error) {
-	var newCfg *Config
+	var oldCfg, newCfg *Config
 	var updateErr error
 
 	func() {
 		updateMu.Lock()
 		defer updateMu.Unlock()
-		cur := GetCurrentConfig()
+		oldCfg = GetCurrentConfig()
 		// 校验版本
 		var curVersion int64
-		if cur != nil {
-			curVersion = cur.Version
+		if oldCfg != nil {
+			curVersion = oldCfg.Version
 		}
 		if curVersion != expectedVersion {
 			updateErr = ErrConfigVersionConflict
@@ -724,10 +761,10 @@ func updateCASImpl(expectedVersion int64, mutator func(c *Config) error, persist
 		}
 		// 克隆并修改
 		var base *Config
-		if cur == nil {
+		if oldCfg == nil {
 			base = NewConfig()
 		} else {
-			base = CloneConfigShallow(cur)
+			base = CloneConfigShallow(oldCfg)
 		}
 		if err := mutator(base); err != nil {
 			updateErr = err
@@ -751,6 +788,7 @@ func updateCASImpl(expectedVersion int64, mutator func(c *Config) error, persist
 		return nil, updateErr
 	}
 
+	fireAfterUpdate(oldCfg, newCfg)
 	return newCfg, nil
 }
 
@@ -974,7 +1012,7 @@ var defaultConfig = Config{
 		CloudUpload: CloudUpload{
 			Enable:            false,
 			StorageName:       "",
-			UploadPathTmpl:    "/录播归档/{{ .Platform }}/{{ .HostName }}/{{ .RoomName }}-{{ now | date \"2006-01-02\" }}.{{ .Ext }}",
+			UploadPathTmpl:    "/录播归档/{{ .Platform }}/{{ .HostName }}/{{ .FileName }}",
 			DeleteAfterUpload: false,
 		},
 		UploadTiming:        UploadTimingAfterProcess,
@@ -1109,6 +1147,16 @@ func (c *Config) Verify() error {
 	// 验证弹幕配置
 	if err := c.Danmaku.Validate(); err != nil {
 		return fmt.Errorf("弹幕配置无效: %w", err)
+	}
+
+	// 验证 OpenList 配置
+	if c.OnRecordFinished.CloudUpload.Enable {
+		if c.OpenList.Port < 0 || c.OpenList.Port > 65535 {
+			return fmt.Errorf("OpenList 端口必须在 0-65535 之间")
+		}
+		if c.OnRecordFinished.CloudUpload.StorageName == "" {
+			return fmt.Errorf("启用云上传时必须配置存储名称")
+		}
 	}
 
 	return nil
