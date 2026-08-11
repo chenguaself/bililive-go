@@ -2,6 +2,7 @@ package servers
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -181,8 +182,10 @@ func makePipelineRetryTaskHandler(pm *pipeline.Manager) http.HandlerFunc {
 			StageName string `json:"stage_name"`
 		}
 		if r.Body != nil {
-			// 尝试解析 body，失败不影响（向后兼容无 body 的情况）
-			json.NewDecoder(r.Body).Decode(&reqBody)
+			if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil && err != io.EOF {
+				http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 
 		if reqBody.StageName != "" {

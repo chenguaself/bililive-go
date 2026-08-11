@@ -226,6 +226,13 @@ func (m *Manager) executeTask(ctx context.Context, task *PipelineTask) {
 			}
 			m.broadcastTaskUpdate(task)
 		},
+		// 阶段完成后持久化 CurrentFiles，确保崩溃恢复时能拿到正确的中间文件
+		func(stageIndex int, outputFiles []FileInfo) {
+			task.CurrentFiles = outputFiles
+			if err := m.store.UpdateTask(ctx, task); err != nil {
+				logrus.WithError(err).Warn("failed to persist stage output files")
+			}
+		},
 	)
 
 	// 合并：保留之前的结果 + 新执行的结果
@@ -347,8 +354,9 @@ func (m *Manager) RetryTask(taskID int64) error {
 		return fmt.Errorf("task cannot be retried")
 	}
 
-	if task.Status != PipelineStatusFailed && task.Status != PipelineStatusCancelled {
-		return fmt.Errorf("only failed or cancelled tasks can be retried")
+	// 允许 Failed/Cancelled/Completed 状态
+	if task.Status != PipelineStatusFailed && task.Status != PipelineStatusCancelled && task.Status != PipelineStatusCompleted {
+		return fmt.Errorf("only failed, cancelled or completed tasks can be retried")
 	}
 
 	// 重置任务状态
@@ -435,6 +443,22 @@ func (m *Manager) RetryTaskFromStage(taskID int64, stageName string) error {
 		// 从头开始，使用初始文件
 		inputFiles = task.InitialFiles
 	}
+
+	// 过滤掉已标记删除/已上传的中间文件（它们在管道完成后已被 deleteMarkedFiles 从磁盘移除）
+	// 只保留目标阶段实际需要的文件，确保后续 os.Stat 校验和重试执行不会引用已删除的路径
+	var activeFiles []FileInfo
+	for _, f := range inputFiles {
+		if f.Deletable {
+			continue
+		}
+		if f.Metadata != nil {
+			if uploaded, ok := f.Metadata["uploaded"].(bool); ok && uploaded {
+				continue
+			}
+		}
+		activeFiles = append(activeFiles, f)
+	}
+	inputFiles = activeFiles
 
 	// 校验输入文件不为空
 	if len(inputFiles) == 0 {

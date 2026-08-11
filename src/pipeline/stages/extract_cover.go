@@ -212,10 +212,11 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 		// 检测远程路径冲突（多分段视频或视频+封面使用相同模板时可能产生同路径）
 		// 冲突时自动追加原始文件名以区分
 		if usedPaths[targetPath] {
-			dir := filepath.Dir(targetPath)
+			// 使用 path.* 而非 filepath.*，因为 targetPath 是远程路径，始终用正斜杠
+			dir := path.Dir(targetPath)
 			ext := filepath.Ext(targetPath)
-			base := strings.TrimSuffix(filepath.Base(targetPath), ext)
-			targetPath = filepath.Join(dir, base+"_"+filepath.Base(file.Path))
+			base := strings.TrimSuffix(path.Base(targetPath), ext)
+			targetPath = path.Join(dir, base+"_"+filepath.Base(file.Path))
 			ctx.Logger.Infof("检测到远程路径冲突，自动追加文件名: %s", targetPath)
 		}
 		usedPaths[targetPath] = true

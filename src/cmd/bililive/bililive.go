@@ -339,6 +339,8 @@ func main() {
 
 	// 如果启用了云上传功能，初始化 OpenList 管理器
 	var openlistManager *openlist.Manager
+	// 串行化 OpenList 生命周期操作，防止快速 enable/disable 导致服务泄漏
+	var openlistLifecycleMu sync.Mutex
 	if config.OnRecordFinished.CloudUpload.Enable {
 		// 获取 OpenList 数据目录
 		openlistDataPath := config.OpenList.DataPath
@@ -357,6 +359,9 @@ func main() {
 		bilisentryPkg.Go(func() {
 			if err := openlistManager.Start(rootCtx); err != nil {
 				logger.WithError(err).Error("启动 OpenList 失败，云上传功能将不可用")
+				// 启动失败时清除全局指针，避免 GetGlobalManager() != nil 永久阻止后续重试
+				servers.SetOpenListManager(nil)
+				openlistManager = nil
 			}
 		})
 
@@ -376,6 +381,8 @@ func main() {
 
 		// 关闭云上传：停止 OpenList 进程
 		if wasEnabled && !isEnabled {
+			openlistLifecycleMu.Lock()
+			defer openlistLifecycleMu.Unlock()
 			if mgr := openlist.GetGlobalManager(); mgr != nil {
 				logger.Info("检测到云上传已关闭，正在停止 OpenList...")
 				mgr.Stop()
@@ -387,10 +394,49 @@ func main() {
 
 		// 开启云上传：启动 OpenList 进程
 		if wasEnabled || !isEnabled {
+			// 云上传保持启用：检查是否需要重建 Manager（端口或数据目录变更）
+			if wasEnabled && isEnabled {
+				if mgr := openlist.GetGlobalManager(); mgr != nil {
+					// 解析新的配置值
+					newPort := newCfg.OpenList.Port
+					if newPort == 0 {
+						newPort = 5244
+					}
+					newDataPath := newCfg.OpenList.DataPath
+					if newDataPath == "" {
+						newDataPath = filepath.Join(newCfg.AppDataPath, "openlist")
+					}
+					// 与 Manager 当前值比较
+					if mgr.GetPort() != newPort || mgr.GetDataPath() != newDataPath {
+						logger.Infof("检测到 OpenList 配置变更（端口: %d→%d, 数据目录: %s→%s），正在重建 Manager...",
+							mgr.GetPort(), newPort, mgr.GetDataPath(), newDataPath)
+						openlistLifecycleMu.Lock()
+						mgr.Stop()
+						servers.SetOpenListManager(nil)
+						// 创建新 Manager 并启动
+						newMgr := openlist.NewManager(newDataPath, newPort)
+						servers.SetOpenListManager(newMgr)
+						openlistManager = newMgr
+						openlistLifecycleMu.Unlock()
+						bilisentryPkg.Go(func() {
+							if err := newMgr.Start(rootCtx); err != nil {
+								logger.WithError(err).Error("重建 OpenList 失败")
+								openlistLifecycleMu.Lock()
+								servers.SetOpenListManager(nil)
+								openlistManager = nil
+								openlistLifecycleMu.Unlock()
+							}
+						})
+					}
+				}
+			}
 			return
 		}
+
+		openlistLifecycleMu.Lock()
 		// 已有 Manager 则跳过
 		if openlist.GetGlobalManager() != nil {
+			openlistLifecycleMu.Unlock()
 			return
 		}
 
@@ -408,11 +454,25 @@ func main() {
 		mgr := openlist.NewManager(openlistDataPath, openlistPort)
 		// 先设置全局 Manager，让 API 端能立即获取到状态
 		servers.SetOpenListManager(mgr)
+		openlistLifecycleMu.Unlock()
 
 		// 在后台启动 OpenList 进程（需要 rootCtx 生命周期）
 		bilisentryPkg.Go(func() {
 			if err := mgr.Start(rootCtx); err != nil {
 				logger.WithError(err).Error("动态启动 OpenList 失败，云上传功能将不可用")
+				// 启动失败时清除全局指针，允许后续配置变更时重试
+				openlistLifecycleMu.Lock()
+				servers.SetOpenListManager(nil)
+				openlistLifecycleMu.Unlock()
+				return
+			}
+			// Start 完成后复核配置：如果在 waitForReady 期间配置已关闭，立即清理
+			openlistLifecycleMu.Lock()
+			defer openlistLifecycleMu.Unlock()
+			if cfg := configs.GetCurrentConfig(); cfg == nil || !cfg.OnRecordFinished.CloudUpload.Enable {
+				logger.Info("OpenList 启动完成但云上传已关闭，立即停止")
+				mgr.Stop()
+				servers.SetOpenListManager(nil)
 			}
 		})
 	})

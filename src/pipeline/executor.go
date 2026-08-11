@@ -49,12 +49,14 @@ func (e *Executor) getFactory(name string) (StageFactory, bool) {
 
 // Execute 执行管道
 // startStage: 从第几个启用的阶段开始执行（0=全部执行，用于重试指定阶段）
+// onStageComplete: 每个阶段成功完成后的回调，用于持久化进度（崩溃恢复的关键）
 func (e *Executor) Execute(
 	ctx *PipelineContext,
 	config *PipelineConfig,
 	initialFiles []FileInfo,
 	startStage int,
 	onProgress func(stageIndex int, stageName string, status StageStatus),
+	onStageComplete func(stageIndex int, outputFiles []FileInfo),
 ) ([]StageResult, error) {
 	if config == nil || len(config.Stages) == 0 {
 		e.logger.Debug("pipeline config is empty, skipping")
@@ -143,6 +145,11 @@ func (e *Executor) Execute(
 
 		if onProgress != nil {
 			onProgress(stageIndex, stageCfg.Name, StageStatusCompleted)
+		}
+
+		// 通知外部持久化阶段完成状态（用于崩溃恢复）
+		if onStageComplete != nil {
+			onStageComplete(stageIndex, output)
 		}
 
 		// 更新文件列表给下一阶段
@@ -468,7 +475,7 @@ func (e *Executor) ExecuteAsync(
 	bilisentry.GoWithContext(ctx.Ctx, func(goCtx context.Context) {
 		// 更新上下文
 		ctx.Ctx = goCtx
-		results, err := e.Execute(ctx, config, initialFiles, 0, onProgress)
+		results, err := e.Execute(ctx, config, initialFiles, 0, onProgress, nil)
 		if onComplete != nil {
 			onComplete(results, err)
 		}

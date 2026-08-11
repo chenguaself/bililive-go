@@ -266,10 +266,16 @@ func (m *Manager) watchProcess() {
 
 	select {
 	case <-m.stopCh:
-		// 正常停止
+		// 正常停止（stopInternal 已负责关闭 m.logFile）
 	default:
-		// 异常退出
+		// 异常退出：关闭日志文件句柄，避免 fd 泄漏
 		if wasRunning {
+			m.mu.Lock()
+			if m.logFile != nil {
+				m.logFile.Close()
+				m.logFile = nil
+			}
+			m.mu.Unlock()
 			logrus.WithError(err).Warn("OpenList 进程异常退出")
 		}
 	}
