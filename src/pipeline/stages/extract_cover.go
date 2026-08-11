@@ -304,7 +304,13 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 			}
 
 			// 删除全部文件（含中间产物）：用 Deletable 标记
+			// 跳过已是 Deletable 的中间产物（如 BurnSubtitles 标记的源视频），
+			// 避免 delete_all 标记覆盖其"中间产物"身份，导致 CustomCommandStage 误执行
 			for i := range output {
+				if output[i].Deletable {
+					// 中间产物：保留原始 Deletable 标记，不加 delete_all
+					continue
+				}
 				output[i].Deletable = true
 				if output[i].Metadata == nil {
 					output[i].Metadata = map[string]any{}
