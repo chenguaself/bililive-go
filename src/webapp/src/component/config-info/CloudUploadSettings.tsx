@@ -289,6 +289,11 @@ const FileProcessingPreview: React.FC<{ config: any }> = ({ config }) => {
           }
         </Descriptions.Item>
       </Descriptions>
+      <div style={{ marginTop: 12, fontSize: 12, color: '#888', lineHeight: 1.8 }}>
+        <div>💡 <b>说明：</b>开启「转换后删除 FLV」或「烧录后删除源视频」后，只会上传最终成品（MP4 或 MKV）。</div>
+        <div style={{ paddingLeft: 16 }}>如果不开启，原始视频也会一并上传到云端（相当于云端保存了两份视频）。</div>
+        <div style={{ paddingLeft: 16 }}>上方预览会根据你当前的设置实时显示哪些文件会被上传、删除或保留。</div>
+      </div>
     </Card>
   );
 };
