@@ -35,6 +35,7 @@ import (
 	applog "github.com/bililive-go/bililive-go/src/log"
 	"github.com/bililive-go/bililive-go/src/pkg/livelogger"
 	"github.com/bililive-go/bililive-go/src/pkg/memstats"
+	"github.com/bililive-go/bililive-go/src/pkg/metadata"
 	"github.com/bililive-go/bililive-go/src/pkg/ratelimit"
 	"github.com/bililive-go/bililive-go/src/pkg/utils"
 	"github.com/bililive-go/bililive-go/src/recorders"
@@ -2419,6 +2420,7 @@ func getFileInfo(writer http.ResponseWriter, r *http.Request) {
 		LastModified int64  `json:"last_modified"`
 		Size         int64  `json:"size"`
 		SubtitleFile string `json:"subtitle_file,omitempty"`
+		Uploaded     bool   `json:"uploaded,omitempty"`
 	}
 
 	// First pass: separate ASS files and build base-name -> ASS file map
@@ -2460,6 +2462,14 @@ func getFileInfo(writer http.ResponseWriter, r *http.Request) {
 			}
 			if assName, ok := assFiles[baseName]; ok {
 				jf.SubtitleFile = assName
+			}
+			// Check if this file has been uploaded to cloud
+			relPath := fe.dir.Name()
+			if path != "" {
+				relPath = path + "/" + fe.dir.Name() // key 统一用正斜杠
+			}
+			if val, err := metadata.GetStore().Get(r.Context(), metadata.NamespaceUploaded, relPath); err == nil && val != "" {
+				jf.Uploaded = true
 			}
 		}
 		jsonFiles = append(jsonFiles, jf)
@@ -2580,6 +2590,30 @@ func renameFile(writer http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 迁移上传标记（key 统一用正斜杠）
+	oldRel := path
+	newRelPath, _ := filepath.Rel(base, newAbsPath)
+	newRel := filepath.ToSlash(newRelPath)
+	if info.IsDir() {
+		// 目录重命名：迁移该目录下所有文件的上传标记
+		allMarks, _ := metadata.GetStore().GetAll(r.Context(), metadata.NamespaceUploaded)
+		oldPrefix := oldRel + "/"
+		for key, val := range allMarks {
+			if strings.HasPrefix(key, oldPrefix) {
+				suffix := key[len(oldPrefix):]
+				newKey := newRel + "/" + suffix
+				metadata.GetStore().Set(r.Context(), metadata.NamespaceUploaded, newKey, val)
+				metadata.GetStore().Delete(r.Context(), metadata.NamespaceUploaded, key)
+			}
+		}
+	} else {
+		// 文件重命名：迁移单个上传标记
+		if val, err := metadata.GetStore().Get(r.Context(), metadata.NamespaceUploaded, oldRel); err == nil {
+			metadata.GetStore().Set(r.Context(), metadata.NamespaceUploaded, newRel, val)
+			metadata.GetStore().Delete(r.Context(), metadata.NamespaceUploaded, oldRel)
+		}
+	}
+
 	writeJSON(writer, commonResp{Data: "OK"})
 }
 
@@ -2599,8 +2633,14 @@ func deleteFile(writer http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 记录是否为目录（删除前检查）
+	isDir := false
+	if info, err := os.Stat(absPath); err == nil {
+		isDir = info.IsDir()
+	}
+
 	// 删除关联的 ASS 弹幕文件
-	if info, err := os.Stat(absPath); err == nil && !info.IsDir() {
+	if !isDir {
 		assPath := strings.TrimSuffix(absPath, filepath.Ext(absPath)) + ".ass"
 		if _, err := os.Stat(assPath); err == nil {
 			os.Remove(assPath)
@@ -2610,6 +2650,20 @@ func deleteFile(writer http.ResponseWriter, r *http.Request) {
 	if err := os.RemoveAll(absPath); err != nil {
 		writeJSON(writer, commonResp{ErrNo: 500, ErrMsg: "删除失败: " + translateOSError(err)})
 		return
+	}
+
+	// 清除上传标记
+	if isDir {
+		// 目录：清除该目录下所有文件的上传标记
+		allMarks, _ := metadata.GetStore().GetAll(r.Context(), metadata.NamespaceUploaded)
+		prefix := path + "/" // key 统一用正斜杠
+		for key := range allMarks {
+			if strings.HasPrefix(key, prefix) {
+				metadata.GetStore().Delete(r.Context(), metadata.NamespaceUploaded, key)
+			}
+		}
+	} else {
+		metadata.GetStore().Delete(r.Context(), metadata.NamespaceUploaded, path)
 	}
 
 	writeJSON(writer, commonResp{Data: "OK"})
@@ -2698,6 +2752,28 @@ func batchRenameFiles(writer http.ResponseWriter, r *http.Request) {
 					os.Rename(oldAss, newAss)
 				}
 			}
+
+			// 迁移上传标记（key 统一用正斜杠）
+			oldRel := path
+			newRelPath, _ := filepath.Rel(base, newAbsPath)
+			newRel := filepath.ToSlash(newRelPath)
+			if info.IsDir() {
+				allMarks, _ := metadata.GetStore().GetAll(r.Context(), metadata.NamespaceUploaded)
+				oldPrefix := oldRel + "/"
+				for key, val := range allMarks {
+					if strings.HasPrefix(key, oldPrefix) {
+						suffix := key[len(oldPrefix):]
+						newKey := newRel + "/" + suffix
+						metadata.GetStore().Set(r.Context(), metadata.NamespaceUploaded, newKey, val)
+						metadata.GetStore().Delete(r.Context(), metadata.NamespaceUploaded, key)
+					}
+				}
+			} else {
+				if val, err := metadata.GetStore().Get(r.Context(), metadata.NamespaceUploaded, oldRel); err == nil {
+					metadata.GetStore().Set(r.Context(), metadata.NamespaceUploaded, newRel, val)
+					metadata.GetStore().Delete(r.Context(), metadata.NamespaceUploaded, oldRel)
+				}
+			}
 		}
 	}
 
@@ -2734,8 +2810,14 @@ func batchDeleteFiles(writer http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// 记录是否为目录（删除前检查）
+		isDir := false
+		if info, err := os.Stat(absPath); err == nil {
+			isDir = info.IsDir()
+		}
+
 		// 删除关联的 ASS 弹幕文件
-		if info, err := os.Stat(absPath); err == nil && !info.IsDir() {
+		if !isDir {
 			assPath := strings.TrimSuffix(absPath, filepath.Ext(absPath)) + ".ass"
 			if _, err := os.Stat(assPath); err == nil {
 				os.Remove(assPath)
@@ -2745,6 +2827,18 @@ func batchDeleteFiles(writer http.ResponseWriter, r *http.Request) {
 		if err := os.RemoveAll(absPath); err != nil {
 			results = append(results, Result{Path: path, Success: false, Message: translateOSError(err)})
 		} else {
+			// 清除上传标记
+			if isDir {
+				allMarks, _ := metadata.GetStore().GetAll(r.Context(), metadata.NamespaceUploaded)
+				prefix := path + "/" // key 统一用正斜杠
+				for key := range allMarks {
+					if strings.HasPrefix(key, prefix) {
+						metadata.GetStore().Delete(r.Context(), metadata.NamespaceUploaded, key)
+					}
+				}
+			} else {
+				metadata.GetStore().Delete(r.Context(), metadata.NamespaceUploaded, path)
+			}
 			results = append(results, Result{Path: path, Success: true, Message: "成功"})
 		}
 	}

@@ -206,6 +206,8 @@ const (
 	NamespaceUpdate = "update"
 	// NamespaceMigration 数据库迁移状态
 	NamespaceMigration = "migration"
+	// NamespaceUploaded 已上传文件标记（key=相对路径, value="1"）
+	NamespaceUploaded = "uploaded"
 )
 
 // 预定义的键常量

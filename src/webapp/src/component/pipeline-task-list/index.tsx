@@ -495,7 +495,11 @@ class PipelineTaskList extends Component<object, PipelineTaskListState> {
             {result.error_message && (
               <Alert
                 message="错误信息"
-                description={result.error_message}
+                description={
+                  <div style={{ whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto' }}>
+                    {result.error_message}
+                  </div>
+                }
                 type="error"
                 style={{ marginBottom: 8 }}
               />
@@ -574,7 +578,11 @@ class PipelineTaskList extends Component<object, PipelineTaskListState> {
               {task.error_message && (
                 <Alert
                   message="任务失败"
-                  description={task.error_message}
+                  description={
+                    <div style={{ whiteSpace: 'pre-wrap', maxHeight: 300, overflow: 'auto' }}>
+                      {task.error_message}
+                    </div>
+                  }
                   type="error"
                 />
               )}
