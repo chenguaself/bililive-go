@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -616,7 +617,7 @@ func (m *Manager) EnqueueUploadTask(absPaths []string) (enqueued int, skipped []
 					OptionPathTemplate:   cu.UploadPathTmpl,
 					OptionDeleteAfter:    cu.DeleteAfterUpload,
 					OptionDeleteAllAfter: cu.DeleteAllAfterUpload,
-					OptionUploadTiming:   string(config.OnRecordFinished.UploadTiming),
+					OptionUploadTiming:   "after_process", // 手动上传无后续处理阶段，始终允许删除标记（不继承全局 upload_timing）
 					OptionFileTypes:      []string{string(FileTypeVideo), string(FileTypeCover)},
 				},
 			},
@@ -643,11 +644,12 @@ func (m *Manager) EnqueueUploadTask(absPaths []string) (enqueued int, skipped []
 		platform, hostName := inferUploadPathInfo(relPath)
 
 		recordInfo := RecordInfo{
-			LiveID:    types.LiveID("manual-upload"),
-			Platform:  platform,         // 用于上传路径模板：{{ .Platform }}
-			HostName:  hostName,         // 用于上传路径模板：{{ .HostName }}
-			RoomName:  filepath.Base(absPath), // 显示文件名，便于在任务列表中识别
-			StartTime: info.ModTime(),
+			LiveID:      types.LiveID("manual-upload"),
+			Platform:    platform,              // 用于上传路径模板：{{ .Platform }}
+			HostName:    hostName,              // 用于上传路径模板：{{ .HostName }}
+			RoomName:    "",                    // 手动上传无房间名，不影响路径模板
+			DisplayName: filepath.Base(absPath), // 任务列表展示文件名
+			StartTime:   info.ModTime(),
 		}
 
 		files := []FileInfo{NewVideoFileInfo(absPath)}
@@ -665,14 +667,31 @@ func (m *Manager) EnqueueUploadTask(absPaths []string) (enqueued int, skipped []
 	return enqueued, skipped, taskIDs, nil
 }
 
+// bracketPattern 匹配文件名中的 [xxx] 模式
+var bracketPattern = regexp.MustCompile(`\[([^\]]*)\]`)
+
 // inferUploadPathInfo 从文件相对路径推断平台和主播名
-// 目录结构约定：{Platform}/{HostName}/...
+// 两级策略：优先从文件名解析（[date][HostName][RoomName].flv），回退到目录结构推断
 func inferUploadPathInfo(relPath string) (platform, hostName string) {
-	parts := strings.Split(filepath.ToSlash(relPath), "/")
-	if len(parts) >= 2 {
-		return parts[0], parts[1]
+	slashPath := filepath.ToSlash(relPath)
+
+	// 策略 1：从文件名解析 HostName（文件名格式通常是 [date][HostName][RoomName].flv）
+	fileName := filepath.Base(slashPath)
+	brackets := bracketPattern.FindAllStringSubmatch(fileName, -1)
+	if len(brackets) >= 2 {
+		hostName = brackets[1][1] // 第二个方括号通常是主播名
 	}
-	return "", ""
+
+	// 策略 2：从目录结构推断 Platform，以及作为 HostName 的兜底
+	parts := strings.Split(slashPath, "/")
+	if len(parts) >= 2 {
+		platform = parts[0]
+		if hostName == "" {
+			hostName = parts[1]
+		}
+	}
+
+	return platform, hostName
 }
 
 // GetManager 从实例获取管道管理器

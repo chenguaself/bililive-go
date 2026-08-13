@@ -36,6 +36,7 @@ interface RecordInfo {
   platform: string;
   host_name: string;
   room_name: string;
+  display_name?: string;
   start_time: string;
 }
 
@@ -563,7 +564,7 @@ class PipelineTaskList extends Component<object, PipelineTaskListState> {
                 <div>
                   <Text strong>直播间：</Text>
                   <Text>
-                    {task.record_info.room_name} ({task.record_info.host_name} - {task.record_info.platform})
+                    {task.record_info.display_name || task.record_info.room_name} ({task.record_info.host_name} - {task.record_info.platform})
                   </Text>
                 </div>
               )}
@@ -642,7 +643,7 @@ class PipelineTaskList extends Component<object, PipelineTaskListState> {
         width: 200,
         render: (_, record: PipelineTask) => (
           <span>
-            {record.record_info?.room_name || '-'}
+            {record.record_info?.display_name || record.record_info?.room_name || '-'}
             {record.record_info?.platform && (
               <Tag style={{ marginLeft: 4 }}>{record.record_info.platform}</Tag>
             )}
