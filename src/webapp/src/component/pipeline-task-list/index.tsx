@@ -36,6 +36,7 @@ interface RecordInfo {
   platform: string;
   host_name: string;
   room_name: string;
+  display_name?: string;
   start_time: string;
 }
 
@@ -495,7 +496,11 @@ class PipelineTaskList extends Component<object, PipelineTaskListState> {
             {result.error_message && (
               <Alert
                 message="错误信息"
-                description={result.error_message}
+                description={
+                  <div style={{ whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto' }}>
+                    {result.error_message}
+                  </div>
+                }
                 type="error"
                 style={{ marginBottom: 8 }}
               />
@@ -559,7 +564,7 @@ class PipelineTaskList extends Component<object, PipelineTaskListState> {
                 <div>
                   <Text strong>直播间：</Text>
                   <Text>
-                    {task.record_info.room_name} ({task.record_info.host_name} - {task.record_info.platform})
+                    {task.record_info.display_name || task.record_info.room_name} ({task.record_info.host_name} - {task.record_info.platform})
                   </Text>
                 </div>
               )}
@@ -574,7 +579,11 @@ class PipelineTaskList extends Component<object, PipelineTaskListState> {
               {task.error_message && (
                 <Alert
                   message="任务失败"
-                  description={task.error_message}
+                  description={
+                    <div style={{ whiteSpace: 'pre-wrap', maxHeight: 300, overflow: 'auto' }}>
+                      {task.error_message}
+                    </div>
+                  }
                   type="error"
                 />
               )}
@@ -634,7 +643,7 @@ class PipelineTaskList extends Component<object, PipelineTaskListState> {
         width: 200,
         render: (_, record: PipelineTask) => (
           <span>
-            {record.record_info?.room_name || '-'}
+            {record.record_info?.display_name || record.record_info?.room_name || '-'}
             {record.record_info?.platform && (
               <Tag style={{ marginLeft: 4 }}>{record.record_info.platform}</Tag>
             )}

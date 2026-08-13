@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bililive-go/bililive-go/src/configs"
+	"github.com/bililive-go/bililive-go/src/pkg/metadata"
 	bilisentry "github.com/bililive-go/bililive-go/src/pkg/sentry"
 	"github.com/sirupsen/logrus"
 )
@@ -185,6 +187,9 @@ func (e *Executor) deleteMarkedFiles(files []FileInfo) []FileInfo {
 	deleteAll := false  // 标记是否为 deleteAll 模式
 	deleteAfter := false // 标记是否为 deleteAfter 模式（仅删除已上传文件）
 
+	// 获取输出路径用于计算相对路径（清理 DB 上传标记）
+	cfg := configs.GetCurrentConfig()
+
 	for _, f := range files {
 		// 检查删除模式（CloudUploadStage 标记）
 		if f.Metadata != nil {
@@ -212,6 +217,16 @@ func (e *Executor) deleteMarkedFiles(files []FileInfo) []FileInfo {
 				}
 			} else {
 				e.logger.Infof("pipeline cleanup: 已删除 %s", f.Path)
+				// 清除 DB 中的上传标记
+				if cfg != nil {
+					outPutPath, _ := filepath.Abs(cfg.OutPutPath)
+					absFilePath, _ := filepath.Abs(f.Path)
+					if relPath, relErr := filepath.Rel(outPutPath, absFilePath); relErr == nil {
+						if delErr := metadata.GetStore().Delete(context.Background(), metadata.NamespaceUploaded, filepath.ToSlash(relPath)); delErr != nil {
+							e.logger.Warnf("pipeline cleanup: 清除上传标记失败 %s: %v", f.Path, delErr)
+						}
+					}
+				}
 			}
 		} else {
 			kept = append(kept, f)

@@ -1,17 +1,16 @@
 package stages
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
-	"text/template"
 	"time"
 
 	"github.com/bililive-go/bililive-go/src/configs"
 	"github.com/bililive-go/bililive-go/src/pipeline"
+	"github.com/bililive-go/bililive-go/src/pkg/metadata"
 	"github.com/bililive-go/bililive-go/src/pkg/openlist"
 	"github.com/bililive-go/bililive-go/src/tools"
 )
@@ -173,6 +172,7 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 	var output []pipeline.FileInfo
 	var uploadFailed bool
 	usedPaths := map[string]bool{} // 检测远程路径冲突
+	var failureDetails []string    // 收集每条失败详情，用于返回给前端
 
 	// 上传所有非 Deletable 的视频文件和封面文件
 	// Deletable 检查已能正确区分中间产物（如 ConvertMp4 标记的原始 FLV）
@@ -194,7 +194,9 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 
 		// 检查文件是否存在
 		if _, err := os.Stat(file.Path); os.IsNotExist(err) {
-			s.logs += fmt.Sprintf("文件不存在: %s\n", file.Path)
+			errMsg := fmt.Sprintf("文件不存在: %s", file.Path)
+			s.logs += errMsg + "\n"
+			failureDetails = append(failureDetails, errMsg)
 			output = append(output, file)
 			uploadFailed = true
 			continue
@@ -203,7 +205,9 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 		// 渲染目标路径
 		targetPath := s.renderTargetPath(ctx, file)
 		if targetPath == "" {
-			s.logs += fmt.Sprintf("无法生成目标路径: %s\n", file.Path)
+			errMsg := fmt.Sprintf("无法生成目标路径: %s", file.Path)
+			s.logs += errMsg + "\n"
+			failureDetails = append(failureDetails, errMsg)
 			output = append(output, file)
 			uploadFailed = true
 			continue
@@ -232,6 +236,7 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 		}
 		// 确保存储名和路径之间没有双斜杠
 		fullRemotePath := "/" + s.storageName + remotePath
+		fullRemotePath = strings.ReplaceAll(fullRemotePath, "//", "/")
 
 		// 确保远程目录存在（递归创建）
 		// 使用 path.Dir 而非 filepath.Dir，因为远程路径始终用正斜杠
@@ -250,7 +255,9 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 		})
 
 		if err != nil {
-			s.logs += fmt.Sprintf("上传失败: %s -> %s/%s - %s\n", fileName, s.storageName, targetPath, err.Error())
+			errMsg := fmt.Sprintf("上传失败: %s -> %s/%s - %s", fileName, s.storageName, targetPath, err.Error())
+			s.logs += errMsg + "\n"
+			failureDetails = append(failureDetails, errMsg)
 			ctx.Logger.Errorf("上传失败: %s - %v", file.Path, err)
 			// 上传失败，保留文件
 			output = append(output, file)
@@ -262,6 +269,17 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 		ctx.Logger.Infof("文件上传成功: %s -> %s/%s", fileName, s.storageName, targetPath)
 		uploadedIndices[len(output)] = true // 记录上传成功的文件索引
 		output = append(output, file)
+
+		// 持久化上传标记（统一用正斜杠存储，与 URL 路径一致）
+		if cfg := configs.GetCurrentConfig(); cfg != nil {
+			outPutPath, _ := filepath.Abs(cfg.OutPutPath)
+			absFilePath, _ := filepath.Abs(file.Path)
+			if relPath, relErr := filepath.Rel(outPutPath, absFilePath); relErr == nil {
+				if markErr := metadata.GetStore().Set(ctx.Ctx, metadata.NamespaceUploaded, filepath.ToSlash(relPath), "1"); markErr != nil {
+					ctx.Logger.Warnf("保存上传标记失败: %v", markErr)
+				}
+			}
+		}
 	}
 
 	// 全部上传成功后，根据配置标记文件为可删除（由 Executor 在管道全部成功后统一删除）
@@ -337,8 +355,9 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 	}
 
 	// 任意上传失败，返回错误（让 Executor 将任务标记为 failed）
+	// 将每条失败详情拼入 error message，前端可直接展示具体原因
 	if uploadFailed {
-		return output, fmt.Errorf("部分文件上传失败，详见日志")
+		return output, fmt.Errorf("部分文件上传失败:\n%s", strings.Join(failureDetails, "\n"))
 	}
 
 	return output, nil
@@ -356,29 +375,12 @@ func (s *CloudUploadStage) matchFileType(fileType pipeline.FileType) bool {
 
 // renderTargetPath 渲染目标路径
 func (s *CloudUploadStage) renderTargetPath(ctx *pipeline.PipelineContext, file pipeline.FileInfo) string {
-	if s.pathTemplate == "" {
-		// 默认路径：/录播归档/{平台}/{主播名}/{文件名}
-		return fmt.Sprintf("/录播归档/%s/%s/%s",
-			ctx.RecordInfo.Platform,
-			ctx.RecordInfo.HostName,
-			filepath.Base(file.Path),
-		)
-	}
-
-	// 获取扩展名
 	ext := filepath.Ext(file.Path)
 	if len(ext) > 0 && ext[0] == '.' {
 		ext = ext[1:]
 	}
 
-	// 模板数据
-	data := struct {
-		Platform string
-		HostName string
-		RoomName string
-		FileName string
-		Ext      string
-	}{
+	data := pipeline.UploadPathData{
 		Platform: ctx.RecordInfo.Platform,
 		HostName: ctx.RecordInfo.HostName,
 		RoomName: ctx.RecordInfo.RoomName,
@@ -386,44 +388,14 @@ func (s *CloudUploadStage) renderTargetPath(ctx *pipeline.PipelineContext, file 
 		Ext:      ext,
 	}
 
-	// 使用 Go 模板引擎
-	funcMap := template.FuncMap{
-		"date": func(format string, t time.Time) string {
-			return t.Format(format)
-		},
-		"now": func() time.Time {
-			return ctx.RecordInfo.StartTime
-		},
-		"trimSuffix": func(suffix, s string) string {
-			return strings.TrimSuffix(s, suffix)
-		},
-		"ext": func(path string) string {
-			return filepath.Ext(path)
-		},
-		"filenameFilter": func(s string) string {
-			// 过滤文件名中的非法字符
-			replacer := strings.NewReplacer(
-				"/", "_", "\\", "_", ":", "_", "*", "_",
-				"?", "_", "\"", "_", "<", "_", ">", "_", "|", "_",
-			)
-			return replacer.Replace(s)
-		},
-	}
-
-	tmpl, err := template.New("path").Funcs(funcMap).Parse(s.pathTemplate)
+	path, err := pipeline.RenderUploadPath(s.pathTemplate, data, func() time.Time {
+		return ctx.RecordInfo.StartTime
+	})
 	if err != nil {
-		// 模板语法错误，返回空让调用方跳过上传，避免上传到错误路径
-		ctx.Logger.Errorf("上传路径模板解析失败: %v", err)
+		ctx.Logger.Errorf("%v", err)
 		return ""
 	}
-
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		ctx.Logger.Errorf("上传路径模板执行失败: %v", err)
-		return ""
-	}
-
-	return buf.String()
+	return path
 }
 
 func (s *CloudUploadStage) GetCommands() []string {

@@ -4,14 +4,19 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/bililive-go/bililive-go/src/configs"
 	"github.com/bililive-go/bililive-go/src/instance"
 	"github.com/bililive-go/bililive-go/src/live"
 	"github.com/bililive-go/bililive-go/src/pkg/events"
 	"github.com/bililive-go/bililive-go/src/pkg/livelogger"
 	bilisentry "github.com/bililive-go/bililive-go/src/pkg/sentry"
+	"github.com/bililive-go/bililive-go/src/types"
 	"github.com/sirupsen/logrus"
 )
 
@@ -582,6 +587,111 @@ type ManagerStats struct {
 	CompletedCount int `json:"completed_count"`
 	FailedCount    int `json:"failed_count"`
 	CancelledCount int `json:"cancelled_count"`
+}
+
+// EnqueueUploadTask 创建手动上传的 Pipeline 任务并入队
+// 行为与自动上传（CloudUploadStage）完全一致：使用相同的路径模板、配置选项
+// 每个文件创建一个独立的单阶段 cloud_upload 任务
+// absPaths: 已校验的绝对路径列表（调用方应先通过 getSafePath 校验）
+func (m *Manager) EnqueueUploadTask(absPaths []string) (enqueued int, skipped []string, taskIDs []int64, err error) {
+	config := configs.GetCurrentConfig()
+	if config == nil {
+		return 0, nil, nil, fmt.Errorf("配置未初始化")
+	}
+
+	cu := config.OnRecordFinished.CloudUpload
+	if !cu.Enable {
+		return 0, nil, nil, fmt.Errorf("云上传功能未启用，请先在设置中开启")
+	}
+	if cu.StorageName == "" {
+		return 0, nil, nil, fmt.Errorf("未配置存储名称")
+	}
+
+	// 构建单阶段 cloud_upload PipelineConfig，与 ConvertLegacyConfig 一致
+	uploadConfig := &PipelineConfig{
+		Stages: []StageConfig{
+			{
+				Name: StageNameCloudUpload,
+				Options: map[string]any{
+					OptionStorage:        cu.StorageName,
+					OptionPathTemplate:   cu.UploadPathTmpl,
+					OptionDeleteAfter:    cu.DeleteAfterUpload,
+					OptionDeleteAllAfter: cu.DeleteAllAfterUpload,
+					OptionUploadTiming:   "after_process", // 手动上传无后续处理阶段，始终允许删除标记（不继承全局 upload_timing）
+					OptionFileTypes:      []string{string(FileTypeVideo), string(FileTypeCover)},
+				},
+			},
+		},
+	}
+
+	outputPath, _ := filepath.Abs(config.OutPutPath)
+	skipped = []string{}
+
+	for _, absPath := range absPaths {
+		// 检查文件存在
+		info, statErr := os.Stat(absPath)
+		if statErr != nil {
+			skipped = append(skipped, filepath.Base(absPath)+" - 文件不存在或无法访问")
+			continue
+		}
+		if info.IsDir() {
+			skipped = append(skipped, filepath.Base(absPath)+" - 不支持上传文件夹")
+			continue
+		}
+
+		// 从相对路径推断 RecordInfo（用于上传路径模板渲染）
+		relPath, _ := filepath.Rel(outputPath, absPath)
+		platform, hostName := inferUploadPathInfo(relPath)
+
+		recordInfo := RecordInfo{
+			LiveID:      types.LiveID("manual-upload"),
+			Platform:    platform,              // 用于上传路径模板：{{ .Platform }}
+			HostName:    hostName,              // 用于上传路径模板：{{ .HostName }}
+			RoomName:    "",                    // 手动上传无房间名，不影响路径模板
+			DisplayName: filepath.Base(absPath), // 任务列表展示文件名
+			StartTime:   info.ModTime(),
+		}
+
+		files := []FileInfo{NewVideoFileInfo(absPath)}
+		task := NewPipelineTask(recordInfo, uploadConfig, files)
+
+		if enqueueErr := m.EnqueueTask(task); enqueueErr != nil {
+			skipped = append(skipped, filepath.Base(absPath)+" - 入队失败: "+enqueueErr.Error())
+			continue
+		}
+
+		enqueued++
+		taskIDs = append(taskIDs, task.ID)
+	}
+
+	return enqueued, skipped, taskIDs, nil
+}
+
+// bracketPattern 匹配文件名中的 [xxx] 模式
+var bracketPattern = regexp.MustCompile(`\[([^\]]*)\]`)
+
+// inferUploadPathInfo 从文件相对路径推断平台和主播名
+// 两级策略：优先从文件名解析（[date][HostName][RoomName].flv），回退到目录结构推断
+func inferUploadPathInfo(relPath string) (platform, hostName string) {
+	slashPath := filepath.ToSlash(relPath)
+
+	// 策略 1：从文件名解析 HostName（文件名格式通常是 [date][HostName][RoomName].flv）
+	fileName := filepath.Base(slashPath)
+	brackets := bracketPattern.FindAllStringSubmatch(fileName, -1)
+	if len(brackets) >= 2 {
+		hostName = brackets[1][1] // 第二个方括号通常是主播名
+	}
+
+	// 策略 2：从目录结构推断 Platform，以及作为 HostName 的兜底
+	parts := strings.Split(slashPath, "/")
+	if len(parts) >= 2 {
+		platform = parts[0]
+		if hostName == "" {
+			hostName = parts[1]
+		}
+	}
+
+	return platform, hostName
 }
 
 // GetManager 从实例获取管道管理器
