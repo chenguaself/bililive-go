@@ -1004,7 +1004,20 @@ func (r *recorder) sendAccumulatedSummary() {
 
 	// 使用 Pipeline 收集的最终文件详情（如有），否则用录制累积的原始文件
 	if len(r.pipelineDetails) > 0 {
-		r.getLogger().Infof("推送 Pipeline 录制摘要：%d 个文件", len(r.pipelineDetails))
+		// 合并未被 Pipeline 覆盖的录制文件（如某分段因 stages==0 未入队）
+		merged := r.pipelineDetails
+		if len(r.recordedFiles) > 0 {
+			inPipeline := map[string]bool{}
+			for _, d := range r.pipelineDetails {
+				inPipeline[d.Name] = true
+			}
+			for _, f := range r.recordedFiles {
+				if !inPipeline[f.Name] {
+					merged = append(merged, f)
+				}
+			}
+		}
+		r.getLogger().Infof("推送 Pipeline 录制摘要：%d 个文件", len(merged))
 		hostName := ""
 		platform := r.Live.GetPlatformCNName()
 		if obj, cacheErr := r.cache.Get(r.Live); cacheErr == nil {
@@ -1017,7 +1030,7 @@ func (r *recorder) sendAccumulatedSummary() {
 			hostName,
 			platform,
 			r.recordedFiles,     // originalFiles（allUploaded 时显示用）
-			r.pipelineDetails,   // finalFiles
+			merged,              // finalFiles（含未入队分段的文件）
 			outputPath,
 		)
 	} else {
@@ -1071,9 +1084,6 @@ func (r *recorder) onPipelineTaskComplete(task *pipeline.PipelineTask) {
 	}
 
 	remaining := r.pipelinePendingCount
-
-	// 防止回调被重复执行（如内存中重试场景）
-	task.OnTaskComplete = nil
 
 	r.pipelineMu.Unlock()
 

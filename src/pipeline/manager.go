@@ -30,6 +30,7 @@ type Manager struct {
 	executor      *Executor
 	config        *ManagerConfig
 	runningTasks  map[int64]context.CancelFunc
+	taskCallbacks map[int64]func(*PipelineTask) // 按 task.ID 索引的完成回调（不经过持久化）
 	mu            sync.RWMutex
 	wg            sync.WaitGroup
 	eventDispatch events.Dispatcher
@@ -71,6 +72,7 @@ func NewManager(ctx context.Context, store Store, config *ManagerConfig, dispatc
 		executor:      NewExecutor(logrus.StandardLogger()),
 		config:        config,
 		runningTasks:  make(map[int64]context.CancelFunc),
+		taskCallbacks: make(map[int64]func(*PipelineTask)),
 		eventDispatch: dispatcher,
 	}
 
@@ -282,9 +284,16 @@ func (m *Manager) executeTask(ctx context.Context, task *PipelineTask) {
 	// 广播任务状态变化
 	m.broadcastTaskUpdate(task)
 
-	// 调用任务完成回调（recorder 用于追踪 Pipeline 状态并统一发送摘要）
-	if task.OnTaskComplete != nil {
-		task.OnTaskComplete(task)
+	// 调用任务完成回调（从 Manager 注册表查找，避免 SQLite 反序列化丢失）
+	m.mu.RLock()
+	callback := m.taskCallbacks[task.ID]
+	m.mu.RUnlock()
+	if callback != nil {
+		callback(task)
+		// 调用后清理注册表
+		m.mu.Lock()
+		delete(m.taskCallbacks, task.ID)
+		m.mu.Unlock()
 	}
 }
 
@@ -349,9 +358,20 @@ func (m *Manager) EnqueueRecordingTask(
 
 	// 创建任务
 	task := NewPipelineTask(NewRecordInfo(info), pipelineConfig, files)
-	task.OnTaskComplete = onTaskComplete
 
-	return m.EnqueueTask(task)
+	if err := m.EnqueueTask(task); err != nil {
+		return err
+	}
+
+	// 任务入队成功后注册回调（此时 task.ID 已由 store.AssignID 填充）
+	// 回调存储在 Manager 内存中，不经过持久化，避免 SQLite 反序列化丢失
+	if onTaskComplete != nil {
+		m.mu.Lock()
+		m.taskCallbacks[task.ID] = onTaskComplete
+		m.mu.Unlock()
+	}
+
+	return nil
 }
 
 // CancelTask 取消任务
