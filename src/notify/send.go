@@ -317,12 +317,17 @@ func SendPipelineRecordingSummary(
 
 	var title, body string
 	if allUploaded {
-		// 所有文件已上传并删除：显示原始文件列表 + 上传状态
-		if len(originalFiles) == 0 {
+		// 所有文件已上传并删除：显示实际上传的文件列表
+		displayFiles := finalFiles
+		if len(displayFiles) == 0 {
+			// 回退：finalFiles 为空时用 originalFiles
+			displayFiles = originalFiles
+		}
+		if len(displayFiles) == 0 {
 			return
 		}
 		title = fmt.Sprintf("%s 录制完成", hostName)
-		body = buildUploadedSummaryBody(platform, originalFiles)
+		body = buildUploadedSummaryBody(platform, displayFiles)
 	} else if len(kept) > 0 {
 		// 有文件保留在磁盘：显示保留的文件列表
 		title, body = buildRecordingSummaryMessage(hostName, platform, kept, outputPath)

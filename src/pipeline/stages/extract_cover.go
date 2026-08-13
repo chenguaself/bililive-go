@@ -334,6 +334,10 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 					output[i].Metadata = map[string]any{}
 				}
 				output[i].Metadata["delete_all"] = true
+				// 为实际上传的文件标记 uploaded（供回调提取上传文件详情）
+				if uploadedIndices[i] {
+					output[i].Metadata["uploaded"] = true
+				}
 			}
 			s.logs += fmt.Sprintf("全部上传成功，已标记 %d 个文件待删除（含中间产物）\n", len(output))
 			ctx.Logger.Infof("全部上传成功，已标记 %d 个文件待删除（含中间产物）", len(output))

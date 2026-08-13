@@ -274,6 +274,13 @@ func (m *manager) RestartRecorder(ctx context.Context, live live.Live) error {
 		}
 	}
 
+	// 4. 转移 Pipeline 状态（确保旧分段的 Pipeline 结果不丢失）
+	if newRecTyped, ok := newRec.(*recorder); ok {
+		if oldRecTyped, ok := oldRecorder.(*recorder); ok {
+			newRecTyped.TransferPipelineState(oldRecTyped)
+		}
+	}
+
 	return nil
 }
 

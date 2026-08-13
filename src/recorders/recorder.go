@@ -291,7 +291,10 @@ type recorder struct {
 	pipelineMu sync.Mutex
 	// pipelineDetails 收集各 Pipeline 任务的最终文件详情
 	// 任务完成时通过回调写入，录制结束时读取用于构造摘要
-	pipelineDetails []notify.RecordingFileDetail
+	// 使用指针，分段重启时新旧 recorder 共享同一底层数据
+	pipelineDetails *[]notify.RecordingFileDetail
+	// summarySent 标记摘要已发送，防止 defer 和回调并发双发
+	summarySent bool
 
 	// 当前录制的流信息（来自平台 API）
 	currentStreamInfo *live.AvailableStreamInfo
@@ -325,14 +328,15 @@ func NewRecorder(ctx context.Context, live live.Live) (Recorder, error) {
 	inst := instance.GetInstance(ctx)
 
 	return &recorder{
-		Live:       live,
-		cache:      inst.Cache,
-		startTime:  time.Now(),
-		ed:         inst.EventDispatcher.(events.Dispatcher),
-		state:      begin,
-		stop:       make(chan struct{}),
-		done:       make(chan struct{}),
-		parserLock: new(sync.RWMutex),
+		Live:            live,
+		cache:           inst.Cache,
+		startTime:       time.Now(),
+		ed:              inst.EventDispatcher.(events.Dispatcher),
+		state:           begin,
+		stop:            make(chan struct{}),
+		done:            make(chan struct{}),
+		parserLock:      new(sync.RWMutex),
+		pipelineDetails: new([]notify.RecordingFileDetail),
 	}, nil
 }
 
@@ -795,12 +799,20 @@ func (r *recorder) tryRecord(ctx context.Context) {
 			return
 		}
 
+		// 先递增 pending 计数（在入队前，避免任务被异步调度完成后回调递减到 -1）
+		r.pipelineMu.Lock()
+		r.pipelinePendingCount++
+		r.pipelineMu.Unlock()
+
 		// 入队 Pipeline 任务
 		if err := pipelineManager.EnqueueRecordingTask(info, pipelineConfig, outputFiles, r.onPipelineTaskComplete); err != nil {
 			r.getLogger().WithError(err).Error("failed to enqueue pipeline task")
+			// 入队失败，回滚计数
+			r.pipelineMu.Lock()
+			r.pipelinePendingCount--
+			r.pipelineMu.Unlock()
 		} else {
 			r.pipelineEnqueued = true
-			r.pipelinePendingCount++
 			// 记录 Pipeline 阶段顺序
 			var stageNames []string
 			for _, stage := range pipelineConfig.Stages {
@@ -974,13 +986,20 @@ func (r *recorder) accumulateRecordedFiles(files ...string) {
 func (r *recorder) sendAccumulatedSummary() {
 	r.pipelineMu.Lock()
 	pendingCount := r.pipelinePendingCount
-	r.pipelineMu.Unlock()
-
+	// 幂等保护：防止 defer 和回调并发双发
+	if r.summarySent {
+		r.pipelineMu.Unlock()
+		return
+	}
 	// Pipeline 任务尚未全部完成，等待回调触发最终摘要
 	if r.pipelineEnqueued && pendingCount > 0 {
+		r.pipelineMu.Unlock()
 		r.getLogger().Infof("Pipeline 任务尚未全部完成（剩余 %d 个），延迟摘要推送", pendingCount)
 		return
 	}
+	// 标记摘要已发送（在实际发送前，防止并发双发）
+	r.summarySent = true
+	r.pipelineMu.Unlock()
 
 	r.recordedFilesMu.Lock()
 	defer r.recordedFilesMu.Unlock()
@@ -988,7 +1007,7 @@ func (r *recorder) sendAccumulatedSummary() {
 		r.getLogger().Infof("录制摘要推送已抑制（分段重启），累积 %d 个文件将传递给新 recorder", len(r.recordedFiles))
 		return
 	}
-	if len(r.recordedFiles) == 0 && len(r.pipelineDetails) == 0 {
+	if len(r.recordedFiles) == 0 && len(*r.pipelineDetails) == 0 {
 		r.getLogger().Info("无录制文件，跳过摘要推送")
 		return
 	}
@@ -1003,12 +1022,12 @@ func (r *recorder) sendAccumulatedSummary() {
 	}
 
 	// 使用 Pipeline 收集的最终文件详情（如有），否则用录制累积的原始文件
-	if len(r.pipelineDetails) > 0 {
+	if len((*r.pipelineDetails)) > 0 {
 		// 合并未被 Pipeline 覆盖的录制文件（如某分段因 stages==0 未入队）
-		merged := r.pipelineDetails
+		merged := (*r.pipelineDetails)
 		if len(r.recordedFiles) > 0 {
 			inPipeline := map[string]bool{}
-			for _, d := range r.pipelineDetails {
+			for _, d := range (*r.pipelineDetails) {
 				inPipeline[d.Name] = true
 			}
 			for _, f := range r.recordedFiles {
@@ -1063,23 +1082,23 @@ func (r *recorder) onPipelineTaskComplete(task *pipeline.PipelineTask) {
 			// 所有文件已上传并删除：从 LastStageFiles 提取真正上传的文件
 			uploadedDetails := extractUploadedDetails(task.LastStageFiles)
 			if len(uploadedDetails) > 0 {
-				r.pipelineDetails = append(r.pipelineDetails, uploadedDetails...)
+				(*r.pipelineDetails) = append((*r.pipelineDetails), uploadedDetails...)
 			} else {
 				// 回退：无上传标记时用原始文件
 				for _, d := range pipeline.FileInfoToDetails(task.InitialFiles) {
 					d.Uploaded = true
-					r.pipelineDetails = append(r.pipelineDetails, d)
+					(*r.pipelineDetails) = append((*r.pipelineDetails), d)
 				}
 			}
 		} else {
-			r.pipelineDetails = append(r.pipelineDetails, pipeline.FileInfoToDetails(finalFiles)...)
+			(*r.pipelineDetails) = append((*r.pipelineDetails), pipeline.FileInfoToDetails(finalFiles)...)
 		}
 	case pipeline.PipelineStatusFailed, pipeline.PipelineStatusCancelled:
 		// 失败/取消时优先用 CurrentFiles（最后成功阶段的输出），回退到 InitialFiles
 		if len(task.CurrentFiles) > 0 {
-			r.pipelineDetails = append(r.pipelineDetails, pipeline.FileInfoToDetails(task.CurrentFiles)...)
+			(*r.pipelineDetails) = append((*r.pipelineDetails), pipeline.FileInfoToDetails(task.CurrentFiles)...)
 		} else {
-			r.pipelineDetails = append(r.pipelineDetails, pipeline.FileInfoToDetails(task.InitialFiles)...)
+			(*r.pipelineDetails) = append((*r.pipelineDetails), pipeline.FileInfoToDetails(task.InitialFiles)...)
 		}
 	}
 
@@ -1275,6 +1294,30 @@ func (r *recorder) SetInitialRecordedFiles(files []notify.RecordingFileDetail) {
 	r.recordedFilesMu.Unlock()
 	// 日志不依赖 r.recordedFiles，移到锁外减少持有时间
 	r.getLogger().Infof("继承上一个 recorder 的 %d 个录制文件", len(files))
+}
+
+// TransferPipelineState 从旧 recorder 转移 Pipeline 状态
+// 分段重启时由 RestartRecorder 调用，确保旧分段的 Pipeline 结果不丢失
+func (r *recorder) TransferPipelineState(old *recorder) {
+	r.pipelineMu.Lock()
+	defer r.pipelineMu.Unlock()
+
+	old.pipelineMu.Lock()
+	defer old.pipelineMu.Unlock()
+
+	// 合并 Pipeline 状态
+	r.pipelineEnqueued = r.pipelineEnqueued || old.pipelineEnqueued
+	r.pipelinePendingCount += old.pipelinePendingCount
+
+	// 合并文件详情（旧 recorder 的详情追加到新 recorder）
+	*r.pipelineDetails = append(*r.pipelineDetails, *old.pipelineDetails...)
+
+	// 将旧 recorder 的详情指针指向新 recorder 的共享数据
+	// 这样旧 recorder 的回调写入时，数据会存到新 recorder 能读取的位置
+	old.pipelineDetails = r.pipelineDetails
+
+	r.getLogger().Infof("继承 Pipeline 状态：pending=%d, details=%d 个文件",
+		old.pipelinePendingCount, len(*old.pipelineDetails))
 }
 
 func (r *recorder) getLogger() *livelogger.LiveLogger {

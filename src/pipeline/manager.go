@@ -396,6 +396,17 @@ func (m *Manager) CancelTask(taskID int64) error {
 			return err
 		}
 		m.broadcastTaskUpdate(task)
+
+		// 触发完成回调（recorder 需要递减 pipelinePendingCount）
+		m.mu.RLock()
+		callback := m.taskCallbacks[taskID]
+		m.mu.RUnlock()
+		if callback != nil {
+			callback(task)
+			m.mu.Lock()
+			delete(m.taskCallbacks, taskID)
+			m.mu.Unlock()
+		}
 	}
 
 	return nil
