@@ -114,6 +114,9 @@ func (e *Executor) Execute(
 			output, commands, logs, err = e.executeStage(ctx, stageCfg, files)
 		}
 
+		// 回填新产出文件的 Size（阶段内构造 FileInfo 时可能未 stat）
+		backfillFileSizes(output)
+
 		// 记录结果
 		result := StageResult{
 			StageName:  stageCfg.Name,
@@ -173,6 +176,8 @@ func (e *Executor) Execute(
 		}
 		return results, ctx.Ctx.Err()
 	}
+	// 保存最后阶段输出的快照（用于回调提取上传文件详情），再执行清理
+	ctx.LastStageFiles = files
 	keptFiles := e.deleteMarkedFiles(files)
 	if len(results) > 0 {
 		results[len(results)-1].OutputFiles = keptFiles
@@ -470,6 +475,18 @@ func deduplicateFiles(files []FileInfo) []FileInfo {
 		}
 	}
 	return result
+}
+
+// backfillFileSizes 对 Size 为 0 的文件执行 os.Stat 回填大小
+// 阶段内构造 FileInfo 时可能未 stat，导致摘要通知漏掉这些文件
+func backfillFileSizes(files []FileInfo) {
+	for i := range files {
+		if files[i].Size == 0 {
+			if fi, err := os.Stat(files[i].Path); err == nil {
+				files[i].Size = fi.Size()
+			}
+		}
+	}
 }
 
 // getTimeNow 获取当前时间（可用于测试时 mock）

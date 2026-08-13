@@ -281,6 +281,18 @@ type recorder struct {
 	currentFileLock sync.RWMutex
 	currentFilePath string
 
+	// pipelineEnqueued 标记 Pipeline 任务已入队，由 Pipeline Manager 负责发送录制摘要
+	// 避免 recorder 在 Pipeline 处理完成前发送不准确的原始文件列表
+	pipelineEnqueued bool
+	// pipelinePendingCount 追踪尚未完成的 Pipeline 任务数量
+	// 仅当所有任务完成且录制结束后，才发送统一的录制摘要
+	pipelinePendingCount int
+	// pipelineMu 保护 pipelinePendingCount 和 pipelineDetails 的并发访问
+	pipelineMu sync.Mutex
+	// pipelineDetails 收集各 Pipeline 任务的最终文件详情
+	// 任务完成时通过回调写入，录制结束时读取用于构造摘要
+	pipelineDetails []notify.RecordingFileDetail
+
 	// 当前录制的流信息（来自平台 API）
 	currentStreamInfo *live.AvailableStreamInfo
 
@@ -784,9 +796,11 @@ func (r *recorder) tryRecord(ctx context.Context) {
 		}
 
 		// 入队 Pipeline 任务
-		if err := pipelineManager.EnqueueRecordingTask(info, pipelineConfig, outputFiles); err != nil {
+		if err := pipelineManager.EnqueueRecordingTask(info, pipelineConfig, outputFiles, r.onPipelineTaskComplete); err != nil {
 			r.getLogger().WithError(err).Error("failed to enqueue pipeline task")
 		} else {
+			r.pipelineEnqueued = true
+			r.pipelinePendingCount++
 			// 记录 Pipeline 阶段顺序
 			var stageNames []string
 			for _, stage := range pipelineConfig.Stages {
@@ -958,22 +972,26 @@ func (r *recorder) accumulateRecordedFiles(files ...string) {
 // sendAccumulatedSummary 录制结束后统一推送录制文件摘要通知
 // 在 run() 退出时通过 defer 调用，确保所有分段文件汇总为一条通知
 func (r *recorder) sendAccumulatedSummary() {
+	r.pipelineMu.Lock()
+	pendingCount := r.pipelinePendingCount
+	r.pipelineMu.Unlock()
+
+	// Pipeline 任务尚未全部完成，等待回调触发最终摘要
+	if r.pipelineEnqueued && pendingCount > 0 {
+		r.getLogger().Infof("Pipeline 任务尚未全部完成（剩余 %d 个），延迟摘要推送", pendingCount)
+		return
+	}
+
 	r.recordedFilesMu.Lock()
 	defer r.recordedFilesMu.Unlock()
 	if r.suppressSummary {
 		r.getLogger().Infof("录制摘要推送已抑制（分段重启），累积 %d 个文件将传递给新 recorder", len(r.recordedFiles))
 		return
 	}
-	if len(r.recordedFiles) == 0 {
+	if len(r.recordedFiles) == 0 && len(r.pipelineDetails) == 0 {
 		r.getLogger().Info("无录制文件，跳过摘要推送")
 		return
 	}
-	obj, err := r.cache.Get(r.Live)
-	if err != nil {
-		r.getLogger().WithError(err).Error("获取直播信息失败，无法推送录制摘要")
-		return
-	}
-	info := obj.(*live.Info)
 
 	// 获取录制输出路径，用于查询剩余磁盘空间
 	cfg := configs.GetCurrentConfig()
@@ -984,8 +1002,114 @@ func (r *recorder) sendAccumulatedSummary() {
 		outputPath = resolved.OutPutPath
 	}
 
-	r.getLogger().Infof("推送录制摘要：%d 个文件", len(r.recordedFiles))
-	notify.SendRecordingSummary(r.getLogger(), info.HostName, r.Live.GetPlatformCNName(), r.recordedFiles, outputPath)
+	// 使用 Pipeline 收集的最终文件详情（如有），否则用录制累积的原始文件
+	if len(r.pipelineDetails) > 0 {
+		r.getLogger().Infof("推送 Pipeline 录制摘要：%d 个文件", len(r.pipelineDetails))
+		hostName := ""
+		platform := r.Live.GetPlatformCNName()
+		if obj, cacheErr := r.cache.Get(r.Live); cacheErr == nil {
+			if info, ok := obj.(*live.Info); ok {
+				hostName = info.HostName
+			}
+		}
+		notify.SendPipelineRecordingSummary(
+			r.getLogger(),
+			hostName,
+			platform,
+			r.recordedFiles,     // originalFiles（allUploaded 时显示用）
+			r.pipelineDetails,   // finalFiles
+			outputPath,
+		)
+	} else {
+		// Pipeline 未产出有效文件详情，回退到录制累积
+		if len(r.recordedFiles) == 0 {
+			return
+		}
+		obj, err := r.cache.Get(r.Live)
+		if err != nil {
+			r.getLogger().WithError(err).Error("获取直播信息失败，无法推送录制摘要")
+			return
+		}
+		info := obj.(*live.Info)
+		r.getLogger().Infof("推送录制摘要：%d 个文件", len(r.recordedFiles))
+		notify.SendRecordingSummary(r.getLogger(), info.HostName, r.Live.GetPlatformCNName(), r.recordedFiles, outputPath)
+	}
+}
+
+// onPipelineTaskComplete Pipeline 任务完成回调
+// 由 Pipeline Manager 在 executeTask 结束时调用
+func (r *recorder) onPipelineTaskComplete(task *pipeline.PipelineTask) {
+	r.pipelineMu.Lock()
+	r.pipelinePendingCount--
+
+	// 收集任务的最终文件详情
+	switch task.Status {
+	case pipeline.PipelineStatusCompleted:
+		finalFiles := task.CurrentFiles
+		if len(finalFiles) == 0 {
+			// 所有文件已上传并删除：从 LastStageFiles 提取真正上传的文件
+			uploadedDetails := extractUploadedDetails(task.LastStageFiles)
+			if len(uploadedDetails) > 0 {
+				r.pipelineDetails = append(r.pipelineDetails, uploadedDetails...)
+			} else {
+				// 回退：无上传标记时用原始文件
+				for _, d := range pipeline.FileInfoToDetails(task.InitialFiles) {
+					d.Uploaded = true
+					r.pipelineDetails = append(r.pipelineDetails, d)
+				}
+			}
+		} else {
+			r.pipelineDetails = append(r.pipelineDetails, pipeline.FileInfoToDetails(finalFiles)...)
+		}
+	case pipeline.PipelineStatusFailed, pipeline.PipelineStatusCancelled:
+		// 失败/取消时优先用 CurrentFiles（最后成功阶段的输出），回退到 InitialFiles
+		if len(task.CurrentFiles) > 0 {
+			r.pipelineDetails = append(r.pipelineDetails, pipeline.FileInfoToDetails(task.CurrentFiles)...)
+		} else {
+			r.pipelineDetails = append(r.pipelineDetails, pipeline.FileInfoToDetails(task.InitialFiles)...)
+		}
+	}
+
+	remaining := r.pipelinePendingCount
+
+	// 防止回调被重复执行（如内存中重试场景）
+	task.OnTaskComplete = nil
+
+	r.pipelineMu.Unlock()
+
+	r.getLogger().Infof("Pipeline 任务完成（状态: %s），剩余 %d 个任务", task.Status, remaining)
+
+	// 所有任务完成且录制已结束，发送统一摘要
+	// 使用 goroutine 避免通知发送（Telegram/Email 等）阻塞 Pipeline 任务槽位
+	if remaining == 0 {
+		select {
+		case <-r.done:
+			// run() 已退出，异步发送摘要（不阻塞 executeTask）
+			go r.sendAccumulatedSummary()
+		default:
+			// run() 仍在运行，等待 run() 退出时由 sendAccumulatedSummary 发送
+		}
+	}
+}
+
+// extractUploadedDetails 从最后阶段输出文件中提取有上传标记的文件详情
+// CloudUploadStage 会为成功上传的文件设置 Metadata["uploaded"]=true
+func extractUploadedDetails(files []pipeline.FileInfo) []notify.RecordingFileDetail {
+	var details []notify.RecordingFileDetail
+	for _, f := range files {
+		if f.Metadata != nil {
+			if uploaded, ok := f.Metadata["uploaded"].(bool); ok && uploaded {
+				if f.Size > 0 {
+					details = append(details, notify.RecordingFileDetail{
+						Name:     filepath.Base(f.Path),
+						Size:     f.Size,
+						Uploaded: true,
+					})
+				}
+			}
+		}
+	}
+	return details
 }
 
 func (r *recorder) logStreamURLRetry(err error) {

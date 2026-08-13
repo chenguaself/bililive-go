@@ -16,8 +16,9 @@ import (
 
 // RecordingFileDetail 录制文件详情
 type RecordingFileDetail struct {
-	Name string // 文件名（不含路径）
-	Size int64  // 文件大小（字节）
+	Name     string // 文件名（不含路径）
+	Size     int64  // 文件大小（字节）
+	Uploaded bool   // 是否已上传到云端（用于摘要消息标注）
 }
 
 // SendNotification 发送统一通知函数
@@ -250,6 +251,29 @@ func buildRecordingSummaryMessage(hostName, platform string, files []RecordingFi
 	return
 }
 
+// buildUploadedSummaryBody 构造"已上传到云端"场景的录制摘要消息体
+// 与 buildRecordingSummaryMessage 类似，但标注文件已上传、不显示磁盘空间
+func buildUploadedSummaryBody(platform string, files []RecordingFileDetail) string {
+	const maxDisplayFiles = 30
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "平台：%s\n", platform)
+	fmt.Fprintf(&sb, "录制文件：%d 个（已上传到云端）\n", len(files))
+	var totalSize int64
+	for i, f := range files {
+		totalSize += f.Size
+		if i < maxDisplayFiles {
+			fmt.Fprintf(&sb, "  %d. %s (%s)\n", i+1, f.Name, formatFileSize(f.Size))
+		}
+	}
+	if len(files) > maxDisplayFiles {
+		fmt.Fprintf(&sb, "  ... 还有 %d 个文件未显示\n", len(files)-maxDisplayFiles)
+	}
+	fmt.Fprintf(&sb, "总大小：%s\n", formatFileSize(totalSize))
+	fmt.Fprintf(&sb, "本地文件已清理")
+	return sb.String()
+}
+
 // SendRecordingSummary 录制结束后发送录制文件摘要通知
 // outputPath 为录制输出路径，用于获取剩余磁盘空间
 func SendRecordingSummary(logger *livelogger.LiveLogger, hostName, platform string, files []RecordingFileDetail, outputPath string) {
@@ -262,7 +286,55 @@ func SendRecordingSummary(logger *livelogger.LiveLogger, hostName, platform stri
 	}
 
 	title, body := buildRecordingSummaryMessage(hostName, platform, files, outputPath)
+	sendToAllChannels(cfg, logger, title, body)
+}
 
+// SendPipelineRecordingSummary Pipeline 完成后发送录制摘要通知
+// originalFiles: 原始录制文件列表（allUploaded 时用于显示）
+// finalFiles: Pipeline 处理后的最终文件列表（含 Uploaded 标记）
+func SendPipelineRecordingSummary(
+	logger *livelogger.LiveLogger,
+	hostName, platform string,
+	originalFiles, finalFiles []RecordingFileDetail,
+	outputPath string,
+) {
+	cfg := configs.GetCurrentConfig()
+	if cfg == nil || !cfg.Notify.SendRecordingSummary {
+		return
+	}
+
+	// 分离已上传文件和保留文件
+	var kept []RecordingFileDetail
+	allUploaded := len(finalFiles) > 0
+	for _, f := range finalFiles {
+		if f.Uploaded {
+			// 已上传文件不显示在最终列表中（已从磁盘删除）
+		} else {
+			allUploaded = false
+			kept = append(kept, f)
+		}
+	}
+
+	var title, body string
+	if allUploaded {
+		// 所有文件已上传并删除：显示原始文件列表 + 上传状态
+		if len(originalFiles) == 0 {
+			return
+		}
+		title = fmt.Sprintf("%s 录制完成", hostName)
+		body = buildUploadedSummaryBody(platform, originalFiles)
+	} else if len(kept) > 0 {
+		// 有文件保留在磁盘：显示保留的文件列表
+		title, body = buildRecordingSummaryMessage(hostName, platform, kept, outputPath)
+	} else {
+		return
+	}
+
+	sendToAllChannels(cfg, logger, title, body)
+}
+
+// sendToAllChannels 向所有已启用的通知通道推送摘要消息
+func sendToAllChannels(cfg *configs.Config, logger *livelogger.LiveLogger, title, body string) {
 	// Telegram
 	if cfg.Notify.Telegram.Enable {
 		msg := fmt.Sprintf("%s\n%s", title, body)

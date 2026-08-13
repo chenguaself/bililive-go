@@ -13,6 +13,7 @@ import (
 	"github.com/bililive-go/bililive-go/src/configs"
 	"github.com/bililive-go/bililive-go/src/instance"
 	"github.com/bililive-go/bililive-go/src/live"
+	"github.com/bililive-go/bililive-go/src/notify"
 	"github.com/bililive-go/bililive-go/src/pkg/events"
 	"github.com/bililive-go/bililive-go/src/pkg/livelogger"
 	bilisentry "github.com/bililive-go/bililive-go/src/pkg/sentry"
@@ -270,6 +271,9 @@ func (m *Manager) executeTask(ctx context.Context, task *PipelineTask) {
 		logrus.WithField("task_id", task.ID).Info("pipeline task completed successfully")
 	}
 
+	// 保存最后阶段输出的快照（清理前），用于回调提取上传文件详情
+	task.LastStageFiles = pipelineCtx.LastStageFiles
+
 	// 更新任务状态
 	if err := m.store.UpdateTask(m.ctx, task); err != nil {
 		logrus.WithError(err).Error("failed to update pipeline task status after execution")
@@ -277,6 +281,11 @@ func (m *Manager) executeTask(ctx context.Context, task *PipelineTask) {
 
 	// 广播任务状态变化
 	m.broadcastTaskUpdate(task)
+
+	// 调用任务完成回调（recorder 用于追踪 Pipeline 状态并统一发送摘要）
+	if task.OnTaskComplete != nil {
+		task.OnTaskComplete(task)
+	}
 }
 
 // broadcastTaskUpdate 广播任务更新事件
@@ -284,6 +293,22 @@ func (m *Manager) broadcastTaskUpdate(task *PipelineTask) {
 	if m.eventDispatch != nil {
 		m.eventDispatch.DispatchEvent(events.NewEvent(PipelineTaskUpdateEvent, task))
 	}
+}
+
+// FileInfoToDetails 将 FileInfo 切片转换为 RecordingFileDetail 切片
+// 使用 FileInfo 中预存的 Size，无需再次 stat 文件
+// 仅包含视频和其他类型文件，排除封面（封面不在录制摘要中展示）
+func FileInfoToDetails(files []FileInfo) []notify.RecordingFileDetail {
+	details := make([]notify.RecordingFileDetail, 0, len(files))
+	for _, f := range files {
+		if f.Size > 0 && f.Type != FileTypeCover {
+			details = append(details, notify.RecordingFileDetail{
+				Name: filepath.Base(f.Path),
+				Size: f.Size,
+			})
+		}
+	}
+	return details
 }
 
 // EnqueueTask 添加任务到队列
@@ -309,10 +334,12 @@ func (m *Manager) EnqueueTask(task *PipelineTask) error {
 
 // EnqueueRecordingTask 创建并入队录制完成后的处理任务
 // 这是 recorder.go 调用的主要入口
+// onTaskComplete: 任务完成回调（可选），用于通知 recorder 任务结束
 func (m *Manager) EnqueueRecordingTask(
 	info *live.Info,
 	pipelineConfig *PipelineConfig,
 	outputFiles []string,
+	onTaskComplete func(task *PipelineTask),
 ) error {
 	// 构建文件信息列表
 	files := make([]FileInfo, len(outputFiles))
@@ -322,6 +349,7 @@ func (m *Manager) EnqueueRecordingTask(
 
 	// 创建任务
 	task := NewPipelineTask(NewRecordInfo(info), pipelineConfig, files)
+	task.OnTaskComplete = onTaskComplete
 
 	return m.EnqueueTask(task)
 }
@@ -644,7 +672,7 @@ func (m *Manager) EnqueueUploadTask(absPaths []string) (enqueued int, skipped []
 		platform, hostName := inferUploadPathInfo(relPath)
 
 		recordInfo := RecordInfo{
-			LiveID:      types.LiveID("manual-upload"),
+			LiveID:      types.LiveID(ManualUploadLiveID),
 			Platform:    platform,              // 用于上传路径模板：{{ .Platform }}
 			HostName:    hostName,              // 用于上传路径模板：{{ .HostName }}
 			RoomName:    "",                    // 手动上传无房间名，不影响路径模板
