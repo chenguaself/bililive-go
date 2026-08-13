@@ -281,6 +281,10 @@ type recorder struct {
 	currentFileLock sync.RWMutex
 	currentFilePath string
 
+	// pipelineEnqueued 标记 Pipeline 任务已入队，由 Pipeline Manager 负责发送录制摘要
+	// 避免 recorder 在 Pipeline 处理完成前发送不准确的原始文件列表
+	pipelineEnqueued bool
+
 	// 当前录制的流信息（来自平台 API）
 	currentStreamInfo *live.AvailableStreamInfo
 
@@ -787,6 +791,7 @@ func (r *recorder) tryRecord(ctx context.Context) {
 		if err := pipelineManager.EnqueueRecordingTask(info, pipelineConfig, outputFiles); err != nil {
 			r.getLogger().WithError(err).Error("failed to enqueue pipeline task")
 		} else {
+			r.pipelineEnqueued = true
 			// 记录 Pipeline 阶段顺序
 			var stageNames []string
 			for _, stage := range pipelineConfig.Stages {
@@ -960,6 +965,12 @@ func (r *recorder) accumulateRecordedFiles(files ...string) {
 func (r *recorder) sendAccumulatedSummary() {
 	r.recordedFilesMu.Lock()
 	defer r.recordedFilesMu.Unlock()
+	// Pipeline 已入队，由 Pipeline Manager 在任务完成后发送摘要，
+	// 确保通知反映 Pipeline 处理后的最终文件状态（而非原始录制文件）
+	if r.pipelineEnqueued {
+		r.getLogger().Infof("Pipeline 任务已入队，跳过录制摘要推送（由 Pipeline Manager 负责）")
+		return
+	}
 	if r.suppressSummary {
 		r.getLogger().Infof("录制摘要推送已抑制（分段重启），累积 %d 个文件将传递给新 recorder", len(r.recordedFiles))
 		return

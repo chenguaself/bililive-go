@@ -4,6 +4,7 @@ package pipeline
 
 import (
 	"context"
+	"os"
 	"time"
 
 	"github.com/bililive-go/bililive-go/src/live"
@@ -30,18 +31,23 @@ const (
 // FileInfo 表示管道中流转的文件信息
 type FileInfo struct {
 	Path       string         `json:"path"`                  // 文件绝对路径
+	Size       int64          `json:"size,omitempty"`        // 文件大小（字节），在任务创建时记录
 	Type       FileType       `json:"type"`                  // 文件类型
 	SourcePath string         `json:"source_path,omitempty"` // 来源文件路径（用于追踪转换链）
 	Metadata   map[string]any `json:"metadata,omitempty"`    // 额外元数据
 	Deletable  bool           `json:"deletable,omitempty"`   // 标记此文件在管道全部成功后可删除
 }
 
-// NewVideoFileInfo 创建视频文件信息
+// NewVideoFileInfo 创建视频文件信息，自动记录文件大小
 func NewVideoFileInfo(path string) FileInfo {
-	return FileInfo{
+	fi := FileInfo{
 		Path: path,
 		Type: FileTypeVideo,
 	}
+	if stat, err := os.Stat(path); err == nil {
+		fi.Size = stat.Size()
+	}
+	return fi
 }
 
 // NewCoverFileInfo 创建封面文件信息

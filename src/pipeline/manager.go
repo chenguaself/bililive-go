@@ -13,6 +13,7 @@ import (
 	"github.com/bililive-go/bililive-go/src/configs"
 	"github.com/bililive-go/bililive-go/src/instance"
 	"github.com/bililive-go/bililive-go/src/live"
+	"github.com/bililive-go/bililive-go/src/notify"
 	"github.com/bililive-go/bililive-go/src/pkg/events"
 	"github.com/bililive-go/bililive-go/src/pkg/livelogger"
 	bilisentry "github.com/bililive-go/bililive-go/src/pkg/sentry"
@@ -277,6 +278,9 @@ func (m *Manager) executeTask(ctx context.Context, task *PipelineTask) {
 
 	// 广播任务状态变化
 	m.broadcastTaskUpdate(task)
+
+	// 发送录制摘要通知（仅对录制任务，非手动上传）
+	m.sendRecordingSummaryIfNeeded(task)
 }
 
 // broadcastTaskUpdate 广播任务更新事件
@@ -284,6 +288,92 @@ func (m *Manager) broadcastTaskUpdate(task *PipelineTask) {
 	if m.eventDispatch != nil {
 		m.eventDispatch.DispatchEvent(events.NewEvent(PipelineTaskUpdateEvent, task))
 	}
+}
+
+// sendRecordingSummaryIfNeeded 在 Pipeline 任务完成后发送录制摘要通知
+// 仅对录制任务（LiveID 非 "manual-upload"）发送，手动上传不发通知
+func (m *Manager) sendRecordingSummaryIfNeeded(task *PipelineTask) {
+	// 跳过手动上传任务
+	if task.RecordInfo.LiveID == "manual-upload" {
+		return
+	}
+
+	// 仅在完成或失败时发送
+	if task.Status != PipelineStatusCompleted && task.Status != PipelineStatusFailed {
+		return
+	}
+
+	// 获取输出路径（用于查询剩余磁盘空间）
+	outputPath := ""
+	if len(task.InitialFiles) > 0 {
+		outputPath = filepath.Dir(task.InitialFiles[0].Path)
+	}
+
+	logger := livelogger.New(livelogger.DefaultBufferSize, logrus.Fields{
+		"platform": task.RecordInfo.Platform,
+		"host":     task.RecordInfo.HostName,
+	})
+
+	switch task.Status {
+	case PipelineStatusCompleted:
+		finalFiles := task.CurrentFiles // deleteMarkedFiles 后的保留文件
+
+		if len(finalFiles) == 0 {
+			// 所有文件已上传并删除：从 InitialFiles 构建原始文件列表（Size 已预存）
+			originalDetails := fileInfoToDetails(task.InitialFiles)
+			notify.SendPipelineRecordingSummary(
+				logger,
+				task.RecordInfo.HostName,
+				task.RecordInfo.Platform,
+				originalDetails, // originalFiles（显示用）
+				nil,             // finalFiles
+				outputPath,
+				true, // allUploadedAndDeleted
+			)
+		} else {
+			// 有文件保留：显示最终文件列表
+			fileDetails := fileInfoToDetails(finalFiles)
+			notify.SendPipelineRecordingSummary(
+				logger,
+				task.RecordInfo.HostName,
+				task.RecordInfo.Platform,
+				nil,         // originalFiles（不需要）
+				fileDetails, // finalFiles
+				outputPath,
+				false,
+			)
+		}
+
+	case PipelineStatusFailed:
+		// Pipeline 失败：文件仍在磁盘，用原始文件列表
+		fileDetails := fileInfoToDetails(task.InitialFiles)
+		if len(fileDetails) > 0 {
+			notify.SendPipelineRecordingSummary(
+				logger,
+				task.RecordInfo.HostName,
+				task.RecordInfo.Platform,
+				nil,         // originalFiles（不需要）
+				fileDetails, // finalFiles（失败时=原始文件）
+				outputPath,
+				false,
+			)
+		}
+	}
+}
+
+// fileInfoToDetails 将 FileInfo 切片转换为 RecordingFileDetail 切片
+// 使用 FileInfo 中预存的 Size，无需再次 stat 文件
+func fileInfoToDetails(files []FileInfo) []notify.RecordingFileDetail {
+	details := make([]notify.RecordingFileDetail, 0, len(files))
+	for _, f := range files {
+		if f.Size > 0 {
+			details = append(details, notify.RecordingFileDetail{
+				Name: filepath.Base(f.Path),
+				Size: f.Size,
+			})
+		}
+	}
+	return details
 }
 
 // EnqueueTask 添加任务到队列
