@@ -266,7 +266,7 @@ var (
 )
 
 // pipelineSharedState 封装可在分段重启时共享的 Pipeline 状态
-// 分段重启时新旧 recorder 通过指针重定向共享同一份状态，
+// 分段重启时新旧 recorder 通过 redirect 链共享同一份状态，
 // 确保旧任务的回调能正确递减新 recorder 的计数器
 type pipelineSharedState struct {
 	mu             sync.Mutex
@@ -277,6 +277,27 @@ type pipelineSharedState struct {
 	details        []notify.RecordingFileDetail // 收集的文件详情
 	sourceNames    map[string]bool              // 被 Pipeline 消费的原始文件名（用于合并时排除已删除的源文件）
 	onAllTasksDone func()                       // 所有任务完成时的回调（分段重启时设置）
+	suppressSummary bool                        // 为 true 时，run() 退出不推送摘要（分段重启场景），用 mu 保护
+	redirectedTo    *pipelineSharedState         // 分段重启时重定向到新 recorder 的共享状态
+}
+
+// resolveState 沿 redirect 链找到当前活跃的 pipelineSharedState。
+// 使用无锁遍历 + 锁内验证的方式，避免与 TransferPipelineState 产生死锁。
+// 返回时调用者持有 result.mu 锁。
+func resolveState(state *pipelineSharedState) *pipelineSharedState {
+	for {
+		// 无锁遍历找到链尾候选
+		final := state
+		for final.redirectedTo != nil {
+			final = final.redirectedTo
+		}
+		// 锁住候选状态，验证没有被并发重定向
+		final.mu.Lock()
+		if final.redirectedTo == nil {
+			return final // 调用者持有 final.mu 锁
+		}
+		final.mu.Unlock()
+	}
 }
 
 type recorder struct {
@@ -318,8 +339,7 @@ type recorder struct {
 
 	// done 在 run() 退出时关闭，用于 CloseForRestart 等待 goroutine 完成
 	done chan struct{}
-	// suppressSummary 为 true 时，run() 退出不推送摘要（分段重启场景）
-	suppressSummary bool
+	// suppressSummary 已移入 pipelineSharedState，用 pipelineState.mu 保护
 
 	retryLogMu              sync.Mutex
 	lastRetryLogKey         string
@@ -1011,15 +1031,18 @@ func (r *recorder) sendAccumulatedSummary() {
 	}
 	// 标记摘要已发送（在实际发送前，防止并发双发）
 	r.pipelineState.summarySent = true
+	suppressSummary := r.pipelineState.suppressSummary
+	pipelineDetails := r.pipelineState.details
+	pipelineSourceNames := r.pipelineState.sourceNames
 	r.pipelineState.mu.Unlock()
 
 	r.recordedFilesMu.Lock()
 	defer r.recordedFilesMu.Unlock()
-	if r.suppressSummary {
+	if suppressSummary {
 		r.getLogger().Infof("录制摘要推送已抑制（分段重启），累积 %d 个文件将传递给新 recorder", len(r.recordedFiles))
 		return
 	}
-	if len(r.recordedFiles) == 0 && len(r.pipelineState.details) == 0 {
+	if len(r.recordedFiles) == 0 && len(pipelineDetails) == 0 {
 		r.getLogger().Info("无录制文件，跳过摘要推送")
 		return
 	}
@@ -1034,16 +1057,16 @@ func (r *recorder) sendAccumulatedSummary() {
 	}
 
 	// 使用 Pipeline 收集的最终文件详情（如有），否则用录制累积的原始文件
-	if len(r.pipelineState.details) > 0 {
+	if len(pipelineDetails) > 0 {
 		// 合并未被 Pipeline 覆盖的录制文件（如某分段因 stages==0 未入队）
-		merged := r.pipelineState.details
+		merged := pipelineDetails
 		if len(r.recordedFiles) > 0 {
 			inPipeline := map[string]bool{}
-			for _, d := range r.pipelineState.details {
+			for _, d := range pipelineDetails {
 				inPipeline[d.Name] = true
 			}
 			// 排除已被 Pipeline 转换并删除的源文件（如 convert_mp4 delete_source 场景）
-			for name := range r.pipelineState.sourceNames {
+			for name := range pipelineSourceNames {
 				inPipeline[name] = true
 			}
 			for _, f := range r.recordedFiles {
@@ -1087,8 +1110,12 @@ func (r *recorder) sendAccumulatedSummary() {
 // onPipelineTaskComplete Pipeline 任务完成回调
 // 由 Pipeline Manager 在 executeTask 结束时调用
 func (r *recorder) onPipelineTaskComplete(task *pipeline.PipelineTask) {
-	r.pipelineState.mu.Lock()
-	r.pipelineState.pendingCount--
+	// 沿 redirect 链找到当前活跃的共享状态
+	// 支持连续重启 A→B→C 场景：A 的回调通过 resolveState 找到 C 的状态
+	ps := resolveState(r.pipelineState)
+	// ps.mu 已被 resolveState 锁住
+
+	ps.pendingCount--
 
 	// 收集任务的最终文件详情
 	switch task.Status {
@@ -1098,58 +1125,60 @@ func (r *recorder) onPipelineTaskComplete(task *pipeline.PipelineTask) {
 			// 所有文件已上传并删除：从 LastStageFiles 提取真正上传的文件
 			uploadedDetails := extractUploadedDetails(task.LastStageFiles)
 			if len(uploadedDetails) > 0 {
-				r.pipelineState.details = append(r.pipelineState.details, uploadedDetails...)
+				ps.details = append(ps.details, uploadedDetails...)
 			} else {
 				// 回退：无上传标记时用原始文件
 				for _, d := range pipeline.FileInfoToDetails(task.InitialFiles) {
 					d.Uploaded = true
-					r.pipelineState.details = append(r.pipelineState.details, d)
+					ps.details = append(ps.details, d)
 				}
 			}
 		} else {
-			r.pipelineState.details = append(r.pipelineState.details, pipeline.FileInfoToDetails(finalFiles)...)
+			ps.details = append(ps.details, pipeline.FileInfoToDetails(finalFiles)...)
 		}
 	case pipeline.PipelineStatusFailed, pipeline.PipelineStatusCancelled:
 		// 失败/取消时优先用 CurrentFiles（最后成功阶段的输出），回退到 InitialFiles
 		if len(task.CurrentFiles) > 0 {
-			r.pipelineState.details = append(r.pipelineState.details, pipeline.FileInfoToDetails(task.CurrentFiles)...)
+			ps.details = append(ps.details, pipeline.FileInfoToDetails(task.CurrentFiles)...)
 		} else {
-			r.pipelineState.details = append(r.pipelineState.details, pipeline.FileInfoToDetails(task.InitialFiles)...)
+			ps.details = append(ps.details, pipeline.FileInfoToDetails(task.InitialFiles)...)
 		}
 	}
 
 	// 收集被 Pipeline 转换的原始文件名（SourcePath），用于摘要合并时排除已删除的源文件
-	collectSourceNames(r.pipelineState.sourceNames, task.CurrentFiles, task.LastStageFiles)
+	collectSourceNames(ps.sourceNames, task.CurrentFiles, task.LastStageFiles)
 
-	remaining := r.pipelineState.pendingCount
-	runExited := r.pipelineState.runExited
-	onAllDone := r.pipelineState.onAllTasksDone
+	remaining := ps.pendingCount
+	runExited := ps.runExited
+	onAllDone := ps.onAllTasksDone
 
-	r.pipelineState.mu.Unlock()
+	ps.mu.Unlock()
 
 	r.getLogger().Infof("Pipeline 任务完成（状态: %s），剩余 %d 个任务", task.Status, remaining)
 
 	// 所有任务完成且录制已结束，发送统一摘要
 	// 使用 goroutine 避免通知发送（Telegram/Email 等）阻塞 Pipeline 任务槽位
 	if remaining == 0 {
-		if r.suppressSummary {
-			// 分段重启场景：旧 recorder 已抑制，通过共享回调触发新 recorder 的摘要
-			if onAllDone != nil {
-				onAllDone()
-			}
+		if onAllDone != nil {
+			// 分段重启场景：通过共享回调触发摘要（回调内部检查 runExited）
+			onAllDone()
 		} else if runExited {
-			// run() 已退出，异步发送摘要（不阻塞 executeTask）
+			// 非分段重启场景：run() 已退出，异步发送摘要
 			go r.sendAccumulatedSummary()
 		}
-		// run() 仍在运行且未抑制：等待 run() 退出时由 defer 中的 sendAccumulatedSummary 发送
+		// run() 仍在运行且无回调：等待 run() 退出时由 defer 中的 sendAccumulatedSummary 发送
 	}
 }
 
 // extractUploadedDetails 从最后阶段输出文件中提取有上传标记的文件详情
 // CloudUploadStage 会为成功上传的文件设置 Metadata["uploaded"]=true
+// 排除封面文件（封面不在录制摘要中展示，与 FileInfoToDetails 保持一致）
 func extractUploadedDetails(files []pipeline.FileInfo) []notify.RecordingFileDetail {
 	var details []notify.RecordingFileDetail
 	for _, f := range files {
+		if f.Type == pipeline.FileTypeCover {
+			continue
+		}
 		if f.Metadata != nil {
 			if uploaded, ok := f.Metadata["uploaded"].(bool); ok && uploaded {
 				if f.Size > 0 {
@@ -1310,9 +1339,9 @@ func (r *recorder) Close() {
 }
 
 func (r *recorder) CloseForRestart() []notify.RecordingFileDetail {
-	r.recordedFilesMu.Lock()
-	r.suppressSummary = true
-	r.recordedFilesMu.Unlock()
+	r.pipelineState.mu.Lock()
+	r.pipelineState.suppressSummary = true
+	r.pipelineState.mu.Unlock()
 	r.Close()
 	<-r.done // 等待 run() 完全退出，确保最后一个文件已累积
 	r.recordedFilesMu.Lock()
@@ -1335,35 +1364,50 @@ func (r *recorder) SetInitialRecordedFiles(files []notify.RecordingFileDetail) {
 
 // TransferPipelineState 从旧 recorder 转移 Pipeline 状态
 // 分段重启时由 RestartRecorder 调用，确保旧分段的 Pipeline 结果不丢失
+// 使用 redirect 链替代指针覆盖，支持连续重启 A→B→C 场景
 func (r *recorder) TransferPipelineState(old *recorder) {
 	r.pipelineState.mu.Lock()
 	defer r.pipelineState.mu.Unlock()
 
-	old.pipelineState.mu.Lock()
-	defer old.pipelineState.mu.Unlock()
+	// 沿 old 的 redirect 链找到最终活跃状态（可能经过多次重启 A→B→C→...）
+	oldState := resolveState(old.pipelineState)
+	// 此时 oldState.mu 已被 resolveState 锁住
 
 	// 合并 Pipeline 状态
-	r.pipelineState.enqueued = r.pipelineState.enqueued || old.pipelineState.enqueued
-	r.pipelineState.pendingCount += old.pipelineState.pendingCount
+	r.pipelineState.enqueued = r.pipelineState.enqueued || oldState.enqueued
+	r.pipelineState.pendingCount += oldState.pendingCount
+	// 注意：suppressSummary 不合并。该标志表示"我是被重启的 recorder，不发摘要"，
+	// 新 recorder 从未调用 CloseForRestart，应保持自己的 suppressSummary=false。
+	// 回调通过 onAllTasksDone（含 runExited 检查）触发，不依赖 suppressSummary 传播。
 
 	// 合并文件详情（旧 recorder 的详情追加到新 recorder）
-	r.pipelineState.details = append(r.pipelineState.details, old.pipelineState.details...)
+	r.pipelineState.details = append(r.pipelineState.details, oldState.details...)
 
 	// 合并已被 Pipeline 消费的原始文件名
-	for name := range old.pipelineState.sourceNames {
+	for name := range oldState.sourceNames {
 		r.pipelineState.sourceNames[name] = true
 	}
 
-	// 关键：将旧 recorder 的 pipelineState 指针重定向到新 recorder 的共享状态
-	// 这样旧任务完成时的回调会操作新 recorder 的计数器
-	old.pipelineState = r.pipelineState
-
-	// 设置回调：旧任务全部完成时，由旧回调触发新 recorder 的摘要发送
-	if old.suppressSummary {
-		r.pipelineState.onAllTasksDone = func() {
+	// 设置回调：旧任务全部完成时，触发摘要发送
+	// 回调与 suppressSummary 解耦：suppressSummary 是 recorder 级别的抑制标志，
+	// 回调是 pipeline 级别的完成通知。多跳 A→B→C 场景下，A 的回调通过 redirect
+	// 链解析到 C 的状态，如果只在 suppressSummary=true 时设置回调，B→C 转移时
+	// B.suppressSummary=false 导致 C 没有回调，A 的摘要永远发不出。
+	// runExited 检查确保只在新 recorder 已退出时发送，避免录制中提前发出摘要。
+	r.pipelineState.onAllTasksDone = func() {
+		r.pipelineState.mu.Lock()
+		shouldSend := r.pipelineState.runExited
+		r.pipelineState.mu.Unlock()
+		if shouldSend {
 			go r.sendAccumulatedSummary()
 		}
+		// run() 未退出时不发送：新 recorder 的 defer 会在退出时检查并发送
 	}
+
+	// 关键：设置 redirect 链，使旧 recorder 及更早的 recorder 的回调
+	// 能通过 resolveState 找到当前活跃的共享状态
+	oldState.redirectedTo = r.pipelineState
+	oldState.mu.Unlock()
 
 	r.getLogger().Infof("继承 Pipeline 状态：pending=%d, details=%d 个文件",
 		r.pipelineState.pendingCount, len(r.pipelineState.details))
