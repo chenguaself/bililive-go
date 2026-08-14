@@ -347,7 +347,7 @@ func makeBatchBurnHandler(pm *pipeline.Manager) http.HandlerFunc {
 			}
 			task := pipeline.NewPipelineTask(recordInfo, burnConfig, files)
 
-			if err := pm.EnqueueTask(task); err != nil {
+			if err := pm.EnqueueTask(task, nil); err != nil {
 				result.Skipped = append(result.Skipped, filepath.Base(p)+" - 入队失败: "+err.Error())
 				continue
 			}

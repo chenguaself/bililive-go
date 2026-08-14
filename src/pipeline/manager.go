@@ -284,16 +284,14 @@ func (m *Manager) executeTask(ctx context.Context, task *PipelineTask) {
 	// 广播任务状态变化
 	m.broadcastTaskUpdate(task)
 
-	// 调用任务完成回调（从 Manager 注册表查找，避免 SQLite 反序列化丢失）
-	m.mu.RLock()
+	// 原子地取出并删除回调，确保每个任务的回调至多触发一次
+	// 避免 executeTask 和 CancelTask 并发时双发回调
+	m.mu.Lock()
 	callback := m.taskCallbacks[task.ID]
-	m.mu.RUnlock()
+	delete(m.taskCallbacks, task.ID)
+	m.mu.Unlock()
 	if callback != nil {
 		callback(task)
-		// 调用后清理注册表
-		m.mu.Lock()
-		delete(m.taskCallbacks, task.ID)
-		m.mu.Unlock()
 	}
 }
 
@@ -321,9 +319,17 @@ func FileInfoToDetails(files []FileInfo) []notify.RecordingFileDetail {
 }
 
 // EnqueueTask 添加任务到队列
-func (m *Manager) EnqueueTask(task *PipelineTask) error {
+// onTaskComplete: 任务完成回调（可选），在异步调度前注册，避免竞态窗口
+func (m *Manager) EnqueueTask(task *PipelineTask, onTaskComplete func(*PipelineTask)) error {
 	if err := m.store.CreateTask(m.ctx, task); err != nil {
 		return fmt.Errorf("failed to create pipeline task: %w", err)
+	}
+
+	// 在异步调度前注册回调，确保 executeTask 读取时回调已就绪
+	if onTaskComplete != nil {
+		m.mu.Lock()
+		m.taskCallbacks[task.ID] = onTaskComplete
+		m.mu.Unlock()
 	}
 
 	logrus.WithFields(logrus.Fields{
@@ -359,19 +365,8 @@ func (m *Manager) EnqueueRecordingTask(
 	// 创建任务
 	task := NewPipelineTask(NewRecordInfo(info), pipelineConfig, files)
 
-	if err := m.EnqueueTask(task); err != nil {
-		return err
-	}
-
-	// 任务入队成功后注册回调（此时 task.ID 已由 store.AssignID 填充）
-	// 回调存储在 Manager 内存中，不经过持久化，避免 SQLite 反序列化丢失
-	if onTaskComplete != nil {
-		m.mu.Lock()
-		m.taskCallbacks[task.ID] = onTaskComplete
-		m.mu.Unlock()
-	}
-
-	return nil
+	// 入队并注册回调（EnqueueTask 内部在异步调度前完成注册，避免竞态窗口）
+	return m.EnqueueTask(task, onTaskComplete)
 }
 
 // CancelTask 取消任务
@@ -397,15 +392,13 @@ func (m *Manager) CancelTask(taskID int64) error {
 		}
 		m.broadcastTaskUpdate(task)
 
-		// 触发完成回调（recorder 需要递减 pipelinePendingCount）
-		m.mu.RLock()
+		// 原子地取出并删除回调，避免与 executeTask 并发时双发
+		m.mu.Lock()
 		callback := m.taskCallbacks[taskID]
-		m.mu.RUnlock()
+		delete(m.taskCallbacks, taskID)
+		m.mu.Unlock()
 		if callback != nil {
 			callback(task)
-			m.mu.Lock()
-			delete(m.taskCallbacks, taskID)
-			m.mu.Unlock()
 		}
 	}
 
@@ -714,7 +707,7 @@ func (m *Manager) EnqueueUploadTask(absPaths []string) (enqueued int, skipped []
 		files := []FileInfo{NewVideoFileInfo(absPath)}
 		task := NewPipelineTask(recordInfo, uploadConfig, files)
 
-		if enqueueErr := m.EnqueueTask(task); enqueueErr != nil {
+		if enqueueErr := m.EnqueueTask(task, nil); enqueueErr != nil {
 			skipped = append(skipped, filepath.Base(absPath)+" - 入队失败: "+enqueueErr.Error())
 			continue
 		}
