@@ -381,7 +381,12 @@ func (r *recorder) tryRecord(ctx context.Context) {
 
 	buf := new(bytes.Buffer)
 	if err = tmpl.Execute(buf, info); err != nil {
-		r.getLogger().WithError(err).Error("failed to render filename, recording aborted")
+		// 文件名模板渲染失败通常是配置错误（如引用了不存在的字段），每次重试都会
+		// 重复失败。派发一次 LiveEnd 让 manager 回收该 recorder，避免无意义的 5s
+		// 重试风暴与日志刷屏，也不再被误计入活跃录制数。listener 的内部状态不受
+		// 影响，房间真正下播再开播时仍会以修正后的配置重新创建 recorder。
+		r.getLogger().WithError(err).Error("failed to render filename, stopping recorder (check out_put_tmpl)")
+		r.ed.DispatchEvent(events.NewEvent(listeners.LiveEnd, r.Live))
 		return
 	}
 	// 使用层级配置的 OutPutPath

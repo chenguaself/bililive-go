@@ -1,8 +1,8 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, request as apiRequest } from '@playwright/test';
 
 /**
  * 直播录制功能测试
- * 
+ *
  * 使用 osrp-stream-tester 提供的 dev 直播间进行测试
  * 测试添加直播间、开始/停止录制等功能
  */
@@ -10,6 +10,30 @@ import { test, expect } from '@playwright/test';
 // dev 测试流服务器地址
 const DEV_STREAM_SERVER = 'http://127.0.0.1:8888';
 const DEV_STREAM_URL = `${DEV_STREAM_SERVER}/live/test.flv`;
+// bililive-go 后端地址
+const BGO_SERVER = 'http://127.0.0.1:8080';
+
+// 本文件会通过 UI 添加 dev 直播间；由于所有 spec 共用同一个后端进程（workers=1），
+// 若不清理，残留的监控房间会一直被判定为"在播"，导致后续 spec（如 update-*）的
+// active_recordings 断言失败。这里在文件所有用例结束后统一删除所有直播间，保证隔离。
+test.afterAll(async () => {
+  const ctx = await apiRequest.newContext();
+  try {
+    const res = await ctx.get(`${BGO_SERVER}/api/lives`);
+    if (res.ok()) {
+      const lives = await res.json();
+      if (Array.isArray(lives)) {
+        for (const l of lives) {
+          if (l?.id) {
+            await ctx.delete(`${BGO_SERVER}/api/lives/${l.id}`);
+          }
+        }
+      }
+    }
+  } finally {
+    await ctx.dispose();
+  }
+});
 
 test.describe('直播间管理测试', () => {
   test.beforeEach(async ({ page }) => {
