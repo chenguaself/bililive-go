@@ -123,6 +123,7 @@ const analyzeConfig = (config: any) => {
   const upload = cu.enable ?? false;
   const delAfter = cu.delete_after_upload ?? false;
   const delAllAfter = cu.delete_all_after_upload ?? false;
+  const uploadAss = cu.upload_subtitles ?? false;
 
   // 文件状态：uploaded(上传), deleted(删除), kept(保留)
   const files: Record<string, { ext: string; desc: string; status: string }> = {};
@@ -131,9 +132,12 @@ const analyzeConfig = (config: any) => {
   files['video.flv'] = { ext: '.flv', desc: '原始录制视频', status: 'kept' };
   files['video.ass'] = { ext: '.ass', desc: '弹幕字幕', status: 'kept' };
 
-  // immediate 模式：先上传原始文件
+  // immediate 模式：先上传原始文件（.ass 在录制结束时已存在，可一并上传）
   if (isImmediate && upload) {
     files['video.flv'].status = 'uploaded';
+    if (uploadAss) {
+      files['video.ass'].status = 'uploaded';
+    }
   }
 
   // 转码
@@ -197,6 +201,10 @@ const analyzeConfig = (config: any) => {
     }
     if (cover) {
       files['cover.jpg'].status = 'uploaded';
+    }
+    // 上传弹幕字幕（需 after_process 模式，immediate 模式下 .ass 尚未生成）
+    if (uploadAss) {
+      files['video.ass'].status = 'uploaded';
     }
 
     // 删除逻辑
@@ -442,6 +450,11 @@ const CloudUploadSettings: React.FC<CloudUploadSettingsProps> = ({ config, form 
       <ConfigField label="上传后删除全部文件" description="选「处理完再上传」时，上传成功后删除所有本地文件（含中间产物）。选「先上传再处理」时此开关无效">
         <Form.Item name={['on_record_finished', 'cloud_upload', 'delete_all_after_upload']} valuePropName="checked" noStyle>
           <Switch onChange={handleDeleteAllAfterChange} />
+        </Form.Item>
+      </ConfigField>
+      <ConfigField label="上传弹幕字幕" description="同时上传与视频同名的 .ass 弹幕字幕文件到云存储。需开启弹幕录制">
+        <Form.Item name={['on_record_finished', 'cloud_upload', 'upload_subtitles']} valuePropName="checked" noStyle>
+          <Switch />
         </Form.Item>
       </ConfigField>
 
