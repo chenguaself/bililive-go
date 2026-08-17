@@ -177,7 +177,20 @@ func (e *Executor) Execute(
 		return results, ctx.Ctx.Err()
 	}
 	// 保存最后阶段输出的快照（用于回调提取上传文件详情），再执行清理
-	ctx.LastStageFiles = files
+	// 必须深拷贝 Metadata，因为 deleteMarkedFiles 会清除 Metadata["uploaded"]，
+	// FileInfo.Metadata 是 map（引用类型），浅拷贝会共享同一 map
+	snapshot := make([]FileInfo, len(files))
+	for i, f := range files {
+		cp := f
+		if f.Metadata != nil {
+			cp.Metadata = make(map[string]any, len(f.Metadata))
+			for k, v := range f.Metadata {
+				cp.Metadata[k] = v
+			}
+		}
+		snapshot[i] = cp
+	}
+	ctx.LastStageFiles = snapshot
 	keptFiles := e.deleteMarkedFiles(files)
 	if len(results) > 0 {
 		results[len(results)-1].OutputFiles = keptFiles
