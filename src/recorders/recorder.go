@@ -316,6 +316,10 @@ type recorder struct {
 	currentFileLock sync.RWMutex
 	currentFilePath string
 
+	// closeForRestart 标记当前 recorder 正在分段重启，run() 退出时不发送摘要。
+	// 在 CloseForRestart 中设置（早于 Close），run() 的 defer 中检查。
+	closeForRestart atomic.Bool
+
 	// pipelineState 封装 Pipeline 相关的共享状态
 	// 使用指针，分段重启时新旧 recorder 共享同一份状态
 	pipelineState *pipelineSharedState
@@ -977,7 +981,11 @@ func (r *recorder) run(ctx context.Context) {
 		r.pipelineState.mu.Lock()
 		r.pipelineState.runExited = true
 		r.pipelineState.mu.Unlock()
-		r.sendAccumulatedSummary()
+		// 分段重启时跳过摘要：CloseForRestart 已设置此标记，
+		// TransferPipelineState 完成后由回调发送含完整 Pipeline 详情的摘要
+		if !r.closeForRestart.Load() {
+			r.sendAccumulatedSummary()
+		}
 	}()
 
 	const minRetryInterval = 5 * time.Second
@@ -1394,6 +1402,9 @@ func (r *recorder) Close() {
 }
 
 func (r *recorder) CloseForRestart() []notify.RecordingFileDetail {
+	// 先设置重启标记，使 run() 的 defer 跳过 sendAccumulatedSummary，
+	// 避免在 TransferPipelineState 之前发送不含 Pipeline 详情的摘要
+	r.closeForRestart.Store(true)
 	r.pipelineState.mu.Lock()
 	r.pipelineState.suppressSummary = true
 	r.pipelineState.mu.Unlock()
