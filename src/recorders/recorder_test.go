@@ -100,7 +100,7 @@ func TestResolveState_SingleRedirect(t *testing.T) {
 	stateB := &pipelineSharedState{sourceNames: make(map[string]bool), pendingCount: 0}
 
 	// 模拟 A→B 重定向
-	stateA.redirectedTo = stateB
+	stateA.redirectedTo.Store(stateB)
 
 	resolved := resolveState(stateA)
 	if resolved != stateB {
@@ -115,8 +115,8 @@ func TestResolveState_MultiHopChain(t *testing.T) {
 	stateC := &pipelineSharedState{sourceNames: make(map[string]bool), pendingCount: 1}
 
 	// 模拟 A→B→C 链
-	stateA.redirectedTo = stateB
-	stateB.redirectedTo = stateC
+	stateA.redirectedTo.Store(stateB)
+	stateB.redirectedTo.Store(stateC)
 
 	resolved := resolveState(stateA)
 	if resolved != stateC {
@@ -300,7 +300,7 @@ func TestTransferPipelineState_SetRedirect(t *testing.T) {
 	recB.TransferPipelineState(recA)
 
 	// A 的状态应被重定向到 B
-	if recA.pipelineState.redirectedTo != recB.pipelineState {
+	if recA.pipelineState.redirectedTo.Load() != recB.pipelineState {
 		t.Fatal("A 的 redirect 应指向 B 的状态")
 	}
 

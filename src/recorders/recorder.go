@@ -278,7 +278,7 @@ type pipelineSharedState struct {
 	sourceNames    map[string]bool              // 被 Pipeline 消费的原始文件名（用于合并时排除已删除的源文件）
 	onAllTasksDone func()                       // 所有任务完成时的回调（分段重启时设置）
 	suppressSummary bool                        // 为 true 时，run() 退出不推送摘要（分段重启场景），用 mu 保护
-	redirectedTo    *pipelineSharedState         // 分段重启时重定向到新 recorder 的共享状态
+	redirectedTo    atomic.Pointer[pipelineSharedState] // 分段重启时重定向到新 recorder 的共享状态
 }
 
 // resolveState 沿 redirect 链找到当前活跃的 pipelineSharedState。
@@ -286,14 +286,14 @@ type pipelineSharedState struct {
 // 返回时调用者持有 result.mu 锁。
 func resolveState(state *pipelineSharedState) *pipelineSharedState {
 	for {
-		// 无锁遍历找到链尾候选
+		// 无锁遍历找到链尾候选（通过 atomic.Load 避免与写入端的数据竞争）
 		final := state
-		for final.redirectedTo != nil {
-			final = final.redirectedTo
+		for next := final.redirectedTo.Load(); next != nil; next = final.redirectedTo.Load() {
+			final = next
 		}
 		// 锁住候选状态，验证没有被并发重定向
 		final.mu.Lock()
-		if final.redirectedTo == nil {
+		if final.redirectedTo.Load() == nil {
 			return final // 调用者持有 final.mu 锁
 		}
 		final.mu.Unlock()
@@ -319,6 +319,17 @@ type recorder struct {
 	// pipelineState 封装 Pipeline 相关的共享状态
 	// 使用指针，分段重启时新旧 recorder 共享同一份状态
 	pipelineState *pipelineSharedState
+
+	// transferWg 用于分段重启时的摘要屏障。
+	// RestartRecorder 在创建新 recorder 后 Add(1)，
+	// TransferPipelineState 完成后 Done()。
+	// sendAccumulatedSummary 在发送前 Wait()，确保旧分段状态已转入。
+	// 非分段重启场景为 nil，Wait 是 no-op。
+	transferWg *sync.WaitGroup
+
+	// notifyWg 跟踪异步通知 goroutine（go sendAccumulatedSummary）。
+	// 由 RecorderManager 持有，关闭流程中等待所有通知发送完成。
+	notifyWg *sync.WaitGroup
 
 	// 当前录制的流信息（来自平台 API）
 	currentStreamInfo *live.AvailableStreamInfo
@@ -1016,6 +1027,11 @@ func (r *recorder) accumulateRecordedFiles(files ...string) {
 // sendAccumulatedSummary 录制结束后统一推送录制文件摘要通知
 // 在 run() 退出时通过 defer 调用，确保所有分段文件汇总为一条通知
 func (r *recorder) sendAccumulatedSummary() {
+	// 分段重启屏障：等待 TransferPipelineState 完成，
+	// 确保旧分段的 pipelineDetails/pendingCount 已转入再发送摘要
+	if r.transferWg != nil {
+		r.transferWg.Wait()
+	}
 	r.pipelineState.mu.Lock()
 	pendingCount := r.pipelineState.pendingCount
 	// 幂等保护：防止 defer 和回调并发双发
@@ -1059,7 +1075,7 @@ func (r *recorder) sendAccumulatedSummary() {
 	// 使用 Pipeline 收集的最终文件详情（如有），否则用录制累积的原始文件
 	if len(pipelineDetails) > 0 {
 		// 合并未被 Pipeline 覆盖的录制文件（如某分段因 stages==0 未入队）
-		merged := pipelineDetails
+		merged := append([]notify.RecordingFileDetail(nil), pipelineDetails...)
 		if len(r.recordedFiles) > 0 {
 			inPipeline := map[string]bool{}
 			for _, d := range pipelineDetails {
@@ -1164,7 +1180,17 @@ func (r *recorder) onPipelineTaskComplete(task *pipeline.PipelineTask) {
 			onAllDone()
 		} else if runExited {
 			// 非分段重启场景：run() 已退出，异步发送摘要
-			go r.sendAccumulatedSummary()
+			if r.notifyWg != nil {
+				r.notifyWg.Add(1)
+			}
+			go func() {
+				defer func() {
+					if r.notifyWg != nil {
+						r.notifyWg.Done()
+					}
+				}()
+				r.sendAccumulatedSummary()
+			}()
 		}
 		// run() 仍在运行且无回调：等待 run() 退出时由 defer 中的 sendAccumulatedSummary 发送
 	}
@@ -1399,14 +1425,24 @@ func (r *recorder) TransferPipelineState(old *recorder) {
 		shouldSend := r.pipelineState.runExited
 		r.pipelineState.mu.Unlock()
 		if shouldSend {
-			go r.sendAccumulatedSummary()
+			if r.notifyWg != nil {
+				r.notifyWg.Add(1)
+			}
+			go func() {
+				defer func() {
+					if r.notifyWg != nil {
+						r.notifyWg.Done()
+					}
+				}()
+				r.sendAccumulatedSummary()
+			}()
 		}
 		// run() 未退出时不发送：新 recorder 的 defer 会在退出时检查并发送
 	}
 
 	// 关键：设置 redirect 链，使旧 recorder 及更早的 recorder 的回调
 	// 能通过 resolveState 找到当前活跃的共享状态
-	oldState.redirectedTo = r.pipelineState
+	oldState.redirectedTo.Store(r.pipelineState)
 	oldState.mu.Unlock()
 
 	r.getLogger().Infof("继承 Pipeline 状态：pending=%d, details=%d 个文件",

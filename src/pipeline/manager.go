@@ -319,18 +319,19 @@ func FileInfoToDetails(files []FileInfo) []notify.RecordingFileDetail {
 }
 
 // EnqueueTask 添加任务到队列
-// onTaskComplete: 任务完成回调（可选），在异步调度前注册，避免竞态窗口
+// onTaskComplete: 任务完成回调（可选），在任务对调度器可见前注册
 func (m *Manager) EnqueueTask(task *PipelineTask, onTaskComplete func(*PipelineTask)) error {
+	// 持锁覆盖 CreateTask + 回调注册，阻塞 pollLoop 的 scheduleNextTasks（需 RLock）
+	// 确保任务对调度器可见时回调已就绪
+	m.mu.Lock()
 	if err := m.store.CreateTask(m.ctx, task); err != nil {
+		m.mu.Unlock()
 		return fmt.Errorf("failed to create pipeline task: %w", err)
 	}
-
-	// 在异步调度前注册回调，确保 executeTask 读取时回调已就绪
 	if onTaskComplete != nil {
-		m.mu.Lock()
 		m.taskCallbacks[task.ID] = onTaskComplete
-		m.mu.Unlock()
 	}
+	m.mu.Unlock()
 
 	logrus.WithFields(logrus.Fields{
 		"task_id":       task.ID,
