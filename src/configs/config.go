@@ -354,6 +354,7 @@ type CloudUpload struct {
 	UploadPathTmpl      string   `yaml:"upload_path_tmpl" json:"upload_path_tmpl"`                           // 上传路径模板
 	DeleteAfterUpload   bool     `yaml:"delete_after_upload" json:"delete_after_upload"`                     // 上传成功后仅删除已上传的文件
 	DeleteAllAfterUpload bool    `yaml:"delete_all_after_upload" json:"delete_all_after_upload"`             // 上传成功后删除全部文件（含中间产物）
+	UploadSubtitles     bool     `yaml:"upload_subtitles" json:"upload_subtitles"`                           // 是否上传关联的 .ass 弹幕字幕文件
 	AdditionalStorages  []string `yaml:"additional_storages,omitempty" json:"additional_storages,omitempty"` // 额外存储（支持多目标上传）
 }
 

@@ -97,27 +97,29 @@ func (s *ExtractCoverStage) GetLogs() string {
 
 // CloudUploadStage 云上传阶段
 type CloudUploadStage struct {
-	config         pipeline.StageConfig
-	storageName    string
-	pathTemplate   string
-	deleteAfter    bool   // 仅删除已上传的文件
-	deleteAllAfter bool   // 删除全部文件（含中间产物）
-	uploadTiming   string // immediate 或 after_process
-	fileTypes      []string // 过滤的文件类型，空表示所有
-	commands       []string
-	logs           string
+	config          pipeline.StageConfig
+	storageName     string
+	pathTemplate    string
+	deleteAfter     bool   // 仅删除已上传的文件
+	deleteAllAfter  bool   // 删除全部文件（含中间产物）
+	uploadTiming    string // immediate 或 after_process
+	fileTypes       []string // 过滤的文件类型，空表示所有
+	uploadSubtitles bool   // 是否上传关联的 .ass 弹幕字幕文件
+	commands        []string
+	logs            string
 }
 
 // NewCloudUploadStage 创建云上传阶段工厂
 func NewCloudUploadStage(config pipeline.StageConfig) (pipeline.Stage, error) {
 	return &CloudUploadStage{
-		config:         config,
-		storageName:    config.GetStringOption(pipeline.OptionStorage, ""),
-		pathTemplate:   config.GetStringOption(pipeline.OptionPathTemplate, ""),
-		deleteAfter:    config.GetBoolOption(pipeline.OptionDeleteAfter, false),
-		deleteAllAfter: config.GetBoolOption(pipeline.OptionDeleteAllAfter, false),
-		uploadTiming:   config.GetStringOption(pipeline.OptionUploadTiming, ""),
-		fileTypes:      config.GetStringSliceOption(pipeline.OptionFileTypes),
+		config:          config,
+		storageName:     config.GetStringOption(pipeline.OptionStorage, ""),
+		pathTemplate:    config.GetStringOption(pipeline.OptionPathTemplate, ""),
+		deleteAfter:     config.GetBoolOption(pipeline.OptionDeleteAfter, false),
+		deleteAllAfter:  config.GetBoolOption(pipeline.OptionDeleteAllAfter, false),
+		uploadTiming:    config.GetStringOption(pipeline.OptionUploadTiming, ""),
+		fileTypes:       config.GetStringSliceOption(pipeline.OptionFileTypes),
+		uploadSubtitles: config.GetBoolOption(pipeline.OptionUploadSubtitles, false),
 	}, nil
 }
 
@@ -179,6 +181,52 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 	// 与最终视频（如录播姬生成的多分段 _PART 文件），无需额外限制
 	uploadedIndices := map[int]bool{} // 记录实际上传的文件在 output 中的索引
 
+	// 上传弹幕字幕：扫描 input 中的视频文件，从磁盘发现关联的 .ass 文件并加入 input
+	if s.uploadSubtitles {
+		assAdded := map[string]bool{}
+		var discovered []pipeline.FileInfo
+		for _, f := range input {
+			ext := strings.ToLower(filepath.Ext(f.Path))
+			if ext != ".flv" && ext != ".mp4" && ext != ".mkv" && ext != ".ts" {
+				continue
+			}
+			assPath := strings.TrimSuffix(f.Path, ext) + ".ass"
+			if assAdded[assPath] {
+				continue
+			}
+			if info, err := os.Stat(assPath); err == nil && info.Size() > 0 {
+				// 检查 input 和 discovered 中是否已存在
+				alreadyExists := false
+				for _, of := range input {
+					if of.Path == assPath {
+						alreadyExists = true
+						break
+					}
+				}
+				if !alreadyExists {
+					for _, of := range discovered {
+						if of.Path == assPath {
+							alreadyExists = true
+							break
+						}
+					}
+				}
+				if !alreadyExists {
+					discovered = append(discovered, pipeline.FileInfo{
+						Path: assPath,
+						Size: info.Size(),
+						Type: pipeline.FileTypeOther,
+					})
+					assAdded[assPath] = true
+					ctx.Logger.Infof("发现关联弹幕字幕文件: %s", assPath)
+				}
+			}
+		}
+		if len(discovered) > 0 {
+			input = append(input, discovered...)
+		}
+	}
+
 	for _, file := range input {
 		// 跳过标记为待删除的中间文件（由其他阶段产出，不应上传）
 		if file.Deletable {
@@ -186,10 +234,12 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 			continue
 		}
 
-		// 文件类型过滤
+		// 文件类型过滤（uploadSubtitles 时放行 .ass 字幕文件）
 		if len(s.fileTypes) > 0 && !s.matchFileType(file.Type) {
-			output = append(output, file)
-			continue
+			if !s.uploadSubtitles || strings.ToLower(filepath.Ext(file.Path)) != ".ass" {
+				output = append(output, file)
+				continue
+			}
 		}
 
 		// 检查文件是否存在
@@ -358,7 +408,10 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 			}
 			// 已上传的视频文件会被删除，其关联的 .ass 字幕文件也应标记为已上传
 			// 避免摘要将已删除的字幕文件误显为本地保留文件
-			for _, f := range output {
+			for i, f := range output {
+				if !uploadedIndices[i] {
+					continue // 仅处理已上传成功的视频文件
+				}
 				ext := strings.ToLower(filepath.Ext(f.Path))
 				if ext != ".flv" && ext != ".mp4" && ext != ".mkv" && ext != ".ts" {
 					continue
