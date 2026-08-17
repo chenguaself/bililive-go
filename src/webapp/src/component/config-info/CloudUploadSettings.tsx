@@ -125,7 +125,8 @@ const analyzeConfig = (config: any) => {
   const delAllAfter = cu.delete_all_after_upload ?? false;
   const uploadAss = cu.upload_subtitles ?? false;
 
-  // 文件状态：uploaded(上传), deleted(删除), kept(保留)
+  // 文件状态：uploaded(上传保留), uploaded_deleted(上传后删除), intermediate(中间产物,不上传),
+  // deleted(删除), kept(本地保留)
   const files: Record<string, { ext: string; desc: string; status: string }> = {};
 
   // 初始文件
@@ -144,15 +145,13 @@ const analyzeConfig = (config: any) => {
   if (convert) {
     files['video.mp4'] = { ext: '.mp4', desc: '转码后视频', status: 'kept' };
     if (deleteFlv) {
-      // 如果已经被标记为 uploaded，改为 uploaded_deleted
+      // 源文件被转码替代，标记为中间产物（不上传，最终由 executor 删除）
       if (files['video.flv'].status === 'uploaded') {
         files['video.flv'].status = 'uploaded_deleted';
       } else {
-        files['video.flv'].status = 'deleted';
+        files['video.flv'].status = 'intermediate';
       }
     } else {
-      // delete_flv_after_convert=false：源视频保留在 ConvertMp4Stage output 中
-      // immediate 模式下已在 pipeline 开头被上传，after_process 模式下也会被上传
       if (files['video.flv'].status === 'kept') {
         files['video.flv'].status = 'uploaded';
       }
@@ -163,16 +162,13 @@ const analyzeConfig = (config: any) => {
   if (burn) {
     files['video.mkv'] = { ext: '.mkv', desc: '烧录后视频', status: 'kept' };
     if (burnDelSource) {
-      // 删除转码后的 mp4 或原始 flv
       const target = convert ? 'video.mp4' : 'video.flv';
       if (files[target].status === 'uploaded') {
         files[target].status = 'uploaded_deleted';
       } else {
-        files[target].status = 'deleted';
+        files[target].status = 'intermediate';
       }
     } else {
-      // burn_delete_source=false：源视频保留在 BurnSubtitlesStage output 中
-      // immediate 模式下已在 pipeline 开头被上传，after_process 模式下也会被上传
       const src = convert ? 'video.mp4' : 'video.flv';
       if (files[src] && files[src].status === 'kept') {
         files[src].status = 'uploaded';
@@ -234,6 +230,7 @@ const analyzeConfig = (config: any) => {
       const ext = f.ext.toLowerCase();
       if (ext !== '.flv' && ext !== '.mp4' && ext !== '.mkv') return false;
       // 只有 kept 或 uploaded（本地保留）的视频才算"存在"
+      // intermediate（中间产物）和 deleted/uploaded_deleted（已删除）不算
       return f.status === 'kept' || f.status === 'uploaded';
     });
     if (!hasVideo) {
@@ -254,8 +251,8 @@ const analyzeConfig = (config: any) => {
     } else if (f.status === 'uploaded_deleted') {
       uploaded.push(name);
       deleted.push(name);
-    } else if (f.status === 'deleted') {
-      deleted.push(name);
+    } else if (f.status === 'deleted' || f.status === 'intermediate') {
+      deleted.push(name); // intermediate 是中间产物，显示为删除
     } else {
       kept.push(name);
     }
