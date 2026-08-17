@@ -11,7 +11,6 @@ import (
 	gomock "go.uber.org/mock/gomock"
 
 	"github.com/bililive-go/bililive-go/src/configs"
-	"github.com/bililive-go/bililive-go/src/listeners"
 	"github.com/bililive-go/bililive-go/src/live"
 	livemock "github.com/bililive-go/bililive-go/src/live/mock"
 	"github.com/bililive-go/bililive-go/src/pkg/events"
@@ -37,9 +36,9 @@ func TestTryRecordStopsWithoutPanicWhenFilenameRenderFails(t *testing.T) {
 	l.EXPECT().GetStreamInfos().Return([]*live.StreamUrlInfo{{Url: streamURL}}, nil)
 	l.EXPECT().GetLogger().Return(logger)
 
-	// 渲染失败时 recorder 应派发一次 LiveEnd 交由 manager 回收，而不是无限重试。
+	// 渲染失败时 recorder 应请求 manager 仅回收自身，而不是错误派发 LiveEnd。
 	ed := eventsmock.NewMockDispatcher(ctrl)
-	ed.EXPECT().DispatchEvent(events.NewEvent(listeners.LiveEnd, l))
+	ed.EXPECT().DispatchEvent(events.NewEvent(RecorderStopRequested, l))
 
 	cache := gcache.New(1).LRU().Build()
 	if err := cache.Set(l, &live.Info{Live: l}); err != nil {
