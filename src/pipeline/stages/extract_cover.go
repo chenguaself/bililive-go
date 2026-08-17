@@ -314,6 +314,9 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 						output = append(output, pipeline.FileInfo{
 							Path: assPath,
 							Type: pipeline.FileTypeOther,
+							Metadata: map[string]any{
+								"uploaded": true, // 全部上传成功，字幕文件将一并删除，标记为已上传
+							},
 						})
 						assAdded[assPath] = true
 						ctx.Logger.Infof("delete_all 模式：关联字幕文件 %s", assPath)
@@ -351,6 +354,34 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 					}
 					output[i].Metadata["uploaded"] = true
 					count++
+				}
+			}
+			// 已上传的视频文件会被删除，其关联的 .ass 字幕文件也应标记为已上传
+			// 避免摘要将已删除的字幕文件误显为本地保留文件
+			for _, f := range output {
+				ext := strings.ToLower(filepath.Ext(f.Path))
+				if ext != ".flv" && ext != ".mp4" && ext != ".mkv" && ext != ".ts" {
+					continue
+				}
+				assPath := strings.TrimSuffix(f.Path, ext) + ".ass"
+				if _, err := os.Stat(assPath); err == nil {
+					alreadyInOutput := false
+					for _, of := range output {
+						if of.Path == assPath {
+							alreadyInOutput = true
+							break
+						}
+					}
+					if !alreadyInOutput {
+						output = append(output, pipeline.FileInfo{
+							Path: assPath,
+							Type: pipeline.FileTypeOther,
+							Metadata: map[string]any{
+								"uploaded": true,
+							},
+						})
+						ctx.Logger.Infof("delete_uploaded 模式：关联字幕文件 %s", assPath)
+					}
 				}
 			}
 			s.logs += fmt.Sprintf("全部上传成功，已标记 %d 个已上传文件待删除\n", count)
