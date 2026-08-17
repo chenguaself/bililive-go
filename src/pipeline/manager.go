@@ -672,6 +672,7 @@ func (m *Manager) EnqueueUploadTask(absPaths []string) (enqueued int, skipped []
 					OptionDeleteAllAfter: cu.DeleteAllAfterUpload,
 					OptionUploadTiming:   "after_process", // 手动上传无后续处理阶段，始终允许删除标记（不继承全局 upload_timing）
 					OptionFileTypes:      []string{string(FileTypeVideo), string(FileTypeCover)},
+					OptionUploadSubtitles: cu.UploadSubtitles,
 				},
 			},
 		},
