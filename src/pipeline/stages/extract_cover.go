@@ -377,11 +377,9 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 					}
 					if !alreadyInOutput {
 						output = append(output, pipeline.FileInfo{
-							Path: assPath,
-							Type: pipeline.FileTypeOther,
-							Metadata: map[string]any{
-								"uploaded": true, // 全部上传成功，字幕文件将一并删除，标记为已上传
-							},
+							Path:      assPath,
+							Type:      pipeline.FileTypeOther,
+							Deletable: true, // 标记为可删除，由 executor 统一清理
 						})
 						assAdded[assPath] = true
 						ctx.Logger.Infof("delete_all 模式：关联字幕文件 %s", assPath)
@@ -421,8 +419,9 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 					count++
 				}
 			}
-			// 已上传的视频文件会被删除，其关联的 .ass 字幕文件也应标记为已上传
+			// 已上传的视频文件会被删除，其关联的 .ass 字幕文件也应标记为可删除
 			// 避免摘要将已删除的字幕文件误显为本地保留文件
+			// 注意：这些 .ass 未被上传到云存储，不标记 uploaded，仅标记 Deletable
 			for i, f := range output {
 				if !uploadedIndices[i] {
 					continue // 仅处理已上传成功的视频文件
@@ -442,11 +441,9 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 					}
 					if !alreadyInOutput {
 						output = append(output, pipeline.FileInfo{
-							Path: assPath,
-							Type: pipeline.FileTypeOther,
-							Metadata: map[string]any{
-								"uploaded": true,
-							},
+							Path:      assPath,
+							Type:      pipeline.FileTypeOther,
+							Deletable: true, // 标记为可删除，由 executor 统一清理
 						})
 						ctx.Logger.Infof("delete_uploaded 模式：关联字幕文件 %s", assPath)
 					}
