@@ -1090,6 +1090,8 @@ func (r *recorder) sendAccumulatedSummary() {
 					merged = append(merged, f)
 				}
 			}
+			// 清理无关联视频的 .ass 文件（DAA/executor 可能已删除视频但 .ass 从 recordedFiles 加入）
+			merged = filterOrphanedAssFromDetails(merged)
 		}
 		r.getLogger().Infof("推送 Pipeline 录制摘要：%d 个文件", len(merged))
 		hostName := ""
@@ -1231,6 +1233,33 @@ func collectSourceNames(sourceNames map[string]bool, fileSets ...[]pipeline.File
 			}
 		}
 	}
+}
+
+// filterOrphanedAssFromDetails 从文件详情列表中移除无关联视频的 .ass 文件
+// 当 DAA/executor 删除了视频但 .ass 从 recordedFiles 加入 merged 时，
+// 需要清理这些孤立的 .ass，避免通知误显为本地保留
+func filterOrphanedAssFromDetails(details []notify.RecordingFileDetail) []notify.RecordingFileDetail {
+	videoExts := map[string]bool{".flv": true, ".mp4": true, ".mkv": true, ".ts": true}
+	videoBases := map[string]bool{}
+	for _, d := range details {
+		ext := strings.ToLower(filepath.Ext(d.Name))
+		if videoExts[ext] {
+			base := strings.TrimSuffix(d.Name, ext)
+			videoBases[base] = true
+		}
+	}
+	var result []notify.RecordingFileDetail
+	for _, d := range details {
+		ext := strings.ToLower(filepath.Ext(d.Name))
+		if ext == ".ass" {
+			base := strings.TrimSuffix(d.Name, ".ass")
+			if !videoBases[base] {
+				continue // 无关联视频，跳过
+			}
+		}
+		result = append(result, d)
+	}
+	return result
 }
 
 func (r *recorder) logStreamURLRetry(err error) {
