@@ -97,6 +97,11 @@ type PipelineContext struct {
 	// LastStageFiles 最后阶段输出的文件快照（清理前保存）
 	// 用于回调提取上传文件详情，因为 deleteMarkedFiles 会删除文件
 	LastStageFiles []FileInfo
+
+	// UploadedPaths 记录 cloud_upload 阶段成功上传的文件路径
+	// 用于在所有阶段执行完毕后，为被后续阶段替换的文件重新标记 Metadata["uploaded"]
+	// （如 fix_flv 替换 .flv 后，新 FileInfo 丢失上传标记）
+	UploadedPaths map[string]bool
 }
 
 // Stage 管道阶段接口

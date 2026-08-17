@@ -325,6 +325,10 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 			file.Metadata = map[string]any{}
 		}
 		file.Metadata["uploaded"] = true
+		// 记录上传路径，用于后续阶段替换文件后重新标记
+		if ctx.UploadedPaths != nil {
+			ctx.UploadedPaths[file.Path] = true
+		}
 		uploadedIndices[len(output)] = true // 记录上传成功的文件索引
 		output = append(output, file)
 

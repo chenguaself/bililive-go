@@ -67,6 +67,7 @@ func (e *Executor) Execute(
 
 	files := initialFiles
 	results := make([]StageResult, 0, len(config.Stages))
+	ctx.UploadedPaths = make(map[string]bool)
 	stageIndex := 0
 
 	for i, stageCfg := range config.Stages {
@@ -165,6 +166,54 @@ func (e *Executor) Execute(
 			"stage_name":   stageCfg.Name,
 			"output_count": len(output),
 		}).Debug("stage completed")
+	}
+
+	// 去重：多个阶段可能添加同名文件（如 cloud_upload 上传 .ass 后，burn 又添加 Deletable 副本）
+	// 保留第一个出现的（保留最早阶段的 Metadata，如 uploaded 标记）
+	seen := map[string]int{}
+	var deduped []FileInfo
+	for _, f := range files {
+		if idx, exists := seen[f.Path]; exists {
+			// 合并 Deletable 标记到已有条目
+			if f.Deletable && !deduped[idx].Deletable {
+				deduped[idx].Deletable = true
+			}
+			continue
+		}
+		seen[f.Path] = len(deduped)
+		deduped = append(deduped, f)
+	}
+	files = deduped
+
+	// 重新标记被后续阶段替换的已上传文件
+	// immediate 模式下 cloud_upload 最先执行，后续阶段（fix_flv）
+	// 创建新 FileInfo 替换原始文件，丢失 Metadata["uploaded"]。
+	// 通过 UploadedPaths 按基名+扩展名匹配，为同类型的替换文件恢复上传标记。
+	// 不匹配不同扩展名的派生文件（如 .flv 上传后生成的 .mp4/.mkv 不应标记为 uploaded）。
+	if len(ctx.UploadedPaths) > 0 {
+		for uploadedPath := range ctx.UploadedPaths {
+			uploadedBase := strings.TrimSuffix(filepath.Base(uploadedPath), filepath.Ext(uploadedPath))
+			uploadedExt := strings.ToLower(filepath.Ext(uploadedPath))
+			for i, f := range files {
+				if f.Metadata != nil {
+					if u, ok := f.Metadata["uploaded"].(bool); ok && u {
+						continue // 已有标记，跳过
+					}
+				}
+				ext := strings.ToLower(filepath.Ext(f.Path))
+				if ext != uploadedExt {
+					continue // 不同扩展名，不是直接替换
+				}
+				fileBase := strings.TrimSuffix(filepath.Base(f.Path), ext)
+				if fileBase == uploadedBase {
+					if files[i].Metadata == nil {
+						files[i].Metadata = map[string]any{}
+					}
+					files[i].Metadata["uploaded"] = true
+					e.logger.Infof("恢复上传标记: %s (匹配 %s)", f.Path, filepath.Base(uploadedPath))
+				}
+			}
+		}
 	}
 
 	// 全部成功：执行延迟删除，并让最终结果反映磁盘上的文件
