@@ -232,7 +232,9 @@ const analyzeConfig = (config: any) => {
     const hasVideo = Object.entries(files).some(([name, f]) => {
       if (name === 'video.ass') return false;
       const ext = f.ext.toLowerCase();
-      return (ext === '.flv' || ext === '.mp4' || ext === '.mkv') && f.status !== 'deleted' && f.status !== 'uploaded_deleted';
+      if (ext !== '.flv' && ext !== '.mp4' && ext !== '.mkv') return false;
+      // 只有 kept 或 uploaded（本地保留）的视频才算"存在"
+      return f.status === 'kept' || f.status === 'uploaded';
     });
     if (!hasVideo) {
       files['video.ass'].status = 'deleted';
