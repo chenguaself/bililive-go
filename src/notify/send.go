@@ -274,6 +274,54 @@ func buildUploadedSummaryBody(platform string, files []RecordingFileDetail) stri
 	return sb.String()
 }
 
+// buildMixedSummaryBody 构造"部分上传、部分本地保留"场景的消息体
+func buildMixedSummaryBody(platform string, uploaded, kept []RecordingFileDetail, outputPath string) string {
+	const maxDisplayFiles = 30
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "平台：%s\n", platform)
+
+	// 已上传部分
+	fmt.Fprintf(&sb, "已上传到云端：%d 个\n", len(uploaded))
+	var uploadedSize int64
+	for i, f := range uploaded {
+		uploadedSize += f.Size
+		if i < maxDisplayFiles {
+			fmt.Fprintf(&sb, "  %d. %s (%s)\n", i+1, f.Name, formatFileSize(f.Size))
+		}
+	}
+	if len(uploaded) > maxDisplayFiles {
+		fmt.Fprintf(&sb, "  ... 还有 %d 个文件未显示\n", len(uploaded)-maxDisplayFiles)
+	}
+	fmt.Fprintf(&sb, "上传总大小：%s\n", formatFileSize(uploadedSize))
+
+	// 本地保留部分
+	fmt.Fprintf(&sb, "本地保留：%d 个\n", len(kept))
+	var keptSize int64
+	for i, f := range kept {
+		keptSize += f.Size
+		if i < maxDisplayFiles {
+			fmt.Fprintf(&sb, "  %d. %s (%s)\n", i+1, f.Name, formatFileSize(f.Size))
+		}
+	}
+	if len(kept) > maxDisplayFiles {
+		fmt.Fprintf(&sb, "  ... 还有 %d 个文件未显示\n", len(kept)-maxDisplayFiles)
+	}
+	fmt.Fprintf(&sb, "本地总大小：%s", formatFileSize(keptSize))
+	if outputPath != "" {
+		if free, err := getDiskFreeSpace(outputPath); err == nil {
+			fmt.Fprintf(&sb, "\n剩余磁盘空间：%s", formatFileSize(int64(free)))
+		}
+	}
+	return sb.String()
+}
+
+// buildRecordingSummaryMessageBody 构造纯本地保留的消息体（不含 title）
+func buildRecordingSummaryMessageBody(platform string, files []RecordingFileDetail, outputPath string) string {
+	_, body := buildRecordingSummaryMessage("", platform, files, outputPath)
+	return body
+}
+
 // SendRecordingSummary 录制结束后发送录制文件摘要通知
 // outputPath 为录制输出路径，用于获取剩余磁盘空间
 func SendRecordingSummary(logger *livelogger.LiveLogger, hostName, platform string, files []RecordingFileDetail, outputPath string) {
@@ -303,34 +351,33 @@ func SendPipelineRecordingSummary(
 		return
 	}
 
-	// 分离已上传文件和保留文件
+	// 分离已上传文件和本地保留文件
+	var uploaded []RecordingFileDetail
 	var kept []RecordingFileDetail
-	allUploaded := len(finalFiles) > 0
 	for _, f := range finalFiles {
 		if f.Uploaded {
-			// 已上传文件不显示在最终列表中（已从磁盘删除）
+			uploaded = append(uploaded, f)
 		} else {
-			allUploaded = false
 			kept = append(kept, f)
 		}
 	}
 
 	var title, body string
-	if allUploaded {
-		// 所有文件已上传并删除：显示实际上传的文件列表
-		displayFiles := finalFiles
-		if len(displayFiles) == 0 {
-			// 回退：finalFiles 为空时用 originalFiles
-			displayFiles = originalFiles
-		}
-		if len(displayFiles) == 0 {
-			return
-		}
+	if len(uploaded) > 0 && len(kept) == 0 {
+		// 所有文件已上传：显示上传文件列表
 		title = fmt.Sprintf("%s 录制完成", hostName)
-		body = buildUploadedSummaryBody(platform, displayFiles)
+		body = buildUploadedSummaryBody(platform, uploaded)
+	} else if len(uploaded) > 0 && len(kept) > 0 {
+		// 部分上传、部分保留：显示两段
+		title = fmt.Sprintf("%s 录制完成", hostName)
+		body = buildMixedSummaryBody(platform, uploaded, kept, outputPath)
 	} else if len(kept) > 0 {
-		// 有文件保留在磁盘：显示保留的文件列表
+		// 全部本地保留
 		title, body = buildRecordingSummaryMessage(hostName, platform, kept, outputPath)
+	} else if len(originalFiles) > 0 {
+		// finalFiles 为空，回退到 originalFiles
+		title = fmt.Sprintf("%s 录制完成", hostName)
+		body = buildRecordingSummaryMessageBody(platform, originalFiles, outputPath)
 	} else {
 		return
 	}
