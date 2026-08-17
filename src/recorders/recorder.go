@@ -1136,6 +1136,8 @@ func (r *recorder) sendAccumulatedSummary() {
 // onPipelineTaskComplete Pipeline 任务完成回调
 // 由 Pipeline Manager 在 executeTask 结束时调用
 func (r *recorder) onPipelineTaskComplete(task *pipeline.PipelineTask) {
+	r.getLogger().Infof("Pipeline 回调触发：状态=%s, CurrentFiles=%d, LastStageFiles=%d, InitialFiles=%d",
+		task.Status, len(task.CurrentFiles), len(task.LastStageFiles), len(task.InitialFiles))
 	// 沿 redirect 链找到当前活跃的共享状态
 	// 支持连续重启 A→B→C 场景：A 的回调通过 resolveState 找到 C 的状态
 	ps := resolveState(r.pipelineState)
@@ -1146,21 +1148,27 @@ func (r *recorder) onPipelineTaskComplete(task *pipeline.PipelineTask) {
 	// 收集任务的最终文件详情
 	switch task.Status {
 	case pipeline.PipelineStatusCompleted:
-		finalFiles := task.CurrentFiles
-		if len(finalFiles) == 0 {
-			// 所有文件已上传并删除：从 LastStageFiles 提取真正上传的文件
-			uploadedDetails := extractUploadedDetails(task.LastStageFiles)
-			if len(uploadedDetails) > 0 {
-				ps.details = append(ps.details, uploadedDetails...)
-			} else {
-				// 回退：无上传标记时用原始文件
-				for _, d := range pipeline.FileInfoToDetails(task.InitialFiles) {
-					d.Uploaded = true
-					ps.details = append(ps.details, d)
-				}
+		// 始终从 LastStageFiles 提取已上传的文件（含 Metadata["uploaded"] 标记）
+		uploadedDetails := extractUploadedDetails(task.LastStageFiles)
+		if len(uploadedDetails) > 0 {
+			ps.details = append(ps.details, uploadedDetails...)
+		}
+		// 合并本地保留的文件（CurrentFiles 中未被上传标记覆盖的文件）
+		uploadedNames := map[string]bool{}
+		for _, d := range uploadedDetails {
+			uploadedNames[d.Name] = true
+		}
+		for _, d := range pipeline.FileInfoToDetails(task.CurrentFiles) {
+			if !uploadedNames[d.Name] {
+				ps.details = append(ps.details, d)
 			}
-		} else {
-			ps.details = append(ps.details, pipeline.FileInfoToDetails(finalFiles)...)
+		}
+		// 回退：无上传标记且无保留文件时用 InitialFiles
+		if len(uploadedDetails) == 0 && len(task.CurrentFiles) == 0 {
+			for _, d := range pipeline.FileInfoToDetails(task.InitialFiles) {
+				d.Uploaded = true
+				ps.details = append(ps.details, d)
+			}
 		}
 	case pipeline.PipelineStatusFailed, pipeline.PipelineStatusCancelled:
 		// 失败/取消时优先用 CurrentFiles（最后成功阶段的输出），回退到 InitialFiles
@@ -1215,18 +1223,24 @@ func extractUploadedDetails(files []pipeline.FileInfo) []notify.RecordingFileDet
 		if f.Type == pipeline.FileTypeCover {
 			continue
 		}
+		uploaded := false
 		if f.Metadata != nil {
-			if uploaded, ok := f.Metadata["uploaded"].(bool); ok && uploaded {
-				if f.Size > 0 {
-					details = append(details, notify.RecordingFileDetail{
-						Name:     filepath.Base(f.Path),
-						Size:     f.Size,
-						Uploaded: true,
-					})
-				}
+			if u, ok := f.Metadata["uploaded"].(bool); ok && u {
+				uploaded = true
 			}
 		}
+		if uploaded && f.Size > 0 {
+			details = append(details, notify.RecordingFileDetail{
+				Name:     filepath.Base(f.Path),
+				Size:     f.Size,
+				Uploaded: true,
+			})
+		}
 	}
+	logrus.WithFields(logrus.Fields{
+		"input_count":    len(files),
+		"uploaded_count": len(details),
+	}).Debug("extractUploadedDetails")
 	return details
 }
 
