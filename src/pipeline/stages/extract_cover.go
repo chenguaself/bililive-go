@@ -229,9 +229,12 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 
 	for _, file := range input {
 		// 跳过标记为待删除的中间文件（由其他阶段产出，不应上传）
+		// 例外：uploadSubtitles 时放行 Deletable 的 .ass（如 burn_delete_ass 标记的字幕）
 		if file.Deletable {
-			output = append(output, file)
-			continue
+			if !s.uploadSubtitles || strings.ToLower(filepath.Ext(file.Path)) != ".ass" {
+				output = append(output, file)
+				continue
+			}
 		}
 
 		// 文件类型过滤（uploadSubtitles 时放行 .ass 字幕文件）
@@ -329,6 +332,18 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 					ctx.Logger.Warnf("保存上传标记失败: %v", markErr)
 				}
 			}
+		}
+	}
+
+	// 为已上传的 Deletable 文件标记 Metadata["uploaded"]（如 burn_delete_ass 标记的 .ass）
+	// 这些文件在上传循环中被放行（uploadSubtitles），但 Deletable 跳过逻辑未标记 uploaded
+	for i, f := range output {
+		if uploadedIndices[i] && f.Deletable {
+			if f.Metadata == nil {
+				f.Metadata = map[string]any{}
+			}
+			f.Metadata["uploaded"] = true
+			output[i] = f
 		}
 	}
 
