@@ -335,6 +335,10 @@ func (e *Executor) cleanupOrphanedAssFiles(allFiles []FileInfo, keptFiles []File
 	for _, f := range keptFiles {
 		ext := strings.ToLower(filepath.Ext(f.Path))
 		if ext == ".ass" {
+			// 先检查 .ass 是否还在磁盘上（可能已被 deleteMarkedFiles 删除）
+			if _, err := os.Stat(f.Path); os.IsNotExist(err) {
+				continue // 已被删除，不加入 kept
+			}
 			dir := filepath.Dir(f.Path)
 			base := strings.TrimSuffix(filepath.Base(f.Path), ".ass")
 			key := filepath.Join(dir, base)
