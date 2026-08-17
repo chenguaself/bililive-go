@@ -145,10 +145,13 @@ const analyzeConfig = (config: any) => {
   if (convert) {
     files['video.mp4'] = { ext: '.mp4', desc: '转码后视频', status: 'kept' };
     if (deleteFlv) {
-      // 源文件被转码替代，标记为中间产物（不上传，最终由 executor 删除）
-      if (files['video.flv'].status === 'uploaded') {
+      if (isImmediate && upload) {
+        // immediate 模式：.flv 已在 pipeline 开头被上传，转换后被标记为 Deletable 并删除
+        files['video.flv'].status = 'uploaded_deleted';
+      } else if (files['video.flv'].status === 'uploaded') {
         files['video.flv'].status = 'uploaded_deleted';
       } else {
+        // after_process 模式：源文件是中间产物，不参与上传
         files['video.flv'].status = 'intermediate';
       }
     } else {
@@ -163,21 +166,35 @@ const analyzeConfig = (config: any) => {
     files['video.mkv'] = { ext: '.mkv', desc: '烧录后视频', status: 'kept' };
     if (burnDelSource) {
       const target = convert ? 'video.mp4' : 'video.flv';
-      if (files[target].status === 'uploaded') {
+      if (isImmediate && upload && !convert) {
+        // immediate 模式（无转码）：.flv 已在 pipeline 开头被上传，烧录后被标记为 Deletable 并删除
+        files[target].status = 'uploaded_deleted';
+      } else if (files[target].status === 'uploaded') {
         files[target].status = 'uploaded_deleted';
       } else {
+        // after_process 模式或 immediate+convert（.mp4 未被上传）：中间产物
         files[target].status = 'intermediate';
       }
     } else {
       const src = convert ? 'video.mp4' : 'video.flv';
-      if (files[src] && files[src].status === 'kept') {
+      // after_process 模式：源视频保留在 BurnSubtitlesStage output 中，会被 cloud_upload 上传
+      // immediate 模式：源视频在 cloud_upload 之后才创建/保留，不会被上传
+      if (!isImmediate && files[src] && files[src].status === 'kept') {
         files[src].status = 'uploaded';
       }
     }
     if (burnDelAss) {
-      files['video.ass'].status = 'deleted';
+      if (isImmediate && upload) {
+        // immediate 模式：.ass 已在 pipeline 开头被上传，烧录后被标记为 Deletable 并删除
+        files['video.ass'].status = 'uploaded_deleted';
+      } else {
+        files['video.ass'].status = 'deleted';
+      }
     }
   }
+
+  // immediate 模式下，convert 和 burn 产出的文件（.mp4, .mkv）不会被上传
+  // 它们在 cloud_upload 之后才创建，应保持 'kept' 状态
 
   // 封面
   if (cover) {
