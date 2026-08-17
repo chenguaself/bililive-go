@@ -320,6 +320,11 @@ func (s *CloudUploadStage) Execute(ctx *pipeline.PipelineContext, input []pipeli
 
 		s.logs += fmt.Sprintf("上传成功: %s -> %s/%s\n", fileName, s.storageName, targetPath)
 		ctx.Logger.Infof("文件上传成功: %s -> %s/%s", fileName, s.storageName, targetPath)
+		// 标记已上传（立即设置，不依赖后续删除逻辑块，确保 immediate 模式下也有标记）
+		if file.Metadata == nil {
+			file.Metadata = map[string]any{}
+		}
+		file.Metadata["uploaded"] = true
 		uploadedIndices[len(output)] = true // 记录上传成功的文件索引
 		output = append(output, file)
 
