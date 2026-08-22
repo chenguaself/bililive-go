@@ -40,6 +40,11 @@ func GetGlobalRateLimiter() *PlatformRateLimiter {
 	return globalRateLimiter
 }
 
+// Enabled 返回当前限制器是否实际应用平台级访问限制。
+func (prl *PlatformRateLimiter) Enabled() bool {
+	return prl.enabled
+}
+
 // SetPlatformLimit 设置或更新指定平台的访问频率限制
 func (prl *PlatformRateLimiter) SetPlatformLimit(platform string, intervalSec int) {
 	if !prl.enabled {
@@ -104,6 +109,10 @@ func (prl *PlatformRateLimiter) WaitForPlatform(platform string) {
 // 如果平台没有设置限制，立即返回 true
 // 返回 true 表示成功获取访问权限，false 表示被 context 取消
 func (prl *PlatformRateLimiter) WaitForPlatformWithContext(ctx context.Context, platform string) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+
 	if !prl.enabled {
 		return true
 	}
@@ -126,6 +135,10 @@ func (prl *PlatformRateLimiter) WaitForPlatformWithContext(ctx context.Context, 
 // 仅限制请求开始间隔不足以保护启动阶段：当前一个请求耗时超过最小间隔时，后续请求仍会
 // 重叠执行。这里把并发槽位与开始间隔合并为一次许可，使大量直播间并发初始化时仍按平台串行。
 func (prl *PlatformRateLimiter) AcquirePlatformWithContext(ctx context.Context, platform string) (release func(), ok bool) {
+	if ctx.Err() != nil {
+		return nil, false
+	}
+
 	if !prl.enabled {
 		return func() {}, true
 	}

@@ -125,6 +125,9 @@ func TestEnsurePlatformLimitDoesNotOverrideExplicitLimit(t *testing.T) {
 func TestGlobalPlatformRateLimiterDisabled(t *testing.T) {
 	limiter := GetGlobalRateLimiter()
 	limiter.SetPlatformLimit("test", 60)
+	if limiter.Enabled() {
+		t.Fatal("全局平台限制器应保持关闭")
+	}
 
 	if limits := limiter.GetAllPlatformLimits(); len(limits) != 0 {
 		t.Fatalf("全局平台限制器应保持关闭，实际限制：%v", limits)
@@ -139,5 +142,14 @@ func TestGlobalPlatformRateLimiterDisabled(t *testing.T) {
 	waitInfo := limiter.GetPlatformWaitInfo("test")
 	if waitInfo.MinIntervalSec != 0 || waitInfo.NextRequestInSec != 0 {
 		t.Fatalf("关闭平台限制后不应报告等待状态：%+v", waitInfo)
+	}
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if limiter.WaitForPlatformWithContext(canceledCtx, "test") {
+		t.Fatal("关闭平台限制后仍应尊重 context 取消")
+	}
+	if release, acquired := limiter.AcquirePlatformWithContext(canceledCtx, "test"); acquired || release != nil {
+		t.Fatal("context 已取消时不应获取平台许可")
 	}
 }
