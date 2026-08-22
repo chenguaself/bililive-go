@@ -67,6 +67,7 @@ func (e *Executor) Execute(
 
 	files := initialFiles
 	results := make([]StageResult, 0, len(config.Stages))
+	ctx.UploadedPaths = make(map[string]bool)
 	stageIndex := 0
 
 	for i, stageCfg := range config.Stages {
@@ -113,6 +114,9 @@ func (e *Executor) Execute(
 			}).Debug("executing stage")
 			output, commands, logs, err = e.executeStage(ctx, stageCfg, files)
 		}
+
+		// 回填新产出文件的 Size（阶段内构造 FileInfo 时可能未 stat）
+		backfillFileSizes(output)
 
 		// 记录结果
 		result := StageResult{
@@ -164,6 +168,54 @@ func (e *Executor) Execute(
 		}).Debug("stage completed")
 	}
 
+	// 去重：多个阶段可能添加同名文件（如 cloud_upload 上传 .ass 后，burn 又添加 Deletable 副本）
+	// 保留第一个出现的（保留最早阶段的 Metadata，如 uploaded 标记）
+	seen := map[string]int{}
+	var deduped []FileInfo
+	for _, f := range files {
+		if idx, exists := seen[f.Path]; exists {
+			// 合并 Deletable 标记到已有条目
+			if f.Deletable && !deduped[idx].Deletable {
+				deduped[idx].Deletable = true
+			}
+			continue
+		}
+		seen[f.Path] = len(deduped)
+		deduped = append(deduped, f)
+	}
+	files = deduped
+
+	// 重新标记被后续阶段替换的已上传文件
+	// immediate 模式下 cloud_upload 最先执行，后续阶段（fix_flv）
+	// 创建新 FileInfo 替换原始文件，丢失 Metadata["uploaded"]。
+	// 通过 UploadedPaths 按基名+扩展名匹配，为同类型的替换文件恢复上传标记。
+	// 不匹配不同扩展名的派生文件（如 .flv 上传后生成的 .mp4/.mkv 不应标记为 uploaded）。
+	if len(ctx.UploadedPaths) > 0 {
+		for uploadedPath := range ctx.UploadedPaths {
+			uploadedBase := strings.TrimSuffix(filepath.Base(uploadedPath), filepath.Ext(uploadedPath))
+			uploadedExt := strings.ToLower(filepath.Ext(uploadedPath))
+			for i, f := range files {
+				if f.Metadata != nil {
+					if u, ok := f.Metadata["uploaded"].(bool); ok && u {
+						continue // 已有标记，跳过
+					}
+				}
+				ext := strings.ToLower(filepath.Ext(f.Path))
+				if ext != uploadedExt {
+					continue // 不同扩展名，不是直接替换
+				}
+				fileBase := strings.TrimSuffix(filepath.Base(f.Path), ext)
+				if fileBase == uploadedBase {
+					if files[i].Metadata == nil {
+						files[i].Metadata = map[string]any{}
+					}
+					files[i].Metadata["uploaded"] = true
+					e.logger.Infof("恢复上传标记: %s (匹配 %s)", f.Path, filepath.Base(uploadedPath))
+				}
+			}
+		}
+	}
+
 	// 全部成功：执行延迟删除，并让最终结果反映磁盘上的文件
 	// 如果上下文已取消，跳过删除以保留所有文件，返回取消错误让任务标记为 Cancelled
 	if ctx.Ctx.Err() != nil {
@@ -173,6 +225,21 @@ func (e *Executor) Execute(
 		}
 		return results, ctx.Ctx.Err()
 	}
+	// 保存最后阶段输出的快照（用于回调提取上传文件详情），再执行清理
+	// 必须深拷贝 Metadata，因为 deleteMarkedFiles 会清除 Metadata["uploaded"]，
+	// FileInfo.Metadata 是 map（引用类型），浅拷贝会共享同一 map
+	snapshot := make([]FileInfo, len(files))
+	for i, f := range files {
+		cp := f
+		if f.Metadata != nil {
+			cp.Metadata = make(map[string]any, len(f.Metadata))
+			for k, v := range f.Metadata {
+				cp.Metadata[k] = v
+			}
+		}
+		snapshot[i] = cp
+	}
+	ctx.LastStageFiles = snapshot
 	keptFiles := e.deleteMarkedFiles(files)
 	if len(results) > 0 {
 		results[len(results)-1].OutputFiles = keptFiles
@@ -317,6 +384,10 @@ func (e *Executor) cleanupOrphanedAssFiles(allFiles []FileInfo, keptFiles []File
 	for _, f := range keptFiles {
 		ext := strings.ToLower(filepath.Ext(f.Path))
 		if ext == ".ass" {
+			// 先检查 .ass 是否还在磁盘上（可能已被 deleteMarkedFiles 删除）
+			if _, err := os.Stat(f.Path); os.IsNotExist(err) {
+				continue // 已被删除，不加入 kept
+			}
 			dir := filepath.Dir(f.Path)
 			base := strings.TrimSuffix(filepath.Base(f.Path), ".ass")
 			key := filepath.Join(dir, base)
@@ -470,6 +541,18 @@ func deduplicateFiles(files []FileInfo) []FileInfo {
 		}
 	}
 	return result
+}
+
+// backfillFileSizes 对 Size 为 0 的文件执行 os.Stat 回填大小
+// 阶段内构造 FileInfo 时可能未 stat，导致摘要通知漏掉这些文件
+func backfillFileSizes(files []FileInfo) {
+	for i := range files {
+		if files[i].Size == 0 {
+			if fi, err := os.Stat(files[i].Path); err == nil {
+				files[i].Size = fi.Size()
+			}
+		}
+	}
 }
 
 // getTimeNow 获取当前时间（可用于测试时 mock）

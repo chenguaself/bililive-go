@@ -826,6 +826,11 @@ func main() {
 		if inst.PipelineManager != nil {
 			inst.PipelineManager.Close(ctx)
 		}
+		// 等待异步通知 goroutine（如 Telegram/Email 摘要发送）完成
+		// 必须在 PipelineManager.Close 之后——pipeline 回调可能触发最后的通知
+		if rm, ok := inst.RecorderManager.(recorders.Manager); ok {
+			rm.WaitForNotifications()
+		}
 		// 关闭直播间状态管理器
 		if liveStateManager != nil {
 			liveStateManager.Close()

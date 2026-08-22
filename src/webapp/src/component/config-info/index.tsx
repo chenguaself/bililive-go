@@ -85,6 +85,7 @@ interface EffectiveConfig {
       upload_path_tmpl: string;
       delete_after_upload: boolean;
       delete_all_after_upload: boolean;
+      upload_subtitles: boolean;
     };
     upload_timing: string;
     burn_subtitles: boolean;

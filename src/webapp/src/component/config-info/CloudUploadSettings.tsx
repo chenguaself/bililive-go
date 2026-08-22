@@ -123,32 +123,38 @@ const analyzeConfig = (config: any) => {
   const upload = cu.enable ?? false;
   const delAfter = cu.delete_after_upload ?? false;
   const delAllAfter = cu.delete_all_after_upload ?? false;
+  const uploadAss = cu.upload_subtitles ?? false;
 
-  // 文件状态：uploaded(上传), deleted(删除), kept(保留)
+  // 文件状态：uploaded(上传保留), uploaded_deleted(上传后删除), intermediate(中间产物,不上传),
+  // deleted(删除), kept(本地保留)
   const files: Record<string, { ext: string; desc: string; status: string }> = {};
 
   // 初始文件
   files['video.flv'] = { ext: '.flv', desc: '原始录制视频', status: 'kept' };
   files['video.ass'] = { ext: '.ass', desc: '弹幕字幕', status: 'kept' };
 
-  // immediate 模式：先上传原始文件
+  // immediate 模式：先上传原始文件（.ass 在录制结束时已存在，可一并上传）
   if (isImmediate && upload) {
     files['video.flv'].status = 'uploaded';
+    if (uploadAss) {
+      files['video.ass'].status = 'uploaded';
+    }
   }
 
   // 转码
   if (convert) {
     files['video.mp4'] = { ext: '.mp4', desc: '转码后视频', status: 'kept' };
     if (deleteFlv) {
-      // 如果已经被标记为 uploaded，改为 uploaded_deleted
-      if (files['video.flv'].status === 'uploaded') {
+      if (isImmediate && upload) {
+        // immediate 模式：.flv 已在 pipeline 开头被上传，转换后被标记为 Deletable 并删除
+        files['video.flv'].status = 'uploaded_deleted';
+      } else if (files['video.flv'].status === 'uploaded') {
         files['video.flv'].status = 'uploaded_deleted';
       } else {
-        files['video.flv'].status = 'deleted';
+        // after_process 模式：源文件是中间产物，不参与上传
+        files['video.flv'].status = 'intermediate';
       }
     } else {
-      // delete_flv_after_convert=false：源视频保留在 ConvertMp4Stage output 中
-      // immediate 模式下已在 pipeline 开头被上传，after_process 模式下也会被上传
       if (files['video.flv'].status === 'kept') {
         files['video.flv'].status = 'uploaded';
       }
@@ -159,25 +165,36 @@ const analyzeConfig = (config: any) => {
   if (burn) {
     files['video.mkv'] = { ext: '.mkv', desc: '烧录后视频', status: 'kept' };
     if (burnDelSource) {
-      // 删除转码后的 mp4 或原始 flv
       const target = convert ? 'video.mp4' : 'video.flv';
-      if (files[target].status === 'uploaded') {
+      if (isImmediate && upload && !convert) {
+        // immediate 模式（无转码）：.flv 已在 pipeline 开头被上传，烧录后被标记为 Deletable 并删除
+        files[target].status = 'uploaded_deleted';
+      } else if (files[target].status === 'uploaded') {
         files[target].status = 'uploaded_deleted';
       } else {
-        files[target].status = 'deleted';
+        // after_process 模式或 immediate+convert（.mp4 未被上传）：中间产物
+        files[target].status = 'intermediate';
       }
     } else {
-      // burn_delete_source=false：源视频保留在 BurnSubtitlesStage output 中
-      // immediate 模式下已在 pipeline 开头被上传，after_process 模式下也会被上传
       const src = convert ? 'video.mp4' : 'video.flv';
-      if (files[src] && files[src].status === 'kept') {
+      // after_process 模式：源视频保留在 BurnSubtitlesStage output 中，会被 cloud_upload 上传
+      // immediate 模式：源视频在 cloud_upload 之后才创建/保留，不会被上传
+      if (!isImmediate && files[src] && files[src].status === 'kept') {
         files[src].status = 'uploaded';
       }
     }
     if (burnDelAss) {
-      files['video.ass'].status = 'deleted';
+      if (isImmediate && upload) {
+        // immediate 模式：.ass 已在 pipeline 开头被上传，烧录后被标记为 Deletable 并删除
+        files['video.ass'].status = 'uploaded_deleted';
+      } else {
+        files['video.ass'].status = 'deleted';
+      }
     }
   }
+
+  // immediate 模式下，convert 和 burn 产出的文件（.mp4, .mkv）不会被上传
+  // 它们在 cloud_upload 之后才创建，应保持 'kept' 状态
 
   // 封面
   if (cover) {
@@ -197,6 +214,10 @@ const analyzeConfig = (config: any) => {
     }
     if (cover) {
       files['cover.jpg'].status = 'uploaded';
+    }
+    // 上传弹幕字幕（需 after_process 模式，immediate 模式下 .ass 尚未生成）
+    if (uploadAss) {
+      files['video.ass'].status = 'uploaded';
     }
 
     // 删除逻辑
@@ -224,7 +245,10 @@ const analyzeConfig = (config: any) => {
     const hasVideo = Object.entries(files).some(([name, f]) => {
       if (name === 'video.ass') return false;
       const ext = f.ext.toLowerCase();
-      return (ext === '.flv' || ext === '.mp4' || ext === '.mkv') && f.status !== 'deleted' && f.status !== 'uploaded_deleted';
+      if (ext !== '.flv' && ext !== '.mp4' && ext !== '.mkv') return false;
+      // 只有 kept 或 uploaded（本地保留）的视频才算"存在"
+      // intermediate（中间产物）和 deleted/uploaded_deleted（已删除）不算
+      return f.status === 'kept' || f.status === 'uploaded';
     });
     if (!hasVideo) {
       files['video.ass'].status = 'deleted';
@@ -244,8 +268,8 @@ const analyzeConfig = (config: any) => {
     } else if (f.status === 'uploaded_deleted') {
       uploaded.push(name);
       deleted.push(name);
-    } else if (f.status === 'deleted') {
-      deleted.push(name);
+    } else if (f.status === 'deleted' || f.status === 'intermediate') {
+      deleted.push(name); // intermediate 是中间产物，显示为删除
     } else {
       kept.push(name);
     }
@@ -442,6 +466,11 @@ const CloudUploadSettings: React.FC<CloudUploadSettingsProps> = ({ config, form 
       <ConfigField label="上传后删除全部文件" description="选「处理完再上传」时，上传成功后删除所有本地文件（含中间产物）。选「先上传再处理」时此开关无效">
         <Form.Item name={['on_record_finished', 'cloud_upload', 'delete_all_after_upload']} valuePropName="checked" noStyle>
           <Switch onChange={handleDeleteAllAfterChange} />
+        </Form.Item>
+      </ConfigField>
+      <ConfigField label="上传弹幕字幕" description="同时上传与视频同名的 .ass 弹幕字幕文件到云存储。需开启弹幕录制">
+        <Form.Item name={['on_record_finished', 'cloud_upload', 'upload_subtitles']} valuePropName="checked" noStyle>
+          <Switch />
         </Form.Item>
       </ConfigField>
 
