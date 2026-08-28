@@ -97,7 +97,7 @@ func TestGetPlatformMinAccessInterval(t *testing.T) {
 	assert.Equal(t, 1, interval) // 默认最小间隔为 1 秒，防止无限制高频访问
 }
 
-func TestDefaultPlatformRateLimitSurvivesTransientConfigUpdate(t *testing.T) {
+func TestPlatformRateLimitRemainsDisabledAfterConfigUpdate(t *testing.T) {
 	const roomURL = "https://live.douyin.com/123456"
 	limiter := ratelimit.GetGlobalRateLimiter()
 	t.Cleanup(func() {
@@ -109,15 +109,15 @@ func TestDefaultPlatformRateLimitSurvivesTransientConfigUpdate(t *testing.T) {
 	cfg.RefreshLiveRoomIndexCache()
 	SetCurrentConfig(cfg)
 
-	if got := limiter.GetAllPlatformLimits()[PlatformKeyDouyin]; got != 1 {
-		t.Fatalf("初始默认平台限流 = %d 秒，期望 1 秒", got)
+	if limits := limiter.GetAllPlatformLimits(); len(limits) != 0 {
+		t.Fatalf("配置加载后平台限流应保持关闭，实际限制：%v", limits)
 	}
 
 	if _, err := SetLiveRoomId(roomURL, types.LiveID("douyin-test")); err != nil {
 		t.Fatalf("写入临时 LiveId 失败: %v", err)
 	}
-	if got := limiter.GetAllPlatformLimits()[PlatformKeyDouyin]; got != 1 {
-		t.Fatalf("临时配置更新后的默认平台限流 = %d 秒，期望仍为 1 秒", got)
+	if limits := limiter.GetAllPlatformLimits(); len(limits) != 0 {
+		t.Fatalf("临时配置更新后平台限流应保持关闭，实际限制：%v", limits)
 	}
 }
 
