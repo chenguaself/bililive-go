@@ -952,8 +952,9 @@ func getConfig(writer http.ResponseWriter, r *http.Request) {
 }
 
 func putConfig(writer http.ResponseWriter, r *http.Request) {
+	// 直接序列化当前快照即可；索引缓存不参与序列化，且共享快照不可变，
+	// 不能在此调用 RefreshLiveRoomIndexCache 写它的 map。
 	config := configs.GetCurrentConfig()
-	config.RefreshLiveRoomIndexCache()
 	if err := config.Marshal(); err != nil {
 		writeJsonWithStatusCode(writer, http.StatusBadRequest, commonResp{
 			ErrNo:  http.StatusBadRequest,
@@ -1002,7 +1003,8 @@ func putRawConfig(writer http.ResponseWriter, r *http.Request) {
 		return
 	}
 	oldConfig := configs.GetCurrentConfig()
-	oldConfig.RefreshLiveRoomIndexCache()
+	// 共享快照不可变：其索引缓存在生成时已由 Update 维护好，
+	// 这里只做只读查找，不能再调用 RefreshLiveRoomIndexCache 写它的 map。
 	// 继承原配置的文件路径
 	newConfig.File = oldConfig.File
 	// 预先将旧配置中的 LiveId 迁移到新配置（相同 URL）
