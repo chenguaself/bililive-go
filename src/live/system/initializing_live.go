@@ -174,6 +174,22 @@ func (l *InitializingLive) GetStreamInfos() ([]*live.StreamUrlInfo, error) {
 	return l.OriginalLive.GetStreamInfos()
 }
 
+// ListStreamCandidates 委托给原始 Live；平台没有实现时返回 ErrNotImplemented，
+// 由调用方回退全量解析，不能谎报"候选为空"。
+func (l *InitializingLive) ListStreamCandidates() ([]*live.StreamUrlInfo, error) {
+	if resolver, ok := l.OriginalLive.(live.DeferredStreamResolver); ok {
+		return resolver.ListStreamCandidates()
+	}
+	return nil, live.ErrNotImplemented
+}
+
+func (l *InitializingLive) ResolveStreamCandidate(candidate *live.StreamUrlInfo) error {
+	if resolver, ok := l.OriginalLive.(live.DeferredStreamResolver); ok {
+		return resolver.ResolveStreamCandidate(candidate)
+	}
+	return live.ErrNotImplemented
+}
+
 func (l *InitializingLive) GetPlatformCNName() string {
 	return l.OriginalLive.GetPlatformCNName()
 }

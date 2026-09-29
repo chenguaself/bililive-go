@@ -303,6 +303,59 @@ func loginAndGetCookieWithSingleflight(username, password string) (*LoginResult,
 	return cloneLoginResult(value.(*LoginResult)), nil
 }
 
+// autoLoginCooldown 是同一账号两次自动登录之间的最小间隔。
+// 平台可能持续判未登录而登录接口仍回成功，此时 30 秒一轮的轮询会变成不间断的密码撞库，
+// 最容易触发风控锁号；冷却只推迟下一次请求，不改变"私有房间必须带 Cookie"的语义。
+// 成功与否都要记：只挡失败的话，"登录成功但仍判未登录"这条风暴正好绕开。
+// 面板上的手动登录走 LoginAndGetCookie，不受这里限制。
+const autoLoginCooldown = 10 * time.Minute
+
+var (
+	autoLoginMu       sync.Mutex
+	autoLoginAttempts = map[string]time.Time{}
+	autoLoginGroup    singleflight.Group
+)
+
+// remainingAutoLoginCooldown 返回该账号还需等待多久才允许再次自动登录，0 表示允许。
+// 按账号而非账号+密码计，因为要挡的是同一账号被自动反复登录，无论期间凭证串怎么变。
+func remainingAutoLoginCooldown(username string) time.Duration {
+	autoLoginMu.Lock()
+	defer autoLoginMu.Unlock()
+	last, ok := autoLoginAttempts[username]
+	if !ok {
+		return 0
+	}
+	if remaining := autoLoginCooldown - nowFunc().Sub(last); remaining > 0 {
+		return remaining
+	}
+	delete(autoLoginAttempts, username)
+	return 0
+}
+
+// markAutoLoginAttempt 在发起自动登录前记录时刻。
+func markAutoLoginAttempt(username string) {
+	autoLoginMu.Lock()
+	defer autoLoginMu.Unlock()
+	autoLoginAttempts[username] = nowFunc()
+}
+
+// autoLoginWithCooldown 把"查冷却、记时刻、发起登录"合成一次不可分割的动作。
+// 同账号的多个房间共用一个 singleflight 键，因此同时到达时仍只发一次登录并共享结果；
+// 只有先后到达的后续轮询才会被冷却挡住。
+func autoLoginWithCooldown(username, password string) (*LoginResult, error) {
+	value, err, _ := autoLoginGroup.Do(username, func() (any, error) {
+		if remaining := remainingAutoLoginCooldown(username); remaining > 0 {
+			return nil, fmt.Errorf("soop 自动登录处于冷却期，%.0f 秒后重试", remaining.Seconds())
+		}
+		markAutoLoginAttempt(username)
+		return loginAndGetCookieWithSingleflight(username, password)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return cloneLoginResult(value.(*LoginResult)), nil
+}
+
 func cloneCookieVerifyResult(result *CookieVerifyResult) *CookieVerifyResult {
 	if result == nil {
 		return nil
