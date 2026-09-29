@@ -33,17 +33,29 @@ function parseAssTime(s: string): number {
     return (parseInt(p[0]) || 0) * 3600 + (parseInt(p[1]) || 0) * 60 + (parseInt(sp[0]) || 0) + (parseInt(sp[1] || '0') || 0) / 100;
 }
 
-/** ASS &HAABBGGRR& → CSS rgba */
-function parseAssColor(c: string): string {
+/** ASS &HAABBGGRR& → CSS rgba 分量，a=1 表示完全不透明 */
+type AssColor = { r: number; g: number; b: number; a: number };
+
+function assColorParts(c: string): AssColor {
     const h = c.replace(/[&H]/gi, '').padStart(8, '0');
-    const b = parseInt(h.substring(2, 4), 16);
-    const g = parseInt(h.substring(4, 6), 16);
-    const r = parseInt(h.substring(6, 8), 16);
-    const a = 1 - parseInt(h.substring(0, 2), 16) / 255;
-    return `rgba(${r},${g},${b},${a.toFixed(2)})`;
+    return {
+        b: parseInt(h.substring(2, 4), 16),
+        g: parseInt(h.substring(4, 6), 16),
+        r: parseInt(h.substring(6, 8), 16),
+        a: 1 - parseInt(h.substring(0, 2), 16) / 255,
+    };
 }
 
-type DanmakuEntry = { start: number; end: number; color: string; text: string; style: string; align: number; bgColor: string; marginV: number };
+function assPartsToCss(p: AssColor): string {
+    return `rgba(${p.r},${p.g},${p.b},${p.a.toFixed(2)})`;
+}
+
+/** ASS &HAABBGGRR& → CSS rgba */
+function parseAssColor(c: string): string {
+    return assPartsToCss(assColorParts(c));
+}
+
+type DanmakuEntry = { start: number; end: number; color: string; shadow: string; text: string; style: string; align: number; bgColor: string; marginV: number };
 
 /** 解析 ASS 文件，提取所有弹幕条目 */
 function parseAss(content: string): { items: DanmakuEntry[]; scrollTime: number; resY: number } {
@@ -54,8 +66,8 @@ function parseAss(content: string): { items: DanmakuEntry[]; scrollTime: number;
     let resX = 1920;
     let resY = 1080;
     let bannerSpeed = 80; // ms per pixel
-    // 样式名 → PrimaryColour / BackColour CSS 颜色
-    const styleColors: Record<string, string> = {};
+    // 样式名 → PrimaryColour / BackColour
+    const stylePrimary: Record<string, AssColor> = {};
     const styleBackColors: Record<string, string> = {};
     // 样式名 → MarginV
     const styleMarginV: Record<string, number> = {};
@@ -77,7 +89,7 @@ function parseAss(content: string): { items: DanmakuEntry[]; scrollTime: number;
             const sp = line.substring('Style:'.length).split(',');
             if (sp.length >= 23) {
                 const name = sp[0].trim();
-                styleColors[name] = parseAssColor(sp[3].trim());
+                stylePrimary[name] = assColorParts(sp[3].trim());
                 styleBackColors[name] = parseAssColor(sp[6].trim());
                 styleMarginV[name] = parseInt(sp[21].trim()) || 0;
             }
@@ -106,17 +118,27 @@ function parseAss(content: string): { items: DanmakuEntry[]; scrollTime: number;
         const mv = parseInt(parts[7].trim(), 10);
         const marginV = Number.isNaN(mv) ? (styleMarginV[style] ?? 0) : mv;
         const raw = parts.slice(9).join(',');
-        // 优先使用 Dialogue 行中的 {\c} 覆盖色，否则回退到样式定义的 PrimaryColour
-        let color = styleColors[style] || 'rgba(255,255,255,1)';
+        // 优先使用 Dialogue 行中的 {\c} 覆盖色，否则回退到样式定义的 PrimaryColour。
+        // {\c} 只替换 RGB 三分量，alpha 仍继承样式（与 libass 烧录行为一致），
+        // 否则配置了文字透明度时预览会出现"有 {\c} 的弹幕不透明、没有的半透明"。
+        const primary = stylePrimary[style];
+        let color: AssColor = primary ?? { r: 255, g: 255, b: 255, a: 1 };
         const cm = raw.match(/\\c(&H[0-9A-Fa-f]+&)/);
-        if (cm) color = parseAssColor(cm[1]);
+        if (cm) {
+            const c = assColorParts(cm[1]);
+            color = primary ? { ...c, a: primary.a } : c;
+        }
         // 提取 {\an} 对齐覆盖（用于定位 SC/上舰消息）
         let align = 0;
         const am = raw.match(/\\an(\d+)/);
         if (am) align = parseInt(am[1]);
         const text = raw.replace(/\{[^}]*\}/g, '');
         const bgColor = styleBackColors[style] || '';
-        if (end > start && text) items.push({ start, end, color, text, style, align, bgColor, marginV });
+        // 预览描边跟随文字透明度：libass 的 OutlineColour 与填充同 alpha，
+        // 这里若用固定黑色阴影，低透明度弹幕会留一圈预览独有的黑晕。
+        const shadowAlpha = (0.8 * color.a).toFixed(3);
+        const shadow = `rgba(0,0,0,${shadowAlpha})`;
+        if (end > start && text) items.push({ start, end, color: assPartsToCss(color), shadow, text, style, align, bgColor, marginV });
     }
 
     return { items, scrollTime: (bannerSpeed * resX) / 1000, resY };
@@ -188,8 +210,8 @@ class DanmakuRenderer {
     private isInArea(marginV: number): boolean {
         const ratio = marginV / this.resY;
         switch (this.settings.area) {
-            case 'top': return ratio <= 0.5;
-            case 'bottom': return ratio > 0.5;
+            case 'top': return ratio < 0.5;
+            case 'bottom': return ratio >= 0.5;
             case 'quarter': return ratio <= 0.25;
             case 'three-quarter': return ratio <= 0.75;
             default: return true; // full
@@ -374,7 +396,7 @@ class DanmakuRenderer {
         el.style.color = item.color;
         el.style.fontSize = fontSize + 'px';
         el.style.lineHeight = (fontSize + 4) + 'px';
-        el.style.textShadow = '1px 1px 2px rgba(0,0,0,0.8),-1px -1px 2px rgba(0,0,0,0.8),1px -1px 2px rgba(0,0,0,0.8),-1px 1px 2px rgba(0,0,0,0.8)';
+        el.style.textShadow = `1px 1px 2px ${item.shadow},-1px -1px 2px ${item.shadow},1px -1px 2px ${item.shadow},-1px 1px 2px ${item.shadow}`;
 
         // 直接使用 ASS 的 marginV，按比例缩放到 overlay 高度
         const scaledTop = (item.marginV / this.resY) * ch;

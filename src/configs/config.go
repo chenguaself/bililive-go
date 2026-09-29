@@ -84,7 +84,7 @@ type DanmakuConfig struct {
 	ScrollTime       int    `yaml:"scroll_time" json:"scroll_time"`           // 弹幕滚过屏幕的秒数 (5~20)
 	Resolution       string `yaml:"resolution" json:"resolution"`             // 播放分辨率
 	Outline          *int   `yaml:"outline,omitempty" json:"outline,omitempty"`   // 描边粗细 (0~4)，nil 表示使用默认值
-	Opacity          *int   `yaml:"opacity,omitempty" json:"opacity,omitempty"`   // 背景透明度 (0~255)，nil 表示使用默认值
+	Opacity          *int   `yaml:"opacity,omitempty" json:"opacity,omitempty"`   // 文字不透明度 (0~255)，nil 表示使用默认值
 	RecordGift      *bool  `yaml:"record_gift,omitempty" json:"record_gift,omitempty"`         // 是否录制礼物（哔哩哔哩）
 	RecordDouyuGift *bool  `yaml:"record_douyu_gift,omitempty" json:"record_douyu_gift,omitempty"` // 是否录制礼物（斗鱼）
 	RecordDouyinGift *bool `yaml:"record_douyin_gift,omitempty" json:"record_douyin_gift,omitempty"` // 是否录制礼物（抖音）
@@ -104,7 +104,7 @@ var defaultDanmakuConfig = DanmakuConfig{
 	ScrollTime:      10,
 	Resolution:      "1920x1080",
 	Outline:         IntPtr(1),
-	Opacity:         IntPtr(128),
+	Opacity:         IntPtr(255),
 	RecordGift:       BoolPtr(true),
 	RecordDouyuGift:  BoolPtr(true),
 	RecordDouyinGift: BoolPtr(true),
@@ -236,7 +236,7 @@ func (d *DanmakuConfig) ValidateWithPlatform(platformKey string) error {
 		return fmt.Errorf("描边粗细必须在 0~4 之间，当前值: %d", *d.Outline)
 	}
 	if *d.Opacity < 0 || *d.Opacity > 255 {
-		return fmt.Errorf("背景透明度必须在 0~255 之间，当前值: %d", *d.Opacity)
+		return fmt.Errorf("文字不透明度必须在 0~255 之间，当前值: %d", *d.Opacity)
 	}
 	if d.GuardPosition != "" && !validMessagePositions[d.GuardPosition] {
 		return fmt.Errorf("不支持的上舰消息位置: %s，可选值: bottom-left, bottom-right, top-left, top-right", d.GuardPosition)
@@ -251,7 +251,9 @@ func (d *DanmakuConfig) ValidateWithPlatform(platformKey string) error {
 // *bool/*int 字段：nil 表示继承，非 nil 表示覆盖
 func mergeDanmakuConfig(base, override *DanmakuConfig) DanmakuConfig {
 	if override == nil {
-		return *base
+		result := *base
+		result.clonePointerFields()
+		return result
 	}
 	result := *base
 	if override.FontSize != 0 {
@@ -296,12 +298,48 @@ func mergeDanmakuConfig(base, override *DanmakuConfig) DanmakuConfig {
 	if override.ScPosition != "" {
 		result.ScPosition = override.ScPosition
 	}
+	// 合并结果会被 recorder 直接持有，换上新指针才不会让后续写回顺带改掉 base/override
+	result.clonePointerFields()
 	return result
 }
 
-// GetDefaultDanmakuConfig 返回弹幕配置的默认值
+// clonePointerFields 给 d 的每个 *int/*bool 字段换一个新指针。
+// yaml.Unmarshal 对非 nil 指针是"顺着指针原地写入"，而 defaultConfig.Danmaku 是按值拷贝
+// 出来的，指针仍指向包级 defaultDanmakuConfig；不换新指针的话本次 YAML 里的
+// outline/opacity/record_* 会永久改写包级默认值，之后 NewConfig() 与
+// GetDefaultDanmakuConfig()（房间级配置的兜底来源）都会拿到被污染的值。
+func (d *DanmakuConfig) clonePointerFields() {
+	d.Outline = dupIntPtr(d.Outline)
+	d.Opacity = dupIntPtr(d.Opacity)
+	d.RecordGift = dupBoolPtr(d.RecordGift)
+	d.RecordDouyuGift = dupBoolPtr(d.RecordDouyuGift)
+	d.RecordDouyinGift = dupBoolPtr(d.RecordDouyinGift)
+	d.RecordGuard = dupBoolPtr(d.RecordGuard)
+	d.RecordSuperChat = dupBoolPtr(d.RecordSuperChat)
+}
+
+func dupIntPtr(p *int) *int {
+	if p == nil {
+		return nil
+	}
+	return IntPtr(*p)
+}
+
+func dupBoolPtr(p *bool) *bool {
+	if p == nil {
+		return nil
+	}
+	return BoolPtr(*p)
+}
+
+// GetDefaultDanmakuConfig 返回弹幕配置的默认值。
+// 返回值里的指针字段是新分配的：直接把包级默认值的指针交给调用方，
+// 调用方（handler 保存房间覆盖配置、merger 合并结果）一旦顺着指针写入，
+// 就会污染所有后续读取的默认值。
 func GetDefaultDanmakuConfig() DanmakuConfig {
-	return defaultDanmakuConfig
+	d := defaultDanmakuConfig
+	d.clonePointerFields()
+	return d
 }
 
 // StripIrrelevantDanmakuFields 根据平台移除不适用的弹幕配置字段，避免 config 中存储无用数据。
@@ -328,6 +366,18 @@ func (c *Config) StripAllIrrelevantDanmakuFields() {
 			platformKey := GetPlatformKeyFromUrl(c.LiveRooms[i].Url)
 			StripIrrelevantDanmakuFields(c.LiveRooms[i].Danmaku, platformKey)
 		}
+	}
+}
+
+// migrateDanmakuOpacity 把老配置里遗留的 opacity=128 视为"未设置"并升到 255。
+// 旧版本默认写 128，但当时该值只落到 BorderStyle=1 样式的 BackColour 上，渲染结果
+// 与 255 完全相同；opacity 现在按"文字不透明度"生效，若不升级，升级后所有存量房间
+// 的弹幕会突然变成半透明。
+// 只由 Config.DanmakuOpacityMigrated 闸门调用一次，因此新版面板上重新选定的 128
+// 会原样保留；也不能让 SetDefaults 做这件事——那会把 API 提交的 128 也悄悄改掉。
+func migrateDanmakuOpacity(d *DanmakuConfig) {
+	if d != nil && d.Opacity != nil && *d.Opacity == 128 {
+		d.Opacity = IntPtr(255)
 	}
 }
 
@@ -588,6 +638,10 @@ type Config struct {
 	TimeoutInUs          int                  `yaml:"timeout_in_us" json:"timeout_in_us"`
 	DanmakuEnable        bool                 `yaml:"danmaku_enable" json:"danmaku_enable"`
 	Danmaku              DanmakuConfig        `yaml:"danmaku" json:"danmaku"`
+
+	// 迁移标记：弹幕 opacity 改为"文字不透明度"语义后，只在第一次加载时把遗留的
+	// 旧默认值 128 升到 255；标记写入后 128 就是用户自己的选择，不再被动过。
+	DanmakuOpacityMigrated bool `yaml:"danmaku_opacity_migrated,omitempty" json:"danmaku_opacity_migrated,omitempty"`
 
 	// 流偏好配置 - 两套系统并存
 	StreamPreference StreamPreference `yaml:"stream_preference,omitempty" json:"stream_preference,omitempty"` // 新版（渐进迁移中）
@@ -1122,6 +1176,24 @@ func newConfigPostProcess(c *Config) {
 	if c.AppDataPath == "" {
 		c.AppDataPath = filepath.Join(c.OutPutPath, ".appdata")
 	}
+	// NewConfig() 是把包级 defaultConfig 按值拷贝出来的，弹幕指针字段仍指向默认值；
+	// 换成独立副本后，任何一份运行时配置改值都不会回写到默认值上。
+	c.Danmaku.clonePointerFields()
+	// 透明度语义升级只做一次：靠"值等于 128"来识别旧配置是站不住的——新版面板的
+	// 取值范围本就包含 128，用户明确选了 128 也会被当成老配置升回 255。
+	// 标记一旦写盘就不再迁移，之后 128 按用户意图原样保留。
+	if !c.DanmakuOpacityMigrated {
+		migrateDanmakuOpacity(&c.Danmaku)
+		for key := range c.PlatformConfigs {
+			pc := c.PlatformConfigs[key]
+			migrateDanmakuOpacity(pc.Danmaku)
+			c.PlatformConfigs[key] = pc
+		}
+		for i := range c.LiveRooms {
+			migrateDanmakuOpacity(c.LiveRooms[i].Danmaku)
+		}
+		c.DanmakuOpacityMigrated = true
+	}
 	// 规范化手动编辑配置写入的别名域名房间（如 m.douyu.com → www.douyu.com），
 	// 保证 cookies/平台配置按统一 host 命中。LiveId 是不持久化的瞬时字段（yaml:"-"），
 	// 加载阶段恒为空，改写 URL 不会与任何已缓存的 LiveId 失配。
@@ -1338,6 +1410,9 @@ func NewConfigWithBytes(b []byte) (*Config, error) {
 	// 不换新 map 的话，下面 RefreshLiveRoomIndexCache 会直接改写全局默认配置的缓存，
 	// 让所有配置实例共享一张被并发读写的 map。
 	config.liveRoomIndexCache = map[string]int{}
+	// 见 clonePointerFields：不先把弹幕的指针字段换成独立副本，本次 YAML 会顺着
+	// 包级默认值的指针写进去，永久污染全局默认配置。
+	config.Danmaku.clonePointerFields()
 	if err := yaml.Unmarshal(b, &config); err != nil {
 		return nil, err
 	}

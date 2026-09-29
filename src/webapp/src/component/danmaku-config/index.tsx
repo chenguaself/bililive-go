@@ -14,7 +14,7 @@ const DEFAULT_DANMAKU: DanmakuConfig = {
   scroll_time: 10,
   resolution: '1920x1080',
   outline: 1,
-  opacity: 128,
+  opacity: 255,
   record_gift: true,
   record_douyu_gift: true,
   record_douyin_gift: true,
@@ -200,7 +200,7 @@ const DanmakuParamForm: React.FC<{
           <InputNumber min={0} max={4} style={{ width: '100%' }} />
         </Form.Item>
         <Form.Item
-          label={<span>背景透明度 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>弹幕文字背景的不透明程度，0 完全透明，255 完全不透明</span></span>}
+          label={<span>文字透明度 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>弹幕文字本身的不透明程度，0 完全透明，255 完全不透明（仅影响滚动弹幕与礼物，SC/上舰色块不变）</span></span>}
           name={['danmaku', 'opacity']}
           rules={[{ type: 'number', min: 0, max: 255, message: '0~255' }]}>
           <InputNumber min={0} max={255} style={{ width: '100%' }} />
