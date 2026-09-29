@@ -593,9 +593,13 @@ type WxPusher struct {
 	UIDs     []string `yaml:"uids" json:"uids"`         // 接收者 UID 列表（格式 UID_xxxx）
 }
 
+// SoopLiveAuth 保存 Soop 自动登录用的账号密码。
+// Password 标记 json:"-"：它只用于 YAML 落盘，绝不通过 /api/config 等 JSON 接口下发给浏览器。
+// 写入走 PATCH /config 里对 updates map 的显式解析，读取走 /api/sooplive/auth 的状态接口与
+// 设置页的 raw-config YAML，因此屏蔽 JSON 输出不影响面板保存与显示。
 type SoopLiveAuth struct {
 	Username string `yaml:"username,omitempty" json:"username,omitempty"`
-	Password string `yaml:"password,omitempty" json:"password,omitempty"`
+	Password string `yaml:"password,omitempty" json:"-"`
 }
 
 // DouyuAuth 保存斗鱼 passport 域的长期凭证，用于通过 safeAuth 自动续期主站登录 cookie。
