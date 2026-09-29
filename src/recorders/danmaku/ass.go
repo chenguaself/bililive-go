@@ -180,6 +180,9 @@ func (w *AssWriter) writeHeader() error {
 	// 再套文字透明度会让白字在彩色底块上发灰，故这两类样式保持不透明。
 	danmakuColor := fmt.Sprintf("&H%02XFFFFFF", assAlpha)
 	giftColor := fmt.Sprintf("&H%02X00D4FF", assAlpha)
+	// 描边必须跟着一起变透明：BorderStyle=1 下 OutlineColour 决定文字外轮廓，
+	// 只虚化填充会留下一圈实心黑边，opacity=0 也画不出"完全透明"。
+	outlineColor := fmt.Sprintf("&H%02X000000", assAlpha)
 	guardBackColor := "&H800080FF"
 
 	// SC 各价位背景色 (B站原始配色)
@@ -203,8 +206,8 @@ PlayResY: %d
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Danmaku,%s,%d,%s,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,%d,0,8,0,0,0,1
-Style: Gift,%s,%d,%s,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,%d,0,8,0,0,0,1
+Style: Danmaku,%s,%d,%s,&H000000FF,%s,&H00000000,0,0,0,0,100,100,0,0,1,%d,0,8,0,0,0,1
+Style: Gift,%s,%d,%s,&H000000FF,%s,&H00000000,0,0,0,0,100,100,0,0,1,%d,0,8,0,0,0,1
 Style: Guard,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3,%d,0,1,0,0,60,1
 Style: SC2,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3,%d,0,1,0,0,100,1
 Style: SC30,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3,%d,0,1,0,0,100,1
@@ -219,8 +222,8 @@ Style: SCDefault,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,%s,1,0,0,0,100,100,0,0,3
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 `, w.title, w.resX, w.resY,
-		w.cfg.FontName, w.cfg.FontSize, danmakuColor, outline,
-		w.cfg.FontName, w.cfg.FontSize-6, giftColor, outline,
+		w.cfg.FontName, w.cfg.FontSize, danmakuColor, outlineColor, outline,
+		w.cfg.FontName, w.cfg.FontSize-6, giftColor, outlineColor, outline,
 		w.cfg.FontName, w.cfg.FontSize, guardBackColor, outline,
 		w.cfg.FontName, w.cfg.FontSize, sc2, outline,
 		w.cfg.FontName, w.cfg.FontSize, sc30, outline,
@@ -420,13 +423,23 @@ func (w *AssWriter) assignLane(startCS int64, textWidth int) int {
 	// 这里绝不能改成"推迟 startCS 等车道空闲"——每推迟一条就把该车道占用点再往前推一个
 	// 净空时长，到达速率一旦超过车道吞吐就级联累积且永不收敛（录制 5 分钟能排出几小时的
 	// 字幕），时间轴与视频彻底对不上。宁可重叠，也不伪造弹幕的到达时间。
-	earliest := 0
+	// 并列最小时从 nextLane 起取第一条，避免总是下标 0 胜出把整批弹幕叠在同一车道。
+	earliest := w.nextLane
+	minTail := w.laneLast[earliest]
 	for i := 1; i < w.laneNum; i++ {
-		if w.laneLast[i] < w.laneLast[earliest] {
-			earliest = i
+		idx := (w.nextLane + i) % w.laneNum
+		if w.laneLast[idx] < minTail {
+			minTail = w.laneLast[idx]
+			earliest = idx
 		}
 	}
-	w.laneLast[earliest] = startCS + w.travelCS(safeTextWidth)
+	// 占用点取两者较大：短弹幕不得把该车道上尚未滚完的长弹幕的占用时刻提前抹掉，
+	// 否则这条车道会一直是最早空闲的，后续弹幕全部集中叠印上来。
+	tail := startCS + w.travelCS(safeTextWidth)
+	if minTail > tail {
+		tail = minTail
+	}
+	w.laneLast[earliest] = tail
 	w.nextLane = (earliest + 1) % w.laneNum
 	return earliest
 }

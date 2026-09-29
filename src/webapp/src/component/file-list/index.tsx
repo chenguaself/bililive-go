@@ -55,7 +55,7 @@ function parseAssColor(c: string): string {
     return assPartsToCss(assColorParts(c));
 }
 
-type DanmakuEntry = { start: number; end: number; color: string; text: string; style: string; align: number; bgColor: string; marginV: number };
+type DanmakuEntry = { start: number; end: number; color: string; shadow: string; text: string; style: string; align: number; bgColor: string; marginV: number };
 
 /** 解析 ASS 文件，提取所有弹幕条目 */
 function parseAss(content: string): { items: DanmakuEntry[]; scrollTime: number; resY: number } {
@@ -134,7 +134,11 @@ function parseAss(content: string): { items: DanmakuEntry[]; scrollTime: number;
         if (am) align = parseInt(am[1]);
         const text = raw.replace(/\{[^}]*\}/g, '');
         const bgColor = styleBackColors[style] || '';
-        if (end > start && text) items.push({ start, end, color: assPartsToCss(color), text, style, align, bgColor, marginV });
+        // 预览描边跟随文字透明度：libass 的 OutlineColour 与填充同 alpha，
+        // 这里若用固定黑色阴影，低透明度弹幕会留一圈预览独有的黑晕。
+        const shadowAlpha = (0.8 * color.a).toFixed(3);
+        const shadow = `rgba(0,0,0,${shadowAlpha})`;
+        if (end > start && text) items.push({ start, end, color: assPartsToCss(color), shadow, text, style, align, bgColor, marginV });
     }
 
     return { items, scrollTime: (bannerSpeed * resX) / 1000, resY };
@@ -206,7 +210,7 @@ class DanmakuRenderer {
     private isInArea(marginV: number): boolean {
         const ratio = marginV / this.resY;
         switch (this.settings.area) {
-            case 'top': return ratio <= 0.5;
+            case 'top': return ratio < 0.5;
             case 'bottom': return ratio >= 0.5;
             case 'quarter': return ratio <= 0.25;
             case 'three-quarter': return ratio <= 0.75;
@@ -392,7 +396,7 @@ class DanmakuRenderer {
         el.style.color = item.color;
         el.style.fontSize = fontSize + 'px';
         el.style.lineHeight = (fontSize + 4) + 'px';
-        el.style.textShadow = '1px 1px 2px rgba(0,0,0,0.8),-1px -1px 2px rgba(0,0,0,0.8),1px -1px 2px rgba(0,0,0,0.8),-1px 1px 2px rgba(0,0,0,0.8)';
+        el.style.textShadow = `1px 1px 2px ${item.shadow},-1px -1px 2px ${item.shadow},1px -1px 2px ${item.shadow},-1px 1px 2px ${item.shadow}`;
 
         // 直接使用 ASS 的 marginV，按比例缩放到 overlay 高度
         const scaledTop = (item.marginV / this.resY) * ch;

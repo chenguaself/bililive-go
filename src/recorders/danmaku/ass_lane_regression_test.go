@@ -129,3 +129,56 @@ func TestAddDanmakuKeepsArrivalTimeline(t *testing.T) {
 		}
 	}
 }
+
+// TestAssignLaneKeepsEarlierReservation 验证短弹幕不会把同车道长弹幕已预留的占用点提前。
+// 占用点一旦被短弹幕抹掉，这条车道就永远是最早空闲的那条，后续弹幕全部集中叠印在同一行。
+func TestAssignLaneKeepsEarlierReservation(t *testing.T) {
+	w := newLaneTestWriter(t, 10)
+	defer w.Close()
+
+	longWidth := w.estimateTextWidth("用户昵称比较长: 这是一条相当长的弹幕内容用来占满一整屏宽度")
+	for i := 0; i < w.laneNum; i++ {
+		w.assignLane(0, longWidth)
+	}
+
+	lane := w.assignLane(100, w.estimateTextWidth("好"))
+	if got, want := w.laneLast[lane], w.travelCS(longWidth+w.cfg.FontSize); got != want {
+		t.Fatalf("车道 %d 占用点 = %d 厘秒, 期望保持长弹幕的 %d 厘秒（短弹幕把长弹幕的预留抹掉了）", lane, got, want)
+	}
+}
+
+// TestAssignLaneSpreadsSaturatedBurst 验证车道耗尽后的突发在各行间轮转摊开，
+// 而不是集中堆叠到一条车道上。
+func TestAssignLaneSpreadsSaturatedBurst(t *testing.T) {
+	w := newLaneTestWriter(t, 10)
+	defer w.Close()
+
+	longWidth := w.estimateTextWidth("用户昵称比较长: 这是一条相当长的弹幕内容用来占满一整屏宽度")
+	shortWidth := w.estimateTextWidth("好")
+	for i := 0; i < w.laneNum; i++ {
+		w.assignLane(0, longWidth)
+	}
+
+	const burst = 54
+	counts := make(map[int]int, w.laneNum)
+	for i := 0; i < burst; i++ {
+		counts[w.assignLane(int64(100+i), shortWidth)]++
+	}
+	if len(counts) != w.laneNum {
+		t.Fatalf("突发只用了 %d 条车道, 期望全部 %d 条", len(counts), w.laneNum)
+	}
+	limit := burst/w.laneNum + 1
+	if got := maxLaneCount(counts); got > limit {
+		t.Fatalf("单车道最多 %d 条, 超过均摊上界 %d 条（堆叠在同一行）", got, limit)
+	}
+}
+
+func maxLaneCount(counts map[int]int) int {
+	max := 0
+	for _, n := range counts {
+		if n > max {
+			max = n
+		}
+	}
+	return max
+}

@@ -372,9 +372,9 @@ func (c *Config) StripAllIrrelevantDanmakuFields() {
 // migrateDanmakuOpacity 把老配置里遗留的 opacity=128 视为"未设置"并升到 255。
 // 旧版本默认写 128，但当时该值只落到 BorderStyle=1 样式的 BackColour 上，渲染结果
 // 与 255 完全相同；opacity 现在按"文字不透明度"生效，若不升级，升级后所有存量房间
-// 的弹幕会突然变成半透明。代价：在新语义下主动选了 128 的用户，重启后会被升回 255，
-// 换个值即可（当前无配置版本号，无法区分"老默认"与"新选择"的 128）。
-// 只在加载路径调用，不能让 SetDefaults 做这件事——那会把 API 提交的 128 也悄悄改掉。
+// 的弹幕会突然变成半透明。
+// 只由 Config.DanmakuOpacityMigrated 闸门调用一次，因此新版面板上重新选定的 128
+// 会原样保留；也不能让 SetDefaults 做这件事——那会把 API 提交的 128 也悄悄改掉。
 func migrateDanmakuOpacity(d *DanmakuConfig) {
 	if d != nil && d.Opacity != nil && *d.Opacity == 128 {
 		d.Opacity = IntPtr(255)
@@ -638,6 +638,10 @@ type Config struct {
 	TimeoutInUs          int                  `yaml:"timeout_in_us" json:"timeout_in_us"`
 	DanmakuEnable        bool                 `yaml:"danmaku_enable" json:"danmaku_enable"`
 	Danmaku              DanmakuConfig        `yaml:"danmaku" json:"danmaku"`
+
+	// 迁移标记：弹幕 opacity 改为"文字不透明度"语义后，只在第一次加载时把遗留的
+	// 旧默认值 128 升到 255；标记写入后 128 就是用户自己的选择，不再被动过。
+	DanmakuOpacityMigrated bool `yaml:"danmaku_opacity_migrated,omitempty" json:"danmaku_opacity_migrated,omitempty"`
 
 	// 流偏好配置 - 两套系统并存
 	StreamPreference StreamPreference `yaml:"stream_preference,omitempty" json:"stream_preference,omitempty"` // 新版（渐进迁移中）
@@ -1175,14 +1179,20 @@ func newConfigPostProcess(c *Config) {
 	// NewConfig() 是把包级 defaultConfig 按值拷贝出来的，弹幕指针字段仍指向默认值；
 	// 换成独立副本后，任何一份运行时配置改值都不会回写到默认值上。
 	c.Danmaku.clonePointerFields()
-	migrateDanmakuOpacity(&c.Danmaku)
-	for key := range c.PlatformConfigs {
-		pc := c.PlatformConfigs[key]
-		migrateDanmakuOpacity(pc.Danmaku)
-		c.PlatformConfigs[key] = pc
-	}
-	for i := range c.LiveRooms {
-		migrateDanmakuOpacity(c.LiveRooms[i].Danmaku)
+	// 透明度语义升级只做一次：靠"值等于 128"来识别旧配置是站不住的——新版面板的
+	// 取值范围本就包含 128，用户明确选了 128 也会被当成老配置升回 255。
+	// 标记一旦写盘就不再迁移，之后 128 按用户意图原样保留。
+	if !c.DanmakuOpacityMigrated {
+		migrateDanmakuOpacity(&c.Danmaku)
+		for key := range c.PlatformConfigs {
+			pc := c.PlatformConfigs[key]
+			migrateDanmakuOpacity(pc.Danmaku)
+			c.PlatformConfigs[key] = pc
+		}
+		for i := range c.LiveRooms {
+			migrateDanmakuOpacity(c.LiveRooms[i].Danmaku)
+		}
+		c.DanmakuOpacityMigrated = true
 	}
 	// 规范化手动编辑配置写入的别名域名房间（如 m.douyu.com → www.douyu.com），
 	// 保证 cookies/平台配置按统一 host 命中。LiveId 是不持久化的瞬时字段（yaml:"-"），
