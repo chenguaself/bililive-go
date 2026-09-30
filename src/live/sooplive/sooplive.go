@@ -290,15 +290,15 @@ func (l *Live) resolvePresetStream(channel string, channelInfo *channelInfo, pre
 	if result == channelResultLogin {
 		l.logRetryDetail(nil, "Soop AID 申请提示需要登录，准备自动重登后重试: quality=%s", preset.Name)
 		if err = l.tryAutoLogin(); err != nil {
-			return nil, fmt.Errorf("Soop 自动重登失败，无法重试 AID(quality=%s): %w", preset.Name, err)
+			return nil, fmt.Errorf("自动重登失败，无法重试 Soop AID(quality=%s): %w", preset.Name, err)
 		}
 		aid, result, err = l.fetchAid(channel, channelInfo.BroadNo, preset.Name)
 		if err != nil {
-			return nil, fmt.Errorf("Soop 重登后再次获取 AID 失败(quality=%s): %w", preset.Name, err)
+			return nil, fmt.Errorf("重登后再次获取 Soop AID 失败(quality=%s): %w", preset.Name, err)
 		}
 	}
 	if result != channelResultOK || aid == "" {
-		return nil, fmt.Errorf("Soop AID 申请失败: quality=%s, reason=%s", preset.Name, explainChannelResult(result))
+		return nil, fmt.Errorf("申请 Soop AID 失败: quality=%s, reason=%s", preset.Name, explainChannelResult(result))
 	}
 	l.GetLogger().Debugf("Soop AID 申请成功: quality=%s aid_length=%d", preset.Name, len(aid))
 
