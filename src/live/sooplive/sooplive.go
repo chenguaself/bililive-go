@@ -2,6 +2,7 @@ package sooplive
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -937,6 +938,12 @@ func (l *Live) tryAutoLogin() error {
 
 	result, err := autoLoginWithCooldown(username, password)
 	if err != nil {
+		// 被冷却挡住说明这一路根本没发登录请求，而同账号的别的房间可能刚刚已经换到新 Cookie
+		// 并写进了配置。先验一次配置里那份，可用就直接采用；不能因为"这个账号十分钟内登录过了"
+		// 就让这个房间继续举着自家的旧运行态干等下一个登录窗口。
+		if errors.Is(err, errAutoLoginCoolingDown) && l.adoptPersistedCookie() {
+			return nil
+		}
 		l.GetLogger().WithError(err).Debug("Soop 自动登录失败")
 		return err
 	}
@@ -953,19 +960,48 @@ func (l *Live) tryAutoLogin() error {
 	if err := persistSoopCookieWithSingleflight(result.Cookie); err != nil {
 		l.GetLogger().WithError(err).Warn("更新 Soop Cookie 到配置失败")
 	}
-	l.setRuntimeState(result.Cookie, false)
+	l.applySessionCookie(result.Cookie)
+	l.GetLogger().Debugf("Soop 自动登录成功: loginID=%s cookie_length=%d", result.Verify.LoginID, len(result.Cookie))
+
+	return nil
+}
+
+// applySessionCookie 把一份已经可用的登录 Cookie 装到当前实例：运行态、短期复用缓存与 Options。
+func (l *Live) applySessionCookie(cookie string) {
+	l.setRuntimeState(cookie, false)
 	// 换了登录身份，旧会话抓到的播放页与播放信息一律不再复用
 	l.clearReuseCache()
-	l.GetLogger().Debugf("Soop 自动登录成功: loginID=%s cookie_length=%d", result.Verify.LoginID, len(result.Cookie))
 
 	for _, targetURL := range []*url.URL{playSoopURL, l.Url} {
 		if targetURL == nil {
 			continue
 		}
-		live.WithKVStringCookies(targetURL, result.Cookie)(l.Options)
+		live.WithKVStringCookies(targetURL, cookie)(l.Options)
 	}
+}
 
-	return nil
+// adoptPersistedCookie 尝试采用配置里当前保存的 Cookie，成功返回 true。
+// 只在自动登录被冷却挡住时调用：本实例的运行态刚被验过一次不通过，
+// 配置里那份与它不同才值得再验一次，相同就没必要重复请求校验接口。
+func (l *Live) adoptPersistedCookie() bool {
+	cfg := configs.GetCurrentConfig()
+	if cfg == nil || cfg.Cookies == nil {
+		return false
+	}
+	candidate := strings.TrimSpace(cfg.Cookies[l.Url.Host])
+	if candidate == "" {
+		candidate = strings.TrimSpace(cfg.Cookies[domainPlaySoop])
+	}
+	if candidate == "" || candidate == strings.TrimSpace(l.getRuntimeCookie()) {
+		return false
+	}
+	result, err := verifyCookieWithCache(candidate)
+	if err != nil || result == nil || !result.IsLogin {
+		return false
+	}
+	l.applySessionCookie(candidate)
+	l.GetLogger().Infof("冷却期内直接采用配置中已刷新的 Soop Cookie: loginID=%s", result.LoginID)
+	return true
 }
 
 func persistSoopCookieWithSingleflight(cookie string) error {

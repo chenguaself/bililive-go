@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -339,13 +340,18 @@ func markAutoLoginAttempt(username string) {
 	autoLoginAttempts[username] = nowFunc()
 }
 
+// errAutoLoginCoolingDown 表示"这一次根本没发登录请求，因为同账号刚试过"。
+// 调用方要据此区分"被冷却挡住"与"登录确实失败"：前者应该先去找别人已经换好的 Cookie，
+// 而不是让这一路房间带着失效凭证一直等到下一个登录窗口。
+var errAutoLoginCoolingDown = errors.New("soop 自动登录处于冷却期")
+
 // autoLoginWithCooldown 把"查冷却、记时刻、发起登录"合成一次不可分割的动作。
 // 同账号的多个房间共用一个 singleflight 键，因此同时到达时仍只发一次登录并共享结果；
 // 只有先后到达的后续轮询才会被冷却挡住。
 func autoLoginWithCooldown(username, password string) (*LoginResult, error) {
 	value, err, _ := autoLoginGroup.Do(username, func() (any, error) {
 		if remaining := remainingAutoLoginCooldown(username); remaining > 0 {
-			return nil, fmt.Errorf("soop 自动登录处于冷却期，%.0f 秒后重试", remaining.Seconds())
+			return nil, fmt.Errorf("%w，%.0f 秒后重试", errAutoLoginCoolingDown, remaining.Seconds())
 		}
 		markAutoLoginAttempt(username)
 		return loginAndGetCookieWithSingleflight(username, password)
