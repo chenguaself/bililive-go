@@ -2291,6 +2291,13 @@ const ConfigInfo: React.FC = () => {
   // YAML 模式内容
   const renderYamlMode = () => (
     <div className="config-content">
+      <Alert
+        type="warning"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="这里是配置文件的快照，编辑久了保存前建议先重新加载一次"
+        description="后台会在运行中自动续期各平台 Cookie。掩码显示的值（如 Soop 密码）保存时始终沿用服务器上的最新原文，不受这份快照影响；Cookie 则按“这条与服务器当前值是否一致”来判断你有没有改过——拿着过期快照保存，里面那条旧 Cookie 会被当成你手写的改动，把期间刚续好的新值顶回去。注意“刷新”会用服务器上的配置覆盖编辑器里尚未保存的修改。"
+      />
       <Editor
         value={rawConfig}
         onValueChange={code => setRawConfig(code)}
