@@ -419,7 +419,11 @@ func (r *recorder) tryRecord(ctx context.Context) {
 
 	var streamInfos []*live.StreamUrlInfo
 	var err error
-	if streamInfos, err = r.getStreamInfosForRecording(); err == live.ErrNotImplemented {
+	// 本轮偏好取这一次尝试开头解析好的值，不再重读全局配置：延迟解析要跑几百毫秒的平台
+	// 请求，期间用户在面板点"切换清晰度"改的就是这个偏好，重读会让下面的最终选择与
+	// 上面的解析顺序按两套偏好算，选中根本没解析过 Url 的候选。
+	preference := resolvedConfig.StreamPreference
+	if streamInfos, err = r.getStreamInfosForRecording(preference); err == live.ErrNotImplemented {
 		var urls []*url.URL
 		// TODO: remove deprecated method GetStreamUrls
 		//nolint:staticcheck
@@ -466,8 +470,20 @@ func (r *recorder) tryRecord(ctx context.Context) {
 	fileName := filepath.Join(resolvedConfig.OutPutPath, buf.String())
 	outputPath, _ := filepath.Split(fileName)
 
-	// TODO 根据配置选择最佳流
-	streamInfo := r.selectPreferredStream(streamInfos)
+	// 按本轮固定下来的偏好选流
+	streamInfo := r.selectPreferredStream(streamInfos, preference)
+	if streamInfo == nil || streamInfo.Url == nil {
+		// 选中的这一路没有播放地址：延迟解析的列表里除被解析的那一路之外只有元信息。
+		// 走到这里说明本轮的输入已经不再自洽，绝不能继续往下解引用 Url，
+		// 也不能持着 currentFileLock 崩掉整个录制线程（状态接口的读锁会一起挂住）。
+		if streamInfo != nil {
+			err = fmt.Errorf("清晰度 %s 尚未解析出播放地址", streamInfo.Quality)
+		} else {
+			err = fmt.Errorf("没有可用的播放流")
+		}
+		r.logStreamURLRetry(err, r.pendingRetryInterval())
+		return
+	}
 	r.saveCurrentStreamInfo(streamInfo)
 	// 更新可用流信息到 info（用于API展示）
 	r.updateAvailableStreams(ctx, info, streamInfos)
@@ -954,7 +970,7 @@ func (r *recorder) stopRetryForExplicitOffline(err error) bool {
 // 平台支持"先列候选、只解析选中的那一路"时优先走那条路径：Soop 每一档清晰度都要单独申请
 // 一次播放凭证并查一次调度接口，全量解析的请求量随档位成倍增长，而每次录制实际只用一路。
 // 候选里除了被选中的一路之外只有元信息（Url 为空），面板的清晰度列表因此仍然完整。
-func (r *recorder) getStreamInfosForRecording() ([]*live.StreamUrlInfo, error) {
+func (r *recorder) getStreamInfosForRecording(preference configs.StreamPreference) ([]*live.StreamUrlInfo, error) {
 	resolver, ok := r.Live.(live.DeferredStreamResolver)
 	if !ok {
 		return r.Live.GetStreamInfos()
@@ -967,9 +983,19 @@ func (r *recorder) getStreamInfosForRecording() ([]*live.StreamUrlInfo, error) {
 		return nil, err
 	}
 
-	ordered := r.orderStreamsByPreference(candidates)
+	ordered := orderStreamsByPreference(candidates, preference)
+	var firstErr error
 	for i, candidate := range ordered {
 		if err := resolver.ResolveStreamCandidate(candidate); err != nil {
+			wrapped := fmt.Errorf("清晰度 %s: %w", candidate.Quality, err)
+			if errors.Is(err, live.ErrLiveOffline) {
+				// 房间在列完候选之后、解析这一档的几百毫秒里下播了：换别的档位同样取不到流，
+				// 立即上抛让 stopRetryForExplicitOffline 收手，既不重试也不再敲剩下的档位。
+				return nil, wrapped
+			}
+			if firstErr == nil {
+				firstErr = wrapped
+			}
 			r.getLogger().WithError(err).Debugf("候选清晰度 %s 取流失败，尝试下一档", candidate.Quality)
 			continue
 		}
@@ -979,14 +1005,19 @@ func (r *recorder) getStreamInfosForRecording() ([]*live.StreamUrlInfo, error) {
 		streams = append(streams, candidate)
 		return append(streams, ordered[i+1:]...), nil
 	}
-	// 所有候选都解析失败：回退全量解析，保留原有的错误语义
-	return r.Live.GetStreamInfos()
+	// 所有候选都解析失败：直接把第一路的错误上抛，由 run() 的退避拉长下一轮间隔。
+	// 不再顺手全量解析一遍——那等于在同一次尝试里把每一档的凭证与调度请求再敲一次，
+	// 而"全部失败"恰恰是最需要少发请求的状态（未登录、凭证被拒、调度异常）。
+	// 候选与平台档位对不上时会由下一轮重新列候选自愈，代价是一轮退避间隔。
+	if firstErr == nil {
+		firstErr = fmt.Errorf("soop 未返回任何可解析的清晰度")
+	}
+	return nil, firstErr
 }
 
 // orderStreamsByPreference 按偏好分值从高到低排序，分值相同保持平台返回的先后顺序，
 // 使"依次尝试"选出的第一路等于 selectPreferredStream 在全量列表上的选择结果。
-func (r *recorder) orderStreamsByPreference(candidates []*live.StreamUrlInfo) []*live.StreamUrlInfo {
-	preference := r.effectiveStreamPreference()
+func orderStreamsByPreference(candidates []*live.StreamUrlInfo, preference configs.StreamPreference) []*live.StreamUrlInfo {
 	if preference.Quality == nil && preference.Attributes == nil {
 		return candidates
 	}
@@ -997,13 +1028,11 @@ func (r *recorder) orderStreamsByPreference(candidates []*live.StreamUrlInfo) []
 	return ordered
 }
 
-func (r *recorder) selectPreferredStream(streamInfos []*live.StreamUrlInfo) (ret *live.StreamUrlInfo) {
+func (r *recorder) selectPreferredStream(streamInfos []*live.StreamUrlInfo, preference configs.StreamPreference) (ret *live.StreamUrlInfo) {
 	// 如果没有可用流，直接返回 nil
 	if len(streamInfos) == 0 {
 		return nil
 	}
-
-	preference := r.effectiveStreamPreference()
 
 	// 如果未配置流偏好（Quality 和 Attributes 均为 nil），直接返回第一个流
 	if preference.Quality == nil && preference.Attributes == nil {
@@ -1024,11 +1053,6 @@ func (r *recorder) selectPreferredStream(streamInfos []*live.StreamUrlInfo) (ret
 		return streamInfos[0]
 	}
 	return
-}
-
-// effectiveStreamPreference 取本房间的流偏好（已合并平台与全局层级配置）。
-func (r *recorder) effectiveStreamPreference() configs.StreamPreference {
-	return configs.GetCurrentConfig().GetEffectiveConfigForRoom(r.Live.GetRawUrl()).StreamPreference
 }
 
 // streamPreferenceScore 给一路流按偏好打分：画质名命中 +100，属性每命中一项 +1。
@@ -1570,10 +1594,13 @@ func (r *recorder) SetInitialRecordedFiles(files []notify.RecordingFileDetail) {
 // 分段重启时由 RestartRecorder 调用，确保旧分段的 Pipeline 结果不丢失
 // 使用 redirect 链替代指针覆盖，支持连续重启 A→B→C 场景
 func (r *recorder) TransferPipelineState(old *recorder) {
-	// 分段重启说明这条流在本会话里确实录上过，沿用旧 recorder 的事实，
-	// 避免新分段把重试档位退回"从未录上过"的长间隔。
-	// old 的 run() 已在 CloseForRestart 里等待退出，此处读取是安全的。
-	r.everHeldStream.Store(old.everHeldStream.Load())
+	// "本场录上过"是单调事实，只能由 false 变 true，所以这里做或而不是覆盖：
+	// 新 recorder 在 RestartRecorder 里先被 Start，等这里执行时它自己可能已经拉上过一次流，
+	// 无条件写入会把那份成功抹回旧实例的 false，让后续重试退回"从未录上过"的 60 秒长间隔。
+	// old 的 run() 已在 CloseForRestart 里等待退出，此处读旧值不会有并发写。
+	if old.everHeldStream.Load() {
+		r.everHeldStream.Store(true)
+	}
 
 	r.pipelineState.mu.Lock()
 	defer r.pipelineState.mu.Unlock()
