@@ -1026,6 +1026,11 @@ func getRawConfig(writer http.ResponseWriter, r *http.Request) {
 	if cfg.DouyuAuth.DyDid != "" {
 		cfg.DouyuAuth.DyDid = douyuSecretMask
 	}
+	// Soop 账号密码同理：明文页是整份 YAML 的展示与回写入口，原文输出等于把密码交给浏览器。
+	// 用与调试转储同一个占位符，写回侧（applyRawConfigDoc）据此识别"这一项没被用户改过"。
+	if cfg.SoopLiveAuth.Password != "" {
+		cfg.SoopLiveAuth.Password = configs.LogSecretMask
+	}
 	b, err := yaml.Marshal(cfg)
 	if err != nil {
 		writeJsonWithStatusCode(writer, http.StatusInternalServerError, commonResp{
@@ -1096,6 +1101,7 @@ func putRawConfig(writer http.ResponseWriter, r *http.Request) {
 	}
 	topKeys := rawConfigTopKeys(rawYaml)
 	_, authSectionEdited := topKeys["douyu_auth"]
+	_, soopAuthSectionEdited := topKeys["sooplive_auth"]
 	_, cookiesSectionEdited := topKeys["cookies"]
 	// 整体替换必须走带锁的提交路径：SetCurrentConfig 是裸写全局指针，绕开 updateMu 会把与本次
 	// 编辑同期完成的其它更新（保存 cookie、斗鱼自动续期）从内存里覆盖掉；锁外再 Marshal 更是
@@ -1111,7 +1117,7 @@ func putRawConfig(writer http.ResponseWriter, r *http.Request) {
 		// c 是最新配置的私有克隆：先另存一份提交前状态，供运行态房间差异比对使用
 		prevConfig = configs.CloneConfigShallow(c)
 		prevConfig.RefreshLiveRoomIndexCache()
-		applyRawConfigDoc(c, snapshot, newConfig, authSectionEdited, cookiesSectionEdited)
+		applyRawConfigDoc(c, snapshot, newConfig, authSectionEdited, soopAuthSectionEdited, cookiesSectionEdited)
 		return nil
 	}, 3, 10*time.Millisecond)
 	if err != nil {
@@ -1138,7 +1144,7 @@ func putRawConfig(writer http.ResponseWriter, r *http.Request) {
 // snapshot 是用户打开该页时的配置，仅用于判断"这一处用户到底改没改"。
 // 三方规则：文档相对快照未改动的内容一律取 latest（保住解析 YAML 这几十毫秒里完成的并发写入），
 // 改动过的取文档值（以用户这次编辑为准）。latest 由 UpdateWithRetry 在锁内传入，是本函数的唯一写入目标。
-func applyRawConfigDoc(latest, snapshot, doc *configs.Config, authSectionEdited, cookiesSectionEdited bool) {
+func applyRawConfigDoc(latest, snapshot, doc *configs.Config, authSectionEdited, soopAuthSectionEdited, cookiesSectionEdited bool) {
 	// 每次重试都从原始文档重新算：mutator 可能被调用多次，不能污染 doc
 	merged := configs.CloneConfigShallow(doc)
 
@@ -1168,6 +1174,21 @@ func applyRawConfigDoc(latest, snapshot, doc *configs.Config, authSectionEdited,
 		if merged.DouyuAuth.DyDid == douyuSecretMask {
 			merged.DouyuAuth.DyDid = latest.DouyuAuth.DyDid
 		}
+	}
+
+	// Soop 密码同理：明文页输出的是占位符，直接提交会把这串字符当成新密码存下来，
+	// 之后自动登录拿它去换 cookie 必然失败，且面板只显示"已保存凭证"看不出异常。
+	docSoop := doc.SoopLiveAuth
+	if docSoop.Password == configs.LogSecretMask {
+		docSoop.Password = snapshot.SoopLiveAuth.Password
+	}
+	if !soopAuthSectionEdited || docSoop == snapshot.SoopLiveAuth {
+		// 整节没提交，或整节照抄没改：以提交时刻的最新值为准（这期间后台可能刚保存过新凭证）。
+		merged.SoopLiveAuth = latest.SoopLiveAuth
+	} else if merged.SoopLiveAuth.Password == configs.LogSecretMask {
+		// 用户改了这一段里的别的东西（例如只改用户名）：密码位仍还原成最新原文。
+		// 真要清除时把 password 留空提交即可。
+		merged.SoopLiveAuth.Password = latest.SoopLiveAuth.Password
 	}
 
 	// cookies 同理做逐主机三方合并：用户在编辑器里没动过的那条，若已被后台续期改写，取最新值。

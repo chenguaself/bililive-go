@@ -37,3 +37,32 @@ func TestDouyuAuthSecretsStayOutOfJSON(t *testing.T) {
 	assert.Contains(t, string(y), "long-term-passport-ticket")
 	assert.Contains(t, string(y), "device-id-value")
 }
+
+// Soop 账号密码也不能进 JSON：GET /api/config 直接序列化整个 Config，明文密码带 json tag
+// 就会被下发到浏览器。面板写密码走 PATCH /config 对 updates map 的显式解析，读状态走
+// /api/sooplive/auth，因此屏蔽 JSON 输出不影响保存与显示；YAML 侧必须保留，否则重启后
+// 自动登录拿不到密码。
+func TestSoopLiveAuthPasswordStaysOutOfJSON(t *testing.T) {
+	c := &Config{
+		SoopLiveAuth: SoopLiveAuth{
+			Username: "soop-account",
+			Password: "soop-plain-password",
+		},
+	}
+
+	b, err := json.Marshal(c)
+	assert.NoError(t, err)
+	assert.NotContains(t, string(b), "soop-plain-password")
+
+	var decoded map[string]interface{}
+	assert.NoError(t, json.Unmarshal(b, &decoded))
+	soopAuth, ok := decoded["sooplive_auth"].(map[string]interface{})
+	assert.True(t, ok, "sooplive_auth 节应仍存在")
+	assert.NotContains(t, soopAuth, "password")
+	// 用户名不是凭证本体，面板要显示它
+	assert.Equal(t, "soop-account", soopAuth["username"])
+
+	y, err := yaml.Marshal(c)
+	assert.NoError(t, err)
+	assert.Contains(t, string(y), "soop-plain-password")
+}

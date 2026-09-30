@@ -51,6 +51,18 @@ const (
 
 const soopRetryWarnInterval = time.Minute
 
+// fastFailThreshold 判断一次尝试是否真的拉到了流：解析持续时间短于它就按"秒退"处理。
+const fastFailThreshold = 5 * time.Second
+
+// 取流/录制连续失败时的重试间隔：
+// 本场从未录上过说明源此刻根本不可用，慢慢试（本来也没在丢内容）；
+// 已经录上过则优先保断流后的内容连续性，只稍微拉长间隔。
+const (
+	minRecordRetryInterval          = 5 * time.Second
+	maxRecordRetryIntervalNeverHeld = 60 * time.Second
+	maxRecordRetryIntervalAfterHold = 15 * time.Second
+)
+
 // for test
 var (
 	// newParser 根据配置的下载器类型创建 parser，并实现回退逻辑：
@@ -360,6 +372,13 @@ type recorder struct {
 	lastRetryLogKey         string
 	lastRetryLogAt          time.Time
 	suppressedRetryLogCount int
+
+	// 下面三项用于连续"秒退"时逐步拉长重试间隔，避免录不了的房间不间断敲平台取流接口。
+	// consecutiveFastFailures/lastAttemptHeldStream 只被 run() 这一个 goroutine 读写
+	// （tryRecord 是它的同步调用），因此不加锁；everHeldStream 需要跨分段重启传递，用原子类型。
+	consecutiveFastFailures int
+	everHeldStream          atomic.Bool
+	lastAttemptHeldStream   bool
 }
 
 func NewRecorder(ctx context.Context, live live.Live) (Recorder, error) {
@@ -384,6 +403,8 @@ func (r *recorder) tryRecord(ctx context.Context) {
 	// 每次重试前重置探测状态，避免上次录制的旧数据残留
 	// （例如上次探测成功但本次流分辨率已变化）
 	r.actualStreamInfo.Store(nil)
+	// 早退（取流失败、FFmpeg 缺失等）同样算"这次没撑住"，由 run() 拉长下次重试间隔
+	r.lastAttemptHeldStream = false
 
 	cfg := configs.GetCurrentConfig()
 
@@ -398,7 +419,11 @@ func (r *recorder) tryRecord(ctx context.Context) {
 
 	var streamInfos []*live.StreamUrlInfo
 	var err error
-	if streamInfos, err = r.Live.GetStreamInfos(); err == live.ErrNotImplemented {
+	// 本轮偏好取这一次尝试开头解析好的值，不再重读全局配置：延迟解析要跑几百毫秒的平台
+	// 请求，期间用户在面板点"切换清晰度"改的就是这个偏好，重读会让下面的最终选择与
+	// 上面的解析顺序按两套偏好算，选中根本没解析过 Url 的候选。
+	preference := resolvedConfig.StreamPreference
+	if streamInfos, err = r.getStreamInfosForRecording(preference); err == live.ErrNotImplemented {
 		var urls []*url.URL
 		// TODO: remove deprecated method GetStreamUrls
 		//nolint:staticcheck
@@ -412,13 +437,9 @@ func (r *recorder) tryRecord(ctx context.Context) {
 		if err != nil && r.stopRetryForExplicitOffline(err) {
 			return
 		}
-		r.logStreamURLRetry(err)
-		// 使用可中断的等待，确保 Ctrl+C 能立即响应
-		select {
-		case <-ctx.Done():
-		case <-r.stop:
-		case <-time.After(5 * time.Second):
-		}
+		// 这里不再自己 sleep：重试节奏统一由 run() 的退避决定，
+		// 保留固定的 5 秒只会让人误以为下限就是 5 秒。
+		r.logStreamURLRetry(err, r.pendingRetryInterval())
 		return
 	}
 	r.resetRetryLogState()
@@ -449,8 +470,20 @@ func (r *recorder) tryRecord(ctx context.Context) {
 	fileName := filepath.Join(resolvedConfig.OutPutPath, buf.String())
 	outputPath, _ := filepath.Split(fileName)
 
-	// TODO 根据配置选择最佳流
-	streamInfo := r.selectPreferredStream(streamInfos)
+	// 按本轮固定下来的偏好选流
+	streamInfo := r.selectPreferredStream(streamInfos, preference)
+	if streamInfo == nil || streamInfo.Url == nil {
+		// 选中的这一路没有播放地址：延迟解析的列表里除被解析的那一路之外只有元信息。
+		// 走到这里说明本轮的输入已经不再自洽，绝不能继续往下解引用 Url，
+		// 也不能持着 currentFileLock 崩掉整个录制线程（状态接口的读锁会一起挂住）。
+		if streamInfo != nil {
+			err = fmt.Errorf("清晰度 %s 尚未解析出播放地址", streamInfo.Quality)
+		} else {
+			err = fmt.Errorf("没有可用的播放流")
+		}
+		r.logStreamURLRetry(err, r.pendingRetryInterval())
+		return
+	}
 	r.saveCurrentStreamInfo(streamInfo)
 	// 更新可用流信息到 info（用于API展示）
 	r.updateAvailableStreams(ctx, info, streamInfos)
@@ -642,6 +675,7 @@ func (r *recorder) tryRecord(ctx context.Context) {
 	}
 	r.setAndCloseParser(p)
 	r.startTime = time.Now()
+	parseStartedAt := r.startTime
 
 	// 弹幕录制（支持哔哩哔哩、抖音、斗鱼平台）
 	if resolvedConfig.DanmakuEnable {
@@ -692,10 +726,14 @@ func (r *recorder) tryRecord(ctx context.Context) {
 		dmRec.Stop()
 	}
 
+	// 本次尝试是否"撑住过"由 run() 用来决定重试间隔：能持续拉流说明源可用，
+	// 连续秒退则说明源此刻录不了，应该把下一次尝试推后。
+	r.lastAttemptHeldStream = time.Since(parseStartedAt) >= fastFailThreshold
+
 	if err != nil {
 		r.getLogger().WithError(err).Error("failed to parse live stream")
 		// 视频流快速失败时（如 404），清理没有对应视频文件的残留弹幕
-		if elapsed := time.Since(r.startTime); elapsed < 5*time.Second {
+		if elapsed := time.Since(r.startTime); elapsed < fastFailThreshold {
 			cleanupOrphanedDanmakuFiles(dmFile)
 		}
 		return
@@ -928,54 +966,124 @@ func (r *recorder) stopRetryForExplicitOffline(err error) bool {
 	return true
 }
 
-func (r *recorder) selectPreferredStream(streamInfos []*live.StreamUrlInfo) (ret *live.StreamUrlInfo) {
+// getStreamInfosForRecording 取得本次录制可用的流列表。
+// 平台支持"先列候选、只解析选中的那一路"时优先走那条路径：Soop 每一档清晰度都要单独申请
+// 一次播放凭证并查一次调度接口，全量解析的请求量随档位成倍增长，而每次录制实际只用一路。
+// 候选里除了被选中的一路之外只有元信息（Url 为空），面板的清晰度列表因此仍然完整。
+func (r *recorder) getStreamInfosForRecording(preference configs.StreamPreference) ([]*live.StreamUrlInfo, error) {
+	resolver, ok := r.Live.(live.DeferredStreamResolver)
+	if !ok {
+		return r.Live.GetStreamInfos()
+	}
+	candidates, err := resolver.ListStreamCandidates()
+	if err != nil {
+		if errors.Is(err, live.ErrNotImplemented) {
+			return r.Live.GetStreamInfos()
+		}
+		return nil, err
+	}
+
+	ordered := orderStreamsByPreference(candidates, preference)
+	var firstErr error
+	for i, candidate := range ordered {
+		if err := resolver.ResolveStreamCandidate(candidate); err != nil {
+			wrapped := fmt.Errorf("清晰度 %s: %w", candidate.Quality, err)
+			if errors.Is(err, live.ErrLiveOffline) {
+				// 房间在列完候选之后、解析这一档的几百毫秒里下播了：换别的档位同样取不到流，
+				// 立即上抛让 stopRetryForExplicitOffline 收手，既不重试也不再敲剩下的档位。
+				return nil, wrapped
+			}
+			if firstErr == nil {
+				firstErr = wrapped
+			}
+			r.getLogger().WithError(err).Debugf("候选清晰度 %s 取流失败，尝试下一档", candidate.Quality)
+			continue
+		}
+		// ordered[:i] 是本次尝试失败的高优先档位，与全量解析一样剔除；
+		// ordered[i+1:] 没有尝试过，保留其元信息供面板展示可选档位。
+		streams := make([]*live.StreamUrlInfo, 0, len(ordered))
+		streams = append(streams, candidate)
+		return append(streams, ordered[i+1:]...), nil
+	}
+	// 所有候选都解析失败：直接把第一路的错误上抛，由 run() 的退避拉长下一轮间隔。
+	// 不再顺手全量解析一遍——那等于在同一次尝试里把每一档的凭证与调度请求再敲一次，
+	// 而"全部失败"恰恰是最需要少发请求的状态（未登录、凭证被拒、调度异常）。
+	// 候选与平台档位对不上时会由下一轮重新列候选自愈，代价是一轮退避间隔。
+	if firstErr == nil {
+		firstErr = fmt.Errorf("soop 未返回任何可解析的清晰度")
+	}
+	return nil, firstErr
+}
+
+// orderStreamsByPreference 按偏好分值从高到低排序，分值相同保持平台返回的先后顺序，
+// 使"依次尝试"选出的第一路等于 selectPreferredStream 在全量列表上的选择结果。
+func orderStreamsByPreference(candidates []*live.StreamUrlInfo, preference configs.StreamPreference) []*live.StreamUrlInfo {
+	if preference.Quality == nil && preference.Attributes == nil {
+		return candidates
+	}
+	ordered := append([]*live.StreamUrlInfo(nil), candidates...)
+	sort.SliceStable(ordered, func(a, b int) bool {
+		return streamPreferenceScore(ordered[a], preference) > streamPreferenceScore(ordered[b], preference)
+	})
+	return ordered
+}
+
+func (r *recorder) selectPreferredStream(streamInfos []*live.StreamUrlInfo, preference configs.StreamPreference) (ret *live.StreamUrlInfo) {
 	// 如果没有可用流，直接返回 nil
 	if len(streamInfos) == 0 {
 		return nil
 	}
 
-	streamPreference := configs.GetCurrentConfig().GetEffectiveConfigForRoom(r.Live.GetRawUrl()).StreamPreference
-
 	// 如果未配置流偏好（Quality 和 Attributes 均为 nil），直接返回第一个流
-	if streamPreference.Quality == nil && streamPreference.Attributes == nil {
+	if preference.Quality == nil && preference.Attributes == nil {
 		return streamInfos[0]
 	}
 
-	// 安全获取 Quality 和 Attributes，处理 nil 情况
-	var quality string
-	if streamPreference.Quality != nil {
-		quality = *streamPreference.Quality
-	}
-	var attrs map[string]string
-	if streamPreference.Attributes != nil {
-		attrs = *streamPreference.Attributes
-	}
-
-	retMatchedCount := 0
+	bestScore := 0
 	for _, info := range streamInfos {
-		currMatchedCount := 0
-		// 仅当配置了 Quality 时才匹配
-		if quality != "" && info.Quality == quality {
-			currMatchedCount += 100
-		}
-		// 仅当配置了 Attributes 时才匹配
-		for k, v := range attrs {
-			if info.AttributesForStreamSelect[k] == v {
-				currMatchedCount += 1
-			}
-		}
-		if currMatchedCount > retMatchedCount {
+		if score := streamPreferenceScore(info, preference); score > bestScore {
 			ret = info
-			retMatchedCount = currMatchedCount
+			bestScore = score
 		}
 	}
 
 	// 如果没有任何匹配的流，回退到第一个可用流
 	if ret == nil {
-		r.getLogger().Warnf("没有流匹配配置的偏好 (quality=%s, attrs=%v)，使用第一个可用流", quality, attrs)
+		r.getLogger().Warnf("没有流匹配配置的偏好 (quality=%s, attrs=%v)，使用第一个可用流", preferenceQuality(preference), preferenceAttributes(preference))
 		return streamInfos[0]
 	}
 	return
+}
+
+// streamPreferenceScore 给一路流按偏好打分：画质名命中 +100，属性每命中一项 +1。
+// 分值相同时由调用方保持列表原有先后顺序，与"取第一个匹配项"的旧行为一致。
+func streamPreferenceScore(info *live.StreamUrlInfo, preference configs.StreamPreference) int {
+	score := 0
+	if quality := preferenceQuality(preference); quality != "" && info.Quality == quality {
+		score += 100
+	}
+	if attrs := preferenceAttributes(preference); attrs != nil {
+		for k, v := range attrs {
+			if info.AttributesForStreamSelect[k] == v {
+				score += 1
+			}
+		}
+	}
+	return score
+}
+
+func preferenceQuality(preference configs.StreamPreference) string {
+	if preference.Quality == nil {
+		return ""
+	}
+	return *preference.Quality
+}
+
+func preferenceAttributes(preference configs.StreamPreference) map[string]string {
+	if preference.Attributes == nil {
+		return nil
+	}
+	return *preference.Attributes
 }
 
 func (r *recorder) run(ctx context.Context) {
@@ -993,8 +1101,6 @@ func (r *recorder) run(ctx context.Context) {
 		}
 	}()
 
-	const minRetryInterval = 5 * time.Second
-
 	for {
 		select {
 		case <-r.stop:
@@ -1007,10 +1113,11 @@ func (r *recorder) run(ctx context.Context) {
 			r.tryRecord(tryCtx)
 			tryCancel()
 
-			// 确保两次 tryRecord 之间至少间隔 minRetryInterval
-			// 防止快速失败（如 FFmpeg 秒退 404）导致紧密循环
-			if elapsed := time.Since(start); elapsed < minRetryInterval {
-				delay := minRetryInterval - elapsed
+			// 按本次尝试是否撑住过更新退避档位：
+			// 防快速失败（如 FFmpeg 秒退 404）导致紧密循环，也防录不了的房间不间断敲平台取流接口
+			retryInterval := r.noteAttemptResult(r.lastAttemptHeldStream)
+			if elapsed := time.Since(start); elapsed < retryInterval {
+				delay := retryInterval - elapsed
 				select {
 				case <-r.stop:
 					return
@@ -1021,6 +1128,41 @@ func (r *recorder) run(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// noteAttemptResult 记录本次尝试有没有真正撑住过流，并返回下一次重试的间隔。
+// 只有 run() 这一个 goroutine 会调用，因此状态字段无需加锁。
+func (r *recorder) noteAttemptResult(heldStream bool) time.Duration {
+	if heldStream {
+		r.consecutiveFastFailures = 0
+		r.everHeldStream.Store(true)
+	} else {
+		r.consecutiveFastFailures++
+	}
+	return recordRetryInterval(r.consecutiveFastFailures, r.everHeldStream.Load())
+}
+
+// pendingRetryInterval 预测"本次尝试失败"时 run() 即将采用的间隔，仅用于日志文案。
+// 调用点在取流失败分支，此时 lastAttemptHeldStream 必为 false，
+// noteAttemptResult 会把连续失败计数加一，所以这里同样按加一后的计数计算。
+func (r *recorder) pendingRetryInterval() time.Duration {
+	return recordRetryInterval(r.consecutiveFastFailures+1, r.everHeldStream.Load())
+}
+
+// recordRetryInterval 由连续"秒退"次数推出下一次重试间隔：
+// 每失败一轮翻一倍，直到该档位的上限为止；一旦拉到过流就重新从最小间隔开始。
+func recordRetryInterval(consecutiveFastFailures int, everHeldStream bool) time.Duration {
+	maxInterval := maxRecordRetryIntervalNeverHeld
+	if everHeldStream {
+		maxInterval = maxRecordRetryIntervalAfterHold
+	}
+	// 限制位移次数，避免次数很大时溢出成负数
+	shift := min(consecutiveFastFailures-1, 4)
+	if shift < 0 {
+		shift = 0
+	}
+	interval := minRecordRetryInterval << shift
+	return min(interval, maxInterval)
 }
 
 // accumulateRecordedFiles 累积录制文件信息，仅记录实际存在的文件
@@ -1289,9 +1431,10 @@ func filterOrphanedAssFromDetails(details []notify.RecordingFileDetail) []notify
 	return result
 }
 
-func (r *recorder) logStreamURLRetry(err error) {
+func (r *recorder) logStreamURLRetry(err error, nextInterval time.Duration) {
+	intervalText := nextInterval.Round(time.Second)
 	if configs.IsDebug() || !strings.EqualFold(r.Live.GetPlatformCNName(), "SOOP") {
-		r.warnStreamURLRetry(err, "failed to get stream url, will retry after 5s...", 0)
+		r.warnStreamURLRetry(err, fmt.Sprintf("failed to get stream url, will retry in %s...", intervalText), 0)
 		return
 	}
 
@@ -1308,7 +1451,7 @@ func (r *recorder) logStreamURLRetry(err error) {
 		r.lastRetryLogAt = now
 		r.suppressedRetryLogCount = 0
 		r.retryLogMu.Unlock()
-		r.warnStreamURLRetry(err, "failed to get stream url, will retry after 5s...", 0)
+		r.warnStreamURLRetry(err, fmt.Sprintf("failed to get stream url, will retry in %s...", intervalText), 0)
 		return
 	}
 
@@ -1317,7 +1460,7 @@ func (r *recorder) logStreamURLRetry(err error) {
 		r.lastRetryLogAt = now
 		r.suppressedRetryLogCount = 0
 		r.retryLogMu.Unlock()
-		r.warnStreamURLRetry(err, "failed to get stream url, still retrying every 5s...", suppressed)
+		r.warnStreamURLRetry(err, fmt.Sprintf("failed to get stream url, still retrying, current interval %s", intervalText), suppressed)
 		return
 	}
 
@@ -1451,6 +1594,14 @@ func (r *recorder) SetInitialRecordedFiles(files []notify.RecordingFileDetail) {
 // 分段重启时由 RestartRecorder 调用，确保旧分段的 Pipeline 结果不丢失
 // 使用 redirect 链替代指针覆盖，支持连续重启 A→B→C 场景
 func (r *recorder) TransferPipelineState(old *recorder) {
+	// "本场录上过"是单调事实，只能由 false 变 true，所以这里做或而不是覆盖：
+	// 新 recorder 在 RestartRecorder 里先被 Start，等这里执行时它自己可能已经拉上过一次流，
+	// 无条件写入会把那份成功抹回旧实例的 false，让后续重试退回"从未录上过"的 60 秒长间隔。
+	// old 的 run() 已在 CloseForRestart 里等待退出，此处读旧值不会有并发写。
+	if old.everHeldStream.Load() {
+		r.everHeldStream.Store(true)
+	}
+
 	r.pipelineState.mu.Lock()
 	defer r.pipelineState.mu.Unlock()
 
